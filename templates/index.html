@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Proxmox Backup Manager</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif; margin: 0; padding: 24px; background:#0f172a; color:#e2e8f0; }
+    .container { max-width: 960px; margin: 0 auto; }
+    .card { background: #111827; border:1px solid #1f2937; border-radius: 12px; padding: 20px; box-shadow: 0 10px 30px rgba(0,0,0,.2); }
+    h1 { margin-top: 0; font-size: 24px; }
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
+    .btn { display:inline-block; padding:10px 14px; border-radius:8px; background:#2563eb; color:#fff; text-decoration:none; border:none; cursor:pointer; }
+    .btn:disabled { background:#334155; cursor:not-allowed; }
+    .row { margin: 12px 0; }
+    .tag { display:inline-block; padding:2px 8px; font-size:12px; border-radius:999px; background:#065f46; color:#d1fae5; }
+    .list { list-style:none; padding-left:0; margin:0; }
+    .list li { padding:6px 0; border-bottom:1px solid #1f2937; }
+    .muted { color:#94a3b8; font-size: 14px; }
+    .success { color:#10b981; }
+    .error { color:#ef4444; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h1>Proxmox Backup Manager</h1>
+      {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+          <div>
+            {% for category, message in messages %}
+              <p class="{{ category }}">{{ message }}</p>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% endwith %}
+
+      <form class="row" method="post" action="/create_backup">
+        <button class="btn" type="submit">Vytvoriť zálohu teraz</button>
+      </form>
+
+      <div class="row">
+        <h3>Nastavenia FTP</h3>
+        <form method="post" action="/save_ftp_config">
+          <div class="grid">
+            <div>
+              <label>Host</label>
+              <input name="host" value="{{ config['ftp_config']['host'] }}" style="width:100%" />
+            </div>
+            <div>
+              <label>Port</label>
+              <input name="port" value="{{ config['ftp_config']['port'] }}" style="width:100%" />
+            </div>
+            <div>
+              <label>Používateľ</label>
+              <input name="username" value="{{ config['ftp_config']['username'] }}" style="width:100%" />
+            </div>
+            <div>
+              <label>Heslo</label>
+              <input name="password" type="password" value="{{ config['ftp_config']['password'] }}" style="width:100%" />
+            </div>
+          </div>
+          <div class="row">
+            <button class="btn" type="submit">Uložiť</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="row">
+        <h3>Súbory na zálohovanie</h3>
+        <ul class="list">
+          {% for f in config['backup_files'] %}
+            <li>
+              <a class="btn" href="/toggle_file/{{ loop.index0 }}">{{ '✓' if f['selected'] else ' ' }}</a>
+              <strong>{{ f['name'] }}</strong>
+              <span class="muted">{{ f['path'] }}</span>
+              {% if f['critical'] %}<span class="tag">kritické</span>{% endif %}
+            </li>
+          {% endfor %}
+        </ul>
+      </div>
+
+      <div class="row">
+        <h3>História záloh</h3>
+        {% if backup_history %}
+          <ul class="list">
+          {% for b in backup_history %}
+            <li>
+              <span>{{ b['date'] }} – {{ b['filename'] }} – {{ b['size'] }}</span>
+              <a class="btn" style="background:#ef4444" href="/delete_backup/{{ b['id'] }}">Vymazať</a>
+            </li>
+          {% endfor %}
+          </ul>
+        {% else %}
+          <p class="muted">Zatiaľ žiadne zálohy.</p>
+        {% endif %}
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>
