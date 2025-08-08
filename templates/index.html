@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proxmox Backup Manager</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary-color: #2563eb;
+            --success-color: #059669;
+            --danger-color: #dc2626;
+            --warning-color: #d97706;
+            --dark-color: #1f2937;
+            --light-bg: #f8fafc;
+        }
+        
+        body {
+            background-color: var(--light-bg);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        .navbar {
+            background: linear-gradient(135deg, var(--primary-color), #3b82f6);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .card {
+            border: none;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+        }
+        
+        .nav-pills .nav-link.active {
+            background-color: var(--primary-color);
+        }
+        
+        .btn-primary {
+            background-color: var(--primary-color);
+            border-color: var(--primary-color);
+        }
+        
+        .btn-primary:hover {
+            background-color: #1d4ed8;
+            border-color: #1d4ed8;
+        }
+        
+        .badge.bg-danger {
+            background-color: var(--danger-color) !important;
+        }
+        
+        .badge.bg-success {
+            background-color: var(--success-color) !important;
+        }
+        
+        .file-item {
+            transition: background-color 0.2s;
+            border-radius: 8px;
+        }
+        
+        .file-item:hover {
+            background-color: rgba(37, 99, 235, 0.05);
+        }
+        
+        .progress {
+            height: 8px;
+            border-radius: 4px;
+        }
+        
+        .alert {
+            border: none;
+            border-radius: 8px;
+        }
+        
+        .form-control, .form-select {
+            border-radius: 8px;
+            border: 1px solid #d1d5db;
+        }
+        
+        .form-control:focus, .form-select:focus {
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 0.2rem rgba(37, 99, 235, 0.25);
+        }
+        
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+        
+        .status-success {
+            background-color: rgba(5, 150, 105, 0.1);
+            color: var(--success-color);
+        }
+        
+        .status-error {
+            background-color: rgba(220, 38, 38, 0.1);
+            color: var(--danger-color);
+        }
+        
+        .loading-spinner {
+            display: inline-block;
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid #f3f4f6;
+            border-radius: 50%;
+            border-top-color: var(--primary-color);
+            animation: spin 1s ease-in-out infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <!-- Navbar -->
+    <nav class="navbar navbar-dark">
+        <div class="container">
+            <span class="navbar-brand mb-0 h1">
+                <i class="bi bi-server me-2"></i>
+                Proxmox Backup Manager
+            </span>
+            <span class="navbar-text">
+                Správca záloh pre Proxmox VE servery
+            </span>
+        </div>
+    </nav>
+
+    <div class="container mt-4">
+        <!-- Flash Messages -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ 'danger' if category == 'error' else 'success' }} alert-dismissible fade show" role="alert">
+                        <i class="bi bi-{{ 'exclamation-triangle' if category == 'error' else 'check-circle' }} me-2"></i>
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+
+        <!-- Navigation Tabs -->
+        <ul class="nav nav-pills nav-fill mb-4" id="mainTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="backup-tab" data-bs-toggle="pill" data-bs-target="#backup" type="button" role="tab">
+                    <i class="bi bi-download me-2"></i>Zálohovanie
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="files-tab" data-bs-toggle="pill" data-bs-target="#files" type="button" role="tab">
+                    <i class="bi bi-file-earmark-check me-2"></i>Súbory
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="settings-tab" data-bs-toggle="pill" data-bs-target="#settings" type="button" role="tab">
+                    <i class="bi bi-gear me-2"></i>Nastavenia
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="history-tab" data-bs-toggle="pill" data-bs-target="#history" type="button" role="tab">
+                    <i class="bi bi-clock-history me-2"></i>História
+                </button>
+            </li>
+        </ul>
+
+        <div class="tab-content" id="mainTabsContent">
+            <!-- Zálohovanie Tab -->
+            <div class="tab-pane fade show active" id="backup" role="tabpanel">
+                <div class="row g-4">
+                    <div class="col-md-6">
+                        <div class="card h-100">
+                            <div class="card-header bg-transparent">
+                                <h5 class="card-title mb-0">
+                                    <i class="bi bi-download text-primary me-2"></i>
+                                    Manuálna záloha
+                                </h5>
+                                <small class="text-muted">Vytvorte zálohu okamžite</small>
+                            </div>
+                            <div class="card-body">
+                                <div class="row mb-3">
+                                    <div class="col-6">
+                                        <small class="text-muted">Vybrané súbory:</small>
+                                        <div>
+                                            <span class="badge {{ 'bg-primary' if selected_count > 0 else 'bg-secondary' }}">
+                                                {{ selected_count }} z {{ config.backup_files|length }}
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <div class="col-6">
+                                        <small class="text-muted">Kritické súbory:</small>
+                                        <div>
+                                            <span class="badge {{ 'bg-success' if critical_selected == critical_total else 'bg-danger' }}">
+                                                {{ critical_selected }} z {{ critical_total }}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <form method="POST" action="{{ url_for('create_backup') }}">
+                                    <button type="submit" class="btn btn-primary w-100 mb-3" 
+                                            {{ 'disabled' if selected_count == 0 or not config.ftp_config.host else '' }}>
+                                        <i class="bi bi-download me-2"></i>
+                                        Vytvoriť zálohu teraz
+                                    </button>
+                                </form>
+
+                                {% if critical_selected < critical_total %}
+                                <div class="alert alert-warning">
+                                    <i class="bi bi-exclamation-triangle me-2"></i>
+                                    Nie sú vybrané všetky kritické súbory. Záloha nemusí byť kompletná.
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="col-md-6">
+                        <div class="card h-100">
+                            <div class="card-header bg-transparent">
+                                <h5 class="card-title mb-0">
+                                    <i class="bi bi-clock text-warning me-2"></i>
+                                    Automatická záloha
+                                </h5>
+                                <small class="text-muted">Naplánujte pravidelné zálohy</small>
+                            </div>
+                            <div class="card-body">
+                                <div class="form-check mb-3">
+                                    <input class="form-check-input" type="checkbox" id="autoBackupCheck" 
+                                           {{ 'checked' if config.auto_backup_enabled else '' }}
+                                           onchange="window.location.href='{{ url_for('toggle_auto_backup') }}'">
+                                    <label class="form-check-label" for="autoBackupCheck">
+                                        Povoliť automatické zálohy
+                                    </label>
+                                </div>
+
+                                {% if config.auto_backup_enabled %}
+                                <div class="mb-3">
+                                    <label for="frequency" class="form-label">Frekvencia</label>
+                                    <select class="form-select" id="frequency" onchange="changeFrequency(this.value)">
+                                        <option value="weekly" {{ 'selected' if config.auto_backup_frequency == 'weekly' else '' }}>Týždenne</option>
+                                        <option value="monthly" {{ 'selected' if config.auto_backup_frequency == 'monthly' else '' }}>Mesačne</option>
+                                    </select>
+                                </div>
+
+                                <div class="alert alert-info">
+                                    <i class="bi bi-info-circle me-2"></i>
+                                    Ďalšia automatická záloha: {{ 'Nedeľa 02:00' if config.auto_backup_frequency == 'weekly' else '1. deň v mesiaci 02:00' }}
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Súbory Tab -->
+            <div class="tab-pane fade" id="files" role="tabpanel">
+                <div class="card">
+                    <div class="card-header bg-transparent">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-file-earmark-check text-primary me-2"></i>
+                            Výber súborov na zálohovanie
+                        </h5>
+                        <small class="text-muted">Označte súbory a adresáre, ktoré chcete zahrnúť do zálohy</small>
+                    </div>
+                    <div class="card-body">
+                        {% for file in config.backup_files %}
+                        <div class="file-item p-3 mb-2 border rounded">
+                            <div class="d-flex align-items-start">
+                                <div class="form-check me-3">
+                                    <input class="form-check-input" type="checkbox" id="file-{{ loop.index0 }}" 
+                                           {{ 'checked' if file.selected else '' }}
+                                           onchange="window.location.href='{{ url_for('toggle_file', file_index=loop.index0) }}'">
+                                </div>
+                                <div class="flex-grow-1">
+                                    <div class="d-flex align-items-center mb-1">
+                                        <label for="file-{{ loop.index0 }}" class="form-check-label fw-bold me-2">
+                                            {{ file.name }}
+                                        </label>
+                                        {% if file.critical %}
+                                        <span class="badge bg-danger">Kritické</span>
+                                        {% endif %}
+                                    </div>
+                                    <p class="text-muted mb-1 small">{{ file.description }}</p>
+                                    <code class="small text-muted">{{ file.path }}</code>
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+
+            <!-- Nastavenia Tab -->
+            <div class="tab-pane fade" id="settings" role="tabpanel">
+                <div class="card">
+                    <div class="card-header bg-transparent">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-gear text-primary me-2"></i>
+                            FTP Server nastavenia
+                        </h5>
+                        <small class="text-muted">Nakonfigurujte pripojenie k FTP serveru pre ukladanie záloh</small>
+                    </div>
+                    <div class="card-body">
+                        <form method="POST" action="{{ url_for('save_ftp_config') }}">
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label for="host" class="form-label">IP Adresa / Hostiteľ *</label>
+                                    <input type="text" class="form-control" id="host" name="host" 
+                                           placeholder="192.168.1.100" value="{{ config.ftp_config.host }}" required>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="port" class="form-label">Port</label>
+                                    <input type="number" class="form-control" id="port" name="port" 
+                                           placeholder="21" value="{{ config.ftp_config.port }}">
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="username" class="form-label">Používateľské meno *</label>
+                                    <input type="text" class="form-control" id="username" name="username" 
+                                           placeholder="backup_user" value="{{ config.ftp_config.username }}" required>
+                                </div>
+                                <div class="col-md-6">
+                                    <label for="password" class="form-label">Heslo</label>
+                                    <input type="password" class="form-control" id="password" name="password" 
+                                           placeholder="••••••••" value="{{ config.ftp_config.password }}">
+                                </div>
+                            </div>
+
+                            <hr class="my-4">
+
+                            <div class="d-flex gap-3 align-items-center">
+                                <button type="submit" class="btn btn-primary">
+                                    <i class="bi bi-check-lg me-2"></i>
+                                    Uložiť konfiguráciu
+                                </button>
+                                
+                                <button type="button" class="btn btn-outline-secondary" onclick="testFtpConnection()">
+                                    <span id="testButtonText">
+                                        <i class="bi bi-wifi me-2"></i>
+                                        Test pripojenia
+                                    </span>
+                                </button>
+                                
+                                <div id="connectionResult"></div>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- História Tab -->
+            <div class="tab-pane fade" id="history" role="tabpanel">
+                <div class="card">
+                    <div class="card-header bg-transparent">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-clock-history text-primary me-2"></i>
+                            História záloh
+                        </h5>
+                        <small class="text-muted">Prehľad vytvorených záloh na FTP serveri</small>
+                    </div>
+                    <div class="card-body">
+                        {% if backup_history|length == 0 %}
+                        <div class="text-center py-5">
+                            <i class="bi bi-archive display-1 text-muted"></i>
+                            <p class="text-muted mt-3">Zatiaľ neboli vytvorené žiadne zálohy</p>
+                        </div>
+                        {% else %}
+                        {% for backup in backup_history %}
+                        <div class="d-flex justify-content-between align-items-center p-3 border rounded mb-3">
+                            <div>
+                                <div class="d-flex align-items-center mb-1">
+                                    <strong class="me-2">{{ backup.filename }}</strong>
+                                    <span class="status-indicator {{ 'status-success' if backup.status == 'success' else 'status-error' }}">
+                                        <i class="bi bi-{{ 'check-circle' if backup.status == 'success' else 'x-circle' }}"></i>
+                                        {{ 'Úspešné' if backup.status == 'success' else 'Neúspešné' }}
+                                    </span>
+                                </div>
+                                <small class="text-muted">{{ backup.date }} • {{ backup.size }}</small>
+                            </div>
+                            <div class="d-flex gap-2">
+                                <button class="btn btn-sm btn-outline-primary">
+                                    <i class="bi bi-download me-1"></i>
+                                    Stiahnuť
+                                </button>
+                                <a href="{{ url_for('delete_backup', backup_id=backup.id) }}" 
+                                   class="btn btn-sm btn-outline-danger"
+                                   onclick="return confirm('Naozaj chcete vymazať túto zálohu z histórie?')">
+                                    <i class="bi bi-trash me-1"></i>
+                                    Vymazať
+                                </a>
+                            </div>
+                        </div>
+                        {% endfor %}
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        function changeFrequency(frequency) {
+            window.location.href = `/set_backup_frequency/${frequency}`;
+        }
+
+        function testFtpConnection() {
+            const host = document.getElementById('host').value;
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const port = document.getElementById('port').value || 21;
+
+            if (!host || !username) {
+                alert('Vyplňte aspoň IP adresu a používateľské meno');
+                return;
+            }
+
+            const button = document.querySelector('button[onclick="testFtpConnection()"]');
+            const result = document.getElementById('connectionResult');
+            
+            button.innerHTML = '<span class="loading-spinner me-2"></span>Testujem...';
+            button.disabled = true;
+
+            fetch('/test_ftp', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ host, username, password, port: parseInt(port) })
+            })
+            .then(response => response.json())
+            .then(data => {
+                result.innerHTML = `
+                    <span class="status-indicator ${data.success ? 'status-success' : 'status-error'}">
+                        <i class="bi bi-${data.success ? 'check-circle' : 'x-circle'}"></i>
+                        ${data.message}
+                    </span>
+                `;
+            })
+            .catch(error => {
+                result.innerHTML = `
+                    <span class="status-indicator status-error">
+                        <i class="bi bi-x-circle"></i>
+                        Chyba pri testovaní
+                    </span>
+                `;
+            })
+            .finally(() => {
+                button.innerHTML = '<i class="bi bi-wifi me-2"></i>Test pripojenia';
+                button.disabled = false;
+            });
+        }
+    </script>
+</body>
+</html>

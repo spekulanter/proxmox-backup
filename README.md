@@ -1,23 +1,76 @@
-# ✨ Welcome to Your Spark Template!
-You've just launched your brand-new Spark Template Codespace — everything’s fired up and ready for you to explore, build, and create with Spark!
+# Proxmox Backup Manager
 
-This template is your blank canvas. It comes with a minimal setup to help you get started quickly with Spark development.
+Jednoduchá webová aplikácia v Pythone (Flask) pre správu záloh Proxmox VE serverov.
 
-🚀 What's Inside?
-- A clean, minimal Spark environment
-- Pre-configured for local development
-- Ready to scale with your ideas
-  
-🧠 What Can You Do?
+## Funkcie
 
-Right now, this is just a starting point — the perfect place to begin building and testing your Spark applications.
+- **Manuálne zálohovanie** - Vytvorenie zálohy na požiadanie
+- **Automatické zálohovanie** - Naplánované zálohy (týždenne/mesačne)
+- **FTP Upload** - Nahrávanie záloh na FTP server
+- **Výber súborov** - Konfigurovateľný výber súborov na zálohovanie
+- **História záloh** - Prehľad vytvorených záloh
+- **Test pripojenia** - Overenie FTP nastavení
 
-🧹 Just Exploring?
-No problem! If you were just checking things out and don’t need to keep this code:
+## Inštalácia
 
-- Simply delete your Spark.
-- Everything will be cleaned up — no traces left behind.
+1. Nainštalujte Python 3.7+
+2. Nainštalujte závislosti:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-📄 License For Spark Template Resources 
+## Spustenie
 
-The Spark Template files and resources from GitHub are licensed under the terms of the MIT license, Copyright GitHub, Inc.
+```bash
+python app.py
+```
+
+Aplikácia bude dostupná na `http://localhost:5000`
+
+## Konfigurácia
+
+### FTP Server
+Nastavte FTP server v sekcii "Nastavenia":
+- IP adresa/hostiteľ
+- Port (predvolene 21)
+- Používateľské meno
+- Heslo
+
+### Súbory na zálohovanie
+
+Aplikácia má predkonfigurované kľúčové Proxmox súbory:
+
+**Kritické súbory:**
+- `/etc/pve/` - Hlavná konfigurácia Proxmox
+- `/etc/network/interfaces` - Sieťová konfigurácia
+
+**Ostatné dôležité súbory:**
+- `/etc/hosts`, `/etc/hostname`, `/etc/resolv.conf` - Systémové nastavenia
+- `/etc/ssl/pve/` - SSL certifikáty
+- `/root/` - Skripty administrátora
+- `/etc/cron*` - Cron úlohy
+- `/etc/vzdump.conf` - Vzdump konfigurácia
+
+**Voliteľné (veľké súbory):**
+- `/var/lib/vz/template/` - ISO obrazy a šablóny
+
+## Bezpečnosť
+
+- Zmente `secret_key` v `app.py` pre produkčné použitie
+- Zabezpečte prístup k aplikácii (firewall, VPN)
+- Používajte silné FTP heslá
+- Pravidelně kontrolujte vytvorené zálohy
+
+## Súbory
+
+- `app.py` - Hlavná Flask aplikácia
+- `templates/index.html` - Webové rozhranie
+- `backup_config.json` - Konfiguračné nastavenia (vytvorí sa automaticky)
+- `backup_history.json` - História záloh (vytvorí sa automaticky)
+
+## Poznámky
+
+- Aplikácia vytvára komprimované tar.gz archívy
+- Zálohy sa nahrávajú na FTP server pre bezpečné uloženie
+- História záloh sa ukladá lokálne
+- Automatické zálohy vyžadujú externý cron alebo systemd timer
