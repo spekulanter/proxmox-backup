@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# Environments
+venv/
+.venv/
+ENV/
+env/
+
+# OS/Editor
+.DS_Store
+.idea/
+.vscode/
+
+# App runtime data
+backup_config.json
+backup_history.json
+*.tar.gz
+*.log
+
+# Node/Vite artifacts (if present)
+node_modules/
+dist/
