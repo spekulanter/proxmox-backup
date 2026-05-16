@@ -10,7 +10,7 @@ Moderná webová aplikácia v Python Flask pre správu a automatizáciu záloh P
 - **📁 Výber súborov** - Konfigurovateľný výber kritických Proxmox súborov
 - **📊 História záloh** - Prehľad a správa vytvorených záloh
 - **🔧 Test pripojenia** - Overenie FTP nastavení pred zálohou
-- **📱 Responzívny dizajn** - Moderné Bootstrap rozhranie s tabmi
+- **📱 Responzívny dizajn** - Moderné Tailwind rozhranie s tabmi
 
 ## 🚀 Rýchla inštalácia (LXC v Proxmoxe)
 
@@ -106,7 +106,7 @@ journalctl -u proxmox-backup.service -f
 ## 📄 Súbory
 
 - `app.py` - Hlavná Flask aplikácia
-- `templates/index.html` - Bootstrap webové rozhranie  
+- `templates/index.html` - webové rozhranie aplikácie
 - `requirements.txt` - Python závislosti
 - `install_in_lxc.sh` - Inštalačný skript pre LXC
 - `update.sh` - Update skript
@@ -121,7 +121,7 @@ journalctl -u proxmox-backup.service -f
 - ✅ Zálohy sa nahrávajú na FTP server pre bezpečné uloženie mimo servera
 - ✅ História záloh sa ukladá lokálne v JSON súbore
 - ✅ Beží cez systemd službu s automatickým reštartom
-- ✅ Responzívny Bootstrap dizajn pre mobily a tablety
+- ✅ Responzívny Tailwind dizajn pre mobily a tablety
 - ✅ Real-time FTP test s vizuálnym feedbackom
 
 ## 🆘 Riešenie problémov
@@ -147,7 +147,7 @@ netstat -tlnp | grep :5000
 
 Projekt využíva:
 - **Backend:** Python 3.11+ + Flask 2.3+
-- **Frontend:** Bootstrap 5.3 + Bootstrap Icons
+- **Frontend:** Tailwind CDN + vanilla JavaScript
 - **Deployment:** systemd + gunicorn
 - **Architecture:** Single-file Flask app s JSON persistenciou
 
@@ -157,4 +157,3 @@ cd /opt/proxmox-backup
 source venv/bin/activate
 python app.py  # Development server na :5000
 ```
-````

@@ -90,21 +90,17 @@ else
 fi
 msg_ok "Zdrojové kódy pripravené."
 
-# Uistime sa, že update skript je spustiteľný
-if [ -f "${APP_DIR}/update.sh" ]; then
-    chmod +x "${APP_DIR}/update.sh" || true
-fi
-
-# Ak chýba templates/index.html, ale existuje koreňový index.html, presuň ho
-if [ ! -f "${APP_DIR}/templates/index.html" ] && [ -f "${APP_DIR}/index.html" ]; then
-  msg_info "Presúvam index.html do templates/ pre Flask..."
-  mkdir -p "${APP_DIR}/templates"
-  mv "${APP_DIR}/index.html" "${APP_DIR}/templates/index.html"
-  msg_ok "Šablóna premiestnená."
-fi
+# Uistime sa, že prevádzkové skripty sú spustiteľné
+for script in update.sh auto_backup.sh test.sh; do
+    if [ -f "${APP_DIR}/${script}" ]; then
+        chmod +x "${APP_DIR}/${script}" || true
+    fi
+done
 
 # Uisti sa, že templates adresár existuje
-mkdir -p "${APP_DIR}/templates"# Python venv a závislosti
+mkdir -p "${APP_DIR}/templates"
+
+# Python venv a závislosti
 msg_info "Vytváram Python virtualenv..."
 python3 -m venv "${APP_DIR}/venv"
 msg_ok "Virtualenv vytvorený."

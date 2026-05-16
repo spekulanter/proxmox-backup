@@ -11,17 +11,34 @@ venv/
 .venv/
 ENV/
 env/
+.env
+.env.*
+!.env.example
 
 # OS/Editor
 .DS_Store
 .idea/
 .vscode/
+*.swp
+*.swo
+
+# Codex local state; keep project agent profiles tracked
+.codex/*
+!.codex/agents/
+!.codex/agents/**
 
 # App runtime data (local configs and backups)
 backup_config.json
 backup_history.json
 *.tar.gz
 *.log
+logs/
+backups/
+tmp/
+*.bak
+instance/
+*.sqlite
+*.sqlite-*
 
 # Node/Vite artifacts (if present)
 node_modules/
@@ -29,5 +46,7 @@ dist/
 .next/
 build/
 
-# systemd service files (created during install)
-/etc/systemd/system/proxmox-backup.service
+# Python tooling
+.pytest_cache/
+.coverage
+htmlcov/

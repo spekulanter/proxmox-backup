@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from flask import Flask, request, jsonify, redirect, url_for, flash, send_file
+from flask import Flask, request, jsonify, redirect, url_for, flash, render_template
 import os
 import json
 import tarfile
@@ -120,7 +120,7 @@ def get_file_size(filepath):
 @app.route('/')
 def index():
     """Hlavná stránka"""
-    return send_file('/opt/index.html')
+    return render_template('index.html')
 
 @app.route('/api/config')
 def get_config():
@@ -217,6 +217,9 @@ def create_backup_api():
             
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.remove(temp_path)
 
 @app.route('/test_ftp', methods=['POST'])
 def test_ftp():

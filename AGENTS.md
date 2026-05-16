@@ -11,7 +11,7 @@ Projekt je určený hlavne na beh v LXC kontajneri na Proxmoxe, typicky ako root
 ## Technologický stack
 
 - Backend: Python 3, Flask
-- Frontend: samostatné `index.html` rozhranie s Bootstrap štýlom
+- Frontend: samostatné `templates/index.html` rozhranie s Tailwind CDN štýlom
 - Persistencia: lokálne JSON súbory
 - Deployment: `install_in_lxc.sh`, `update.sh`, systemd, gunicorn
 - Automatizácia záloh: `auto_backup.sh`
@@ -19,7 +19,7 @@ Projekt je určený hlavne na beh v LXC kontajneri na Proxmoxe, typicky ako root
 ## Dôležité súbory
 
 - `app.py` - hlavná Flask aplikácia a API endpointy
-- `index.html` - webové rozhranie aplikácie
+- `templates/index.html` - webové rozhranie aplikácie
 - `requirements.txt` - Python závislosti
 - `install_in_lxc.sh` - idempotentný inštalačný/update skript pre LXC
 - `update.sh` - manuálny update nainštalovanej aplikácie
@@ -101,6 +101,18 @@ bash -n test.sh
 ```
 
 Pri zmenách frontendu over, že hlavná stránka stále obsahuje názov aplikácie a vie volať existujúce API endpointy.
+
+## Subagenti
+
+Projekt má odporúčané subagent profily v `.codex/agents/`:
+
+- `backend-flask` - Flask API, konfigurácia a backup workflow
+- `frontend-ui` - single-file UI v `templates/index.html`
+- `lxc-deploy` - install/update skripty, systemd a LXC prevádzka
+- `backup-security` - správnosť záloh, FTP a citlivé údaje
+- `qa-reviewer` - review, smoke testy a regresné riziká
+
+Pri väčšej úlohe použi najmenší praktický počet subagentov. Nepúšťaj viac agentov na rovnaký zápisový rozsah naraz.
 
 ## Nasadenie a prevádzka
 
