@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, flash
+from flask import Flask, request, jsonify, redirect, url_for, flash, send_file
 import os
 import json
 import tarfile
@@ -120,6 +120,11 @@ def get_file_size(filepath):
 @app.route('/')
 def index():
     """Hlavná stránka"""
+    return send_file('/opt/index.html')
+
+@app.route('/api/config')
+def get_config():
+    """API endpoint pre konfiguráciu"""
     config = load_config()
     backup_history = load_backup_history()
     
@@ -127,12 +132,91 @@ def index():
     critical_selected = sum(1 for f in config['backup_files'] if f['critical'] and f['selected'])
     critical_total = sum(1 for f in config['backup_files'] if f['critical'])
     
-    return render_template('index.html', 
-                         config=config, 
-                         backup_history=backup_history,
-                         selected_count=selected_count,
-                         critical_selected=critical_selected,
-                         critical_total=critical_total)
+    return jsonify({
+        'config': config,
+        'backup_history': backup_history,
+        'selected_count': selected_count,
+        'critical_selected': critical_selected,
+        'critical_total': critical_total
+    })
+
+@app.route('/api/files')
+def get_files():
+    """API endpoint pre zoznam súborov na zálohovanie"""
+    config = load_config()
+    return jsonify(config['backup_files'])
+
+@app.route('/api/files/<int:file_index>/toggle', methods=['POST'])
+def toggle_file_api(file_index):
+    """API endpoint pre prepnutie výberu súboru"""
+    config = load_config()
+    if 0 <= file_index < len(config['backup_files']):
+        config['backup_files'][file_index]['selected'] = not config['backup_files'][file_index]['selected']
+        save_config(config)
+        return jsonify({'success': True, 'selected': config['backup_files'][file_index]['selected']})
+    return jsonify({'success': False, 'error': 'Invalid file index'}), 400
+
+@app.route('/api/test-ftp', methods=['POST'])
+def test_ftp_api():
+    """API endpoint pre test FTP pripojenia"""
+    data = request.get_json()
+    success, message = test_ftp_connection(
+        data['host'], 
+        data['username'], 
+        data['password'], 
+        data.get('port', 21)
+    )
+    return jsonify({'success': success, 'message': message})
+
+@app.route('/api/backup', methods=['POST'])
+def create_backup_api():
+    """API endpoint pre vytvorenie zálohy"""
+    data = request.get_json()
+    selected_files = data.get('files', [])
+    ftp_config = data.get('ftp_config', {})
+    
+    if not selected_files:
+        return jsonify({'success': False, 'error': 'No files selected'}), 400
+    
+    if not ftp_config.get('host'):
+        return jsonify({'success': False, 'error': 'FTP configuration missing'}), 400
+    
+    try:
+        # Create backup filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"proxmox_backup_{timestamp}.tar.gz"
+        temp_path = f"/tmp/{backup_filename}"
+        
+        # Get file objects for selected paths
+        config = load_config()
+        selected_file_objects = [f for f in config['backup_files'] if f['path'] in selected_files]
+        
+        # Create backup archive
+        create_backup_archive(selected_file_objects, temp_path)
+        
+        # Upload to FTP
+        success, message = upload_to_ftp(temp_path, ftp_config)
+        
+        if success:
+            # Save to backup history
+            history = load_backup_history()
+            history.append({
+                'filename': backup_filename,
+                'timestamp': datetime.now().isoformat(),
+                'files': selected_files,
+                'size': get_file_size(temp_path)
+            })
+            save_backup_history(history)
+            
+            # Clean up temp file
+            os.remove(temp_path)
+            
+            return jsonify({'success': True, 'message': 'Backup created successfully'})
+        else:
+            return jsonify({'success': False, 'error': message}), 500
+            
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/test_ftp', methods=['POST'])
 def test_ftp():

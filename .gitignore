@@ -17,7 +17,7 @@ env/
 .idea/
 .vscode/
 
-# App runtime data
+# App runtime data (local configs and backups)
 backup_config.json
 backup_history.json
 *.tar.gz
@@ -26,3 +26,8 @@ backup_history.json
 # Node/Vite artifacts (if present)
 node_modules/
 dist/
+.next/
+build/
+
+# systemd service files (created during install)
+/etc/systemd/system/proxmox-backup.service

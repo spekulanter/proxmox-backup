@@ -97,13 +97,14 @@ fi
 
 # Ak chýba templates/index.html, ale existuje koreňový index.html, presuň ho
 if [ ! -f "${APP_DIR}/templates/index.html" ] && [ -f "${APP_DIR}/index.html" ]; then
-    msg_info "Presúvam index.html do templates/ pre Flask..."
-    mkdir -p "${APP_DIR}/templates"
-    mv "${APP_DIR}/index.html" "${APP_DIR}/templates/index.html"
-    msg_ok "Šablóna premiestnená."
+  msg_info "Presúvam index.html do templates/ pre Flask..."
+  mkdir -p "${APP_DIR}/templates"
+  mv "${APP_DIR}/index.html" "${APP_DIR}/templates/index.html"
+  msg_ok "Šablóna premiestnená."
 fi
 
-# Python venv a závislosti
+# Uisti sa, že templates adresár existuje
+mkdir -p "${APP_DIR}/templates"# Python venv a závislosti
 msg_info "Vytváram Python virtualenv..."
 python3 -m venv "${APP_DIR}/venv"
 msg_ok "Virtualenv vytvorený."

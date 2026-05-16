@@ -1,19 +1,596 @@
 <!DOCTYPE html>
-<html lang="en">
-
+<html lang="sk" class="h-full">
 <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Proxmox Backup Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link href="/src/main.css" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+                    },
+                    colors: {
+                        background: 'hsl(210 50% 96%)',
+                        foreground: 'hsl(222.2 84% 4.9%)',
+                        card: 'hsl(0 0% 100%)',
+                        'card-foreground': 'hsl(222.2 84% 4.9%)',
+                        popover: 'hsl(0 0% 100%)',
+                        'popover-foreground': 'hsl(222.2 84% 4.9%)',
+                        primary: 'hsl(221.2 83.2% 53.3%)',
+                        'primary-foreground': 'hsl(210 40% 98%)',
+                        secondary: 'hsl(210 40% 96%)',
+                        'secondary-foreground': 'hsl(222.2 84% 4.9%)',
+                        muted: 'hsl(210 40% 96%)',
+                        'muted-foreground': 'hsl(215.4 16.3% 46.9%)',
+                        accent: 'hsl(210 40% 96%)',
+                        'accent-foreground': 'hsl(222.2 84% 4.9%)',
+                        destructive: 'hsl(0 84.2% 60.2%)',
+                        'destructive-foreground': 'hsl(210 40% 98%)',
+                        border: 'hsl(214.3 31.8% 91.4%)',
+                        input: 'hsl(214.3 31.8% 91.4%)',
+                        ring: 'hsl(221.2 83.2% 53.3%)',
+                    },
+                    borderRadius: {
+                        lg: '0.5rem',
+                        md: '0.375rem',
+                        sm: '0.25rem',
+                    },
+                }
+            }
+        }
+    </script>
+    <style>
+        .shadow-xs { box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05); }
+        .ring-ring { --tw-ring-color: hsl(221.2 83.2% 53.3% / 0.2); }
+        .focus-visible\:ring-ring\/50:focus-visible { --tw-ring-color: hsl(221.2 83.2% 53.3% / 0.5); }
+        .focus-visible\:ring-\[3px\]:focus-visible { --tw-ring-width: 3px; }
+    </style>
 </head>
+<body class="min-h-screen bg-background font-sans antialiased">
+    <div class="min-h-screen bg-background p-4">
+        <div class="max-w-6xl mx-auto space-y-6">
+            <!-- Header -->
+            <div class="text-center space-y-2">
+                <h1 class="text-3xl font-bold text-foreground flex items-center justify-center gap-2">
+                    <svg class="w-9 h-9 text-primary" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/>
+                    </svg>
+                    Proxmox Backup Manager
+                </h1>
+                <p class="text-muted-foreground text-lg">
+                    Správca záloh pre Proxmox VE servery
+                </p>
+            </div>
 
-<body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+            <!-- Tabs -->
+            <div class="flex flex-col gap-6">
+                <div class="bg-muted text-muted-foreground inline-flex h-10 w-fit items-center justify-center rounded-xl p-1 mx-auto gap-4 border border-border shadow-sm">
+                    <button onclick="showTab('backup')" id="tab-backup" class="data-[state=active]:bg-background dark:data-[state=active]:text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:outline-ring inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:shadow-md [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 bg-background text-foreground shadow-md border-border min-w-[120px]">
+                        Zálohovanie
+                    </button>
+                    <button onclick="showTab('files')" id="tab-files" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
+                        Súbory
+                    </button>
+                    <button onclick="showTab('settings')" id="tab-settings" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
+                        Nastavenia
+                    </button>
+                    <button onclick="showTab('history')" id="tab-history" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
+                        História
+                    </button>
+                </div>
+
+                <!-- Tab Content: Zálohovanie -->
+                <div id="content-backup" class="space-y-6">
+                    <div class="grid gap-6 md:grid-cols-2">
+                        <div class="bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm">
+                            <div class="grid auto-rows-min grid-rows-[auto_auto] items-start gap-1.5 px-6">
+                                <div class="leading-none font-semibold flex items-center gap-2">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 19l3 3m0 0l3-3m-3 3V10"/>
+                                    </svg>
+                                    Manuálna záloha
+                                </div>
+                                <div class="text-muted-foreground text-sm">
+                                    Vytvorte zálohu okamžite
+                                </div>
+                            </div>
+                            <div class="px-6 space-y-4">
+                                <div class="space-y-2">
+                                    <div class="flex justify-between text-sm">
+                                        <span>Vybrané súbory:</span>
+                                        <span class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80" id="files-count">0 z 8</span>
+                                    </div>
+                                    <div class="flex justify-between text-sm">
+                                        <span>Kritické súbory:</span>
+                                        <span class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/80" id="critical-count">0 z 4</span>
+                                    </div>
+                                </div>
+
+                                <div id="backup-progress" class="space-y-2 hidden">
+                                    <div class="flex justify-between text-sm">
+                                        <span>Pokrok zálohovania:</span>
+                                        <span id="progress-text">0%</span>
+                                    </div>
+                                    <div class="relative h-2 w-full overflow-hidden rounded-full bg-secondary">
+                                        <div id="progress-bar" class="h-full w-0 flex-1 bg-primary transition-all duration-300 ease-in-out"></div>
+                                    </div>
+                                </div>
+
+                                <button onclick="createBackup()" id="backup-btn" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow-xs hover:bg-primary/90 h-9 px-4 py-2 w-full">
+                                    Vytvoriť zálohu teraz
+                                </button>
+
+                                <div id="critical-warning" class="flex items-center gap-2 rounded-lg border border-destructive/50 px-4 py-3 text-sm text-destructive hidden">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+                                    </svg>
+                                    <div>Niektoré kritické súbory nie sú vybrané. Záloha nebude kompletná.</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm">
+                            <div class="grid auto-rows-min grid-rows-[auto_auto] items-start gap-1.5 px-6">
+                                <div class="leading-none font-semibold flex items-center gap-2">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                    </svg>
+                                    Automatická záloha
+                                </div>
+                                <div class="text-muted-foreground text-sm">
+                                    Nastavte pravidelnú zálohu
+                                </div>
+                            </div>
+                            <div class="px-6 space-y-4">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-sm font-medium">Povoliť automatickú zálohu</span>
+                                    <label class="relative inline-flex items-center cursor-pointer">
+                                        <input type="checkbox" id="auto-backup" class="sr-only peer">
+                                        <div class="peer data-[state=checked]:bg-primary data-[state=unchecked]:bg-input focus-visible:border-ring focus-visible:ring-ring/50 inline-flex h-[1.15rem] w-8 shrink-0 items-center rounded-full border border-transparent shadow-xs transition-all outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 bg-input peer-checked:bg-primary">
+                                            <div class="bg-background pointer-events-none block size-4 rounded-full ring-0 transition-transform peer-checked:translate-x-[calc(100%-2px)] translate-x-0"></div>
+                                        </div>
+                                    </label>
+                                </div>
+
+                                <div id="auto-backup-settings" class="space-y-3 hidden">
+                                    <div>
+                                        <label for="frequency" class="flex items-center gap-2 text-sm leading-none font-medium">Frekvencia</label>
+                                        <select id="frequency" class="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] mt-1">
+                                            <option value="weekly">Týždenne</option>
+                                            <option value="monthly">Mesačne</option>
+                                        </select>
+                                    </div>
+                                    
+                                    <div class="flex items-center gap-2 rounded-lg border border-border px-4 py-3 text-sm">
+                                        <svg class="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                                        </svg>
+                                        <div>Ďalšia automatická záloha: <span id="next-backup">Nedeľa 02:00</span></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab Content: Súbory -->
+                <div id="content-files" class="space-y-6 hidden">
+                    <div class="bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm">
+                        <div class="grid auto-rows-min grid-rows-[auto_auto] items-start gap-1.5 px-6">
+                            <div class="leading-none font-semibold flex items-center gap-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                </svg>
+                                Výber súborov na zálohovanie
+                            </div>
+                            <div class="text-muted-foreground text-sm">
+                                Vyberte súbory a priečinky, ktoré chcete zálohovať
+                            </div>
+                        </div>
+                        <div class="px-6">
+                            <div class="space-y-3" id="backup-files-list">
+                                <!-- Files will be loaded here -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab Content: Nastavenia -->
+                <div id="content-settings" class="space-y-6 hidden">
+                    <div class="bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm">
+                        <div class="grid auto-rows-min grid-rows-[auto_auto] items-start gap-1.5 px-6">
+                            <div class="leading-none font-semibold flex items-center gap-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                                </svg>
+                                FTP Server nastavenia
+                            </div>
+                            <div class="text-muted-foreground text-sm">
+                                Nakonfigurujte pripojenie k FTP serveru pre ukladanie záloh
+                            </div>
+                        </div>
+                        <div class="px-6 space-y-4">
+                            <div class="grid gap-4 md:grid-cols-2">
+                                <div>
+                                    <label for="ftp-host" class="flex items-center gap-2 text-sm leading-none font-medium">IP Adresa / Hostiteľ *</label>
+                                    <input type="text" id="ftp-host" placeholder="192.168.1.100" class="file:text-foreground placeholder:text-muted-foreground flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                                </div>
+                                <div>
+                                    <label for="ftp-port" class="flex items-center gap-2 text-sm leading-none font-medium">Port</label>
+                                    <input type="number" id="ftp-port" placeholder="21" class="file:text-foreground placeholder:text-muted-foreground flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                                </div>
+                                <div>
+                                    <label for="ftp-username" class="flex items-center gap-2 text-sm leading-none font-medium">Používateľské meno *</label>
+                                    <input type="text" id="ftp-username" placeholder="backup_user" class="file:text-foreground placeholder:text-muted-foreground flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                                </div>
+                                <div>
+                                    <label for="ftp-password" class="flex items-center gap-2 text-sm leading-none font-medium">Heslo</label>
+                                    <input type="password" id="ftp-password" placeholder="••••••••" class="file:text-foreground placeholder:text-muted-foreground flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                                </div>
+                            </div>
+
+                            <div class="border-t"></div>
+
+                            <div class="flex items-center gap-3">
+                                <button onclick="testFtpConnection()" id="test-connection-btn" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-xs hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2">
+                                    Test pripojenia
+                                </button>
+                                
+                                <div id="connection-status" class="flex items-center gap-1 text-sm hidden">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                                    </svg>
+                                    <span>Pripojenie úspešné</span>
+                                </div>
+
+                                <div id="connection-error" class="flex items-center gap-1 text-destructive text-sm hidden">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+                                    </svg>
+                                    <span>Chyba pripojenia</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab Content: História -->
+                <div id="content-history" class="space-y-6 hidden">
+                    <div class="bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm">
+                        <div class="grid auto-rows-min grid-rows-[auto_auto] items-start gap-1.5 px-6">
+                            <div class="leading-none font-semibold flex items-center gap-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+                                </svg>
+                                História záloh
+                            </div>
+                            <div class="text-muted-foreground text-sm">
+                                Prehľad vytvorených záloh na FTP serveri
+                            </div>
+                        </div>
+                        <div class="px-6">
+                            <div id="backup-history-list" class="space-y-3">
+                                <div class="text-center py-8 text-muted-foreground">
+                                    <svg class="w-12 h-12 mx-auto mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"/>
+                                    </svg>
+                                    <p>Zatiaľ neboli vytvorené žiadne zálohy</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript -->
+    <script>
+        // Global state
+        let backupFiles = [];
+        let appConfig = {};
+        
+        // Initialize app
+        document.addEventListener('DOMContentLoaded', function() {
+            loadConfig();
+            loadBackupFiles();
+            
+            // Auto backup toggle
+            const autoBackupToggle = document.getElementById('auto-backup');
+            const autoBackupSettings = document.getElementById('auto-backup-settings');
+            
+            autoBackupToggle.addEventListener('change', function() {
+                if (this.checked) {
+                    autoBackupSettings.classList.remove('hidden');
+                } else {
+                    autoBackupSettings.classList.add('hidden');
+                }
+            });
+            
+            // Frequency change
+            const frequencySelect = document.getElementById('frequency');
+            const nextBackupSpan = document.getElementById('next-backup');
+            
+            frequencySelect.addEventListener('change', function() {
+                if (this.value === 'weekly') {
+                    nextBackupSpan.textContent = 'Nedeľa 02:00';
+                } else {
+                    nextBackupSpan.textContent = '1. deň v mesiaci 02:00';
+                }
+            });
+        });
+
+        // Load configuration from API
+        async function loadConfig() {
+            try {
+                const response = await fetch('/api/config');
+                const data = await response.json();
+                appConfig = data.config;
+                
+                // Populate FTP settings
+                document.getElementById('ftp-host').value = appConfig.ftp_config?.host || '';
+                document.getElementById('ftp-port').value = appConfig.ftp_config?.port || 21;
+                document.getElementById('ftp-username').value = appConfig.ftp_config?.username || '';
+                document.getElementById('ftp-password').value = appConfig.ftp_config?.password || '';
+                
+            } catch (error) {
+                console.error('Error loading config:', error);
+            }
+        }
+
+        // Tab management
+        function showTab(tabName) {
+            // Hide all content
+            document.querySelectorAll('[id^="content-"]').forEach(el => el.classList.add('hidden'));
+            
+            // Remove active state from all tabs
+            document.querySelectorAll('[id^="tab-"]').forEach(el => {
+                el.classList.remove('bg-background', 'text-foreground', 'shadow-md', 'border-border');
+                el.classList.add('text-foreground', 'hover:bg-background/50', 'hover:border-border/50');
+            });
+            
+            // Show selected content
+            document.getElementById('content-' + tabName).classList.remove('hidden');
+            
+            // Add active state to selected tab
+            const activeTab = document.getElementById('tab-' + tabName);
+            activeTab.classList.remove('hover:bg-background/50', 'hover:border-border/50');
+            activeTab.classList.add('bg-background', 'text-foreground', 'shadow-md', 'border-border');
+        }
+
+        // Load backup files
+        async function loadBackupFiles() {
+            try {
+                const response = await fetch('/api/files');
+                const files = await response.json();
+                backupFiles = files;
+                renderBackupFiles();
+                updateCounts();
+            } catch (error) {
+                console.error('Error loading backup files:', error);
+            }
+        }
+
+        // Toggle file selection
+        async function toggleFileSelection(index) {
+            try {
+                const response = await fetch(`/api/files/${index}/toggle`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    const result = await response.json();
+                    backupFiles[index].selected = result.selected;
+                    updateCounts();
+                } else {
+                    console.error('Error toggling file selection');
+                }
+            } catch (error) {
+                console.error('Error toggling file selection:', error);
+            }
+        }
+
+        // Render backup files list
+        function renderBackupFiles() {
+            const container = document.getElementById('backup-files-list');
+            container.innerHTML = '';
+            
+            backupFiles.forEach((file, index) => {
+                const fileDiv = document.createElement('div');
+                fileDiv.className = 'flex items-start gap-3 p-3 rounded-lg border';
+                
+                fileDiv.innerHTML = `
+                    <label class="relative inline-flex items-center cursor-pointer">
+                        <input type="checkbox" data-path="${file.path}" data-index="${index}" ${file.selected ? 'checked' : ''} onchange="toggleFileSelection(${index})" class="sr-only peer file-checkbox">
+                        <div class="peer focus-visible:border-ring focus-visible:ring-ring/50 border-primary aria-checked:bg-primary aria-checked:text-primary-foreground peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2 peer-disabled:cursor-not-allowed peer-disabled:opacity-50 aria-checked:border-primary h-4 w-4 shrink-0 rounded-sm border border-border bg-background shadow peer-checked:bg-primary peer-checked:border-primary">
+                            <svg class="w-3 h-3 text-primary-foreground opacity-0 peer-checked:opacity-100" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                            </svg>
+                        </div>
+                    </label>
+                    <div class="flex-1 space-y-1">
+                        <div class="flex items-center gap-2">
+                            <span class="font-medium text-sm">${file.name}</span>
+                            ${file.critical ? '<span class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/80">Kritické</span>' : ''}
+                        </div>
+                        <p class="text-sm text-muted-foreground">${file.description}</p>
+                        <p class="text-xs text-muted-foreground font-mono">${file.path}</p>
+                    </div>
+                `;
+                
+                container.appendChild(fileDiv);
+            });
+        }
+
+        // Update counts
+        function updateCounts() {
+            const checkboxes = document.querySelectorAll('.file-checkbox');
+            const selectedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
+            const totalCount = checkboxes.length;
+            
+            const criticalBoxes = Array.from(checkboxes).filter(cb => {
+                const path = cb.dataset.path;
+                const file = backupFiles.find(f => f.path === path);
+                return file && file.critical;
+            });
+            const selectedCritical = criticalBoxes.filter(cb => cb.checked).length;
+            const totalCritical = criticalBoxes.length;
+            
+            document.getElementById('files-count').textContent = `${selectedCount} z ${totalCount}`;
+            document.getElementById('critical-count').textContent = `${selectedCritical} z ${totalCritical}`;
+            
+            // Update badge colors
+            const filesCountBadge = document.getElementById('files-count');
+            const criticalCountBadge = document.getElementById('critical-count');
+            
+            if (selectedCount > 0) {
+                filesCountBadge.className = 'inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors border-transparent bg-primary text-primary-foreground hover:bg-primary/80';
+            } else {
+                filesCountBadge.className = 'inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80';
+            }
+            
+            if (selectedCritical === totalCritical) {
+                criticalCountBadge.className = 'inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors border-transparent bg-primary text-primary-foreground hover:bg-primary/80';
+            } else {
+                criticalCountBadge.className = 'inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/80';
+            }
+            
+            // Show/hide warning
+            const warning = document.getElementById('critical-warning');
+            if (selectedCritical < totalCritical && selectedCount > 0) {
+                warning.classList.remove('hidden');
+            } else {
+                warning.classList.add('hidden');
+            }
+            
+            // Update backup button state
+            const backupBtn = document.getElementById('backup-btn');
+            const hasHost = document.getElementById('ftp-host').value.trim() !== '';
+            
+            if (selectedCount === 0 || !hasHost) {
+                backupBtn.disabled = true;
+                backupBtn.classList.add('opacity-50', 'cursor-not-allowed');
+            } else {
+                backupBtn.disabled = false;
+                backupBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+        }
+
+        // Create backup
+        async function createBackup() {
+            const checkboxes = document.querySelectorAll('.file-checkbox:checked');
+            const selectedFiles = Array.from(checkboxes).map(cb => cb.dataset.path);
+            
+            if (selectedFiles.length === 0) {
+                alert('Prosím vyberte súbory na zálohovanie');
+                return;
+            }
+            
+            const backupBtn = document.getElementById('backup-btn');
+            const progressDiv = document.getElementById('backup-progress');
+            const progressBar = document.getElementById('progress-bar');
+            const progressText = document.getElementById('progress-text');
+            
+            backupBtn.textContent = 'Vytváram zálohu...';
+            backupBtn.disabled = true;
+            progressDiv.classList.remove('hidden');
+            
+            try {
+                const response = await fetch('/api/backup', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        files: selectedFiles,
+                        ftp_config: {
+                            host: document.getElementById('ftp-host').value,
+                            port: parseInt(document.getElementById('ftp-port').value),
+                            username: document.getElementById('ftp-username').value,
+                            password: document.getElementById('ftp-password').value
+                        }
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Backup failed');
+                }
+                
+                // Simulate progress
+                for (let i = 0; i <= 100; i += 10) {
+                    progressBar.style.width = i + '%';
+                    progressText.textContent = i + '%';
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+                
+                alert('Záloha bola úspešne vytvorená!');
+                
+            } catch (error) {
+                console.error('Backup error:', error);
+                alert('Chyba pri vytváraní zálohy: ' + error.message);
+            } finally {
+                backupBtn.textContent = 'Vytvoriť zálohu teraz';
+                backupBtn.disabled = false;
+                progressDiv.classList.add('hidden');
+                progressBar.style.width = '0%';
+                progressText.textContent = '0%';
+            }
+        }
+
+        // Test FTP connection
+        async function testFtpConnection() {
+            const btn = document.getElementById('test-connection-btn');
+            const statusDiv = document.getElementById('connection-status');
+            const errorDiv = document.getElementById('connection-error');
+            
+            btn.textContent = 'Testujem...';
+            btn.disabled = true;
+            statusDiv.classList.add('hidden');
+            errorDiv.classList.add('hidden');
+            
+            try {
+                const response = await fetch('/api/test-ftp', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        host: document.getElementById('ftp-host').value,
+                        port: parseInt(document.getElementById('ftp-port').value),
+                        username: document.getElementById('ftp-username').value,
+                        password: document.getElementById('ftp-password').value
+                    })
+                });
+                
+                if (response.ok) {
+                    statusDiv.classList.remove('hidden');
+                } else {
+                    errorDiv.classList.remove('hidden');
+                }
+                
+            } catch (error) {
+                console.error('Connection test error:', error);
+                errorDiv.classList.remove('hidden');
+            } finally {
+                btn.textContent = 'Test pripojenia';
+                btn.disabled = false;
+            }
+        }
+
+        // Update backup button state when FTP config changes
+        document.addEventListener('DOMContentLoaded', function() {
+            const ftpInputs = ['ftp-host', 'ftp-port', 'ftp-username', 'ftp-password'];
+            ftpInputs.forEach(id => {
+                document.getElementById(id).addEventListener('input', updateCounts);
+            });
+        });
+    </script>
 </body>
-
 </html>
