@@ -99,6 +99,8 @@ done
 
 # Uisti sa, že templates adresár existuje
 mkdir -p "${APP_DIR}/templates"
+mkdir -p "${APP_DIR}/backups"
+chmod 700 "${APP_DIR}/backups" || true
 
 # Python venv a závislosti
 msg_info "Vytváram Python virtualenv..."

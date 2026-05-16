@@ -21,5 +21,8 @@ pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 deactivate
 
+mkdir -p "${APP_DIR}/backups"
+chmod 700 "${APP_DIR}/backups" || true
+
 systemctl start "${SERVICE_NAME}.service"
 echo "✅ Aplikácia bola úspešne aktualizovaná."

@@ -27,6 +27,9 @@ env/
 !.codex/agents/
 !.codex/agents/**
 
+# Local/reference notes with environment-specific IPs and docs
+Zalohovanie AUTO.FS na QNAP a WD/
+
 # App runtime data (local configs and backups)
 backup_config.json
 backup_history.json

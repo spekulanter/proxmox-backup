@@ -104,11 +104,11 @@
                                 <div class="space-y-2">
                                     <div class="flex justify-between text-sm">
                                         <span>Vybrané súbory:</span>
-                                        <span class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80" id="files-count">0 z 8</span>
+                                        <span class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80" id="files-count">0 z 0</span>
                                     </div>
                                     <div class="flex justify-between text-sm">
                                         <span>Kritické súbory:</span>
-                                        <span class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/80" id="critical-count">0 z 4</span>
+                                        <span class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/80" id="critical-count">0 z 0</span>
                                     </div>
                                 </div>
 
@@ -207,6 +207,74 @@
                         <div class="grid auto-rows-min grid-rows-[auto_auto] items-start gap-1.5 px-6">
                             <div class="leading-none font-semibold flex items-center gap-2">
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z"/>
+                                </svg>
+                                Zdroj Proxmoxu
+                            </div>
+                            <div class="text-muted-foreground text-sm">
+                                LXC režim používa SSH prístup na Proxmox host
+                            </div>
+                        </div>
+                        <div class="px-6 space-y-4">
+                            <div>
+                                <label for="source-mode" class="flex items-center gap-2 text-sm leading-none font-medium">Režim zdroja</label>
+                                <select id="source-mode" class="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] mt-1">
+                                    <option value="remote_ssh">Remote SSH z LXC</option>
+                                    <option value="local">Lokálny filesystem</option>
+                                </select>
+                            </div>
+
+                            <div id="ssh-settings" class="space-y-4">
+                                <div class="grid gap-4 md:grid-cols-2">
+                                    <div>
+                                        <label for="ssh-host" class="flex items-center gap-2 text-sm leading-none font-medium">Proxmox IP / Hostiteľ *</label>
+                                        <input type="text" id="ssh-host" placeholder="192.168.1.10" class="file:text-foreground placeholder:text-muted-foreground flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                                    </div>
+                                    <div>
+                                        <label for="ssh-port" class="flex items-center gap-2 text-sm leading-none font-medium">SSH port</label>
+                                        <input type="number" id="ssh-port" placeholder="22" class="file:text-foreground placeholder:text-muted-foreground flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                                    </div>
+                                    <div>
+                                        <label for="ssh-username" class="flex items-center gap-2 text-sm leading-none font-medium">SSH používateľ *</label>
+                                        <input type="text" id="ssh-username" placeholder="root" class="file:text-foreground placeholder:text-muted-foreground flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                                    </div>
+                                    <div>
+                                        <label for="ssh-password" class="flex items-center gap-2 text-sm leading-none font-medium">SSH heslo *</label>
+                                        <input type="password" id="ssh-password" placeholder="••••••••" class="file:text-foreground placeholder:text-muted-foreground flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                                    </div>
+                                </div>
+
+                                <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                                    SSH heslo sa ukladá do lokálneho <span class="font-mono">backup_config.json</span>. Súbor má práva 0600, ale LXC aj appku ber ako citlivé miesto.
+                                </div>
+
+                                <div class="flex flex-wrap items-center gap-3">
+                                    <button onclick="testSshConnection()" id="test-ssh-btn" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-xs hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2">
+                                        Test SSH
+                                    </button>
+
+                                    <div id="ssh-status" class="flex items-center gap-1 text-sm hidden">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                                        </svg>
+                                        <span>SSH pripojenie úspešné</span>
+                                    </div>
+
+                                    <div id="ssh-error" class="flex items-center gap-1 text-destructive text-sm hidden">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+                                        </svg>
+                                        <span id="ssh-error-text">Chyba SSH pripojenia</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm">
+                        <div class="grid auto-rows-min grid-rows-[auto_auto] items-start gap-1.5 px-6">
+                            <div class="leading-none font-semibold flex items-center gap-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
                                 </svg>
@@ -234,6 +302,11 @@
                                     <label for="ftp-password" class="flex items-center gap-2 text-sm leading-none font-medium">Heslo</label>
                                     <input type="password" id="ftp-password" placeholder="••••••••" class="file:text-foreground placeholder:text-muted-foreground flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
                                 </div>
+                                <div class="md:col-span-2">
+                                    <label for="ftp-remote-dir" class="flex items-center gap-2 text-sm leading-none font-medium">Cieľový adresár na FTP</label>
+                                    <input type="text" id="ftp-remote-dir" placeholder="/backups/proxmox alebo nechaj prázdne" class="file:text-foreground placeholder:text-muted-foreground flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                                    <p class="mt-1 text-xs text-muted-foreground">Ak FTP login skončí v adresári bez práva zápisu, nastav tu konkrétny zapisovateľný priečinok.</p>
+                                </div>
                             </div>
 
                             <div class="border-t"></div>
@@ -256,6 +329,15 @@
                                     </svg>
                                     <span>Chyba pripojenia</span>
                                 </div>
+                            </div>
+
+                            <div class="border-t"></div>
+
+                            <div class="flex flex-wrap items-center gap-3">
+                                <button onclick="saveSettings()" id="save-settings-btn" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground shadow-xs hover:bg-primary/90 h-9 px-4 py-2">
+                                    Uložiť nastavenia
+                                </button>
+                                <div id="settings-save-status" class="text-sm text-muted-foreground hidden">Nastavenia uložené</div>
                             </div>
                         </div>
                     </div>
@@ -296,11 +378,12 @@
         // Global state
         let backupFiles = [];
         let appConfig = {};
+        let backupCategories = [];
         
         // Initialize app
-        document.addEventListener('DOMContentLoaded', function() {
-            loadConfig();
-            loadBackupFiles();
+        document.addEventListener('DOMContentLoaded', async function() {
+            await loadConfig();
+            await loadBackupFiles();
             
             // Auto backup toggle
             const autoBackupToggle = document.getElementById('auto-backup');
@@ -333,12 +416,23 @@
                 const response = await fetch('/api/config');
                 const data = await response.json();
                 appConfig = data.config;
+                backupCategories = data.backup_categories || data.config.backup_categories || [];
                 
                 // Populate FTP settings
                 document.getElementById('ftp-host').value = appConfig.ftp_config?.host || '';
                 document.getElementById('ftp-port').value = appConfig.ftp_config?.port || 21;
                 document.getElementById('ftp-username').value = appConfig.ftp_config?.username || '';
                 document.getElementById('ftp-password').value = appConfig.ftp_config?.password || '';
+                document.getElementById('ftp-remote-dir').value = appConfig.ftp_config?.remote_dir || '';
+
+                const sourceConfig = appConfig.source_config || { mode: 'remote_ssh', ssh: {} };
+                document.getElementById('source-mode').value = sourceConfig.mode || 'remote_ssh';
+                document.getElementById('ssh-host').value = sourceConfig.ssh?.host || '';
+                document.getElementById('ssh-port').value = sourceConfig.ssh?.port || 22;
+                document.getElementById('ssh-username').value = sourceConfig.ssh?.username || 'root';
+                document.getElementById('ssh-password').value = sourceConfig.ssh?.password || '';
+                updateSourceModeVisibility();
+                renderBackupHistory(data.backup_history || []);
                 
             } catch (error) {
                 console.error('Error loading config:', error);
@@ -363,6 +457,39 @@
             const activeTab = document.getElementById('tab-' + tabName);
             activeTab.classList.remove('hover:bg-background/50', 'hover:border-border/50');
             activeTab.classList.add('bg-background', 'text-foreground', 'shadow-md', 'border-border');
+        }
+
+        function getFtpConfigFromForm() {
+            return {
+                host: document.getElementById('ftp-host').value.trim(),
+                port: parseInt(document.getElementById('ftp-port').value) || 21,
+                username: document.getElementById('ftp-username').value.trim(),
+                password: document.getElementById('ftp-password').value,
+                remote_dir: document.getElementById('ftp-remote-dir').value.trim()
+            };
+        }
+
+        function getSourceConfigFromForm() {
+            return {
+                mode: document.getElementById('source-mode').value || 'remote_ssh',
+                ssh: {
+                    host: document.getElementById('ssh-host').value.trim(),
+                    port: parseInt(document.getElementById('ssh-port').value) || 22,
+                    username: document.getElementById('ssh-username').value.trim() || 'root',
+                    password: document.getElementById('ssh-password').value
+                }
+            };
+        }
+
+        function updateSourceModeVisibility() {
+            const mode = document.getElementById('source-mode').value;
+            const sshSettings = document.getElementById('ssh-settings');
+            if (mode === 'remote_ssh') {
+                sshSettings.classList.remove('hidden');
+            } else {
+                sshSettings.classList.add('hidden');
+            }
+            updateCounts();
         }
 
         // Load backup files
@@ -401,8 +528,30 @@
         function renderBackupFiles() {
             const container = document.getElementById('backup-files-list');
             container.innerHTML = '';
-            
-            backupFiles.forEach((file, index) => {
+
+            const categories = backupCategories.length
+                ? backupCategories
+                : [{ id: 'system_config', name: 'Súbory', description: 'Vybrané položky zálohy' }];
+
+            categories.forEach(category => {
+                const filesInCategory = backupFiles
+                    .map((file, index) => ({ file, index }))
+                    .filter(entry => (entry.file.category || 'system_config') === category.id);
+
+                if (filesInCategory.length === 0) {
+                    return;
+                }
+
+                const section = document.createElement('div');
+                section.className = 'space-y-3';
+                section.innerHTML = `
+                    <div class="pt-2">
+                        <h3 class="text-sm font-semibold text-foreground">${escapeHtml(category.name)}</h3>
+                        <p class="text-xs text-muted-foreground">${escapeHtml(category.description || '')}</p>
+                    </div>
+                `;
+
+                filesInCategory.forEach(({ file, index }) => {
                 const fileDiv = document.createElement('div');
                 fileDiv.className = 'flex items-start gap-3 p-3 rounded-lg border';
                 
@@ -417,16 +566,43 @@
                     </label>
                     <div class="flex-1 space-y-1">
                         <div class="flex items-center gap-2">
-                            <span class="font-medium text-sm">${file.name}</span>
-                            ${file.critical ? '<span class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/80">Kritické</span>' : ''}
+                            <span class="font-medium text-sm">${escapeHtml(file.name)}</span>
+                            ${renderTags(file)}
                         </div>
-                        <p class="text-sm text-muted-foreground">${file.description}</p>
-                        <p class="text-xs text-muted-foreground font-mono">${file.path}</p>
+                        <p class="text-sm text-muted-foreground">${escapeHtml(file.description || '')}</p>
+                        <p class="text-xs text-muted-foreground font-mono break-all">${escapeHtml(file.path)}</p>
                     </div>
                 `;
                 
-                container.appendChild(fileDiv);
+                    section.appendChild(fileDiv);
+                });
+
+                container.appendChild(section);
             });
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;')
+                .replaceAll('"', '&quot;')
+                .replaceAll("'", '&#039;');
+        }
+
+        function renderTags(file) {
+            const tags = file.tags || [];
+            return tags.map(tag => {
+                const normalized = String(tag).toLowerCase();
+                let classes = 'border-transparent bg-secondary text-secondary-foreground';
+                if (normalized === 'critical') classes = 'border-transparent bg-destructive text-destructive-foreground';
+                if (normalized === 'recommended') classes = 'border-transparent bg-primary text-primary-foreground';
+                if (normalized === 'optional') classes = 'border-border bg-background text-muted-foreground';
+                if (normalized === 'large') classes = 'border-amber-200 bg-amber-50 text-amber-800';
+                if (normalized === 'sensitive') classes = 'border-red-200 bg-red-50 text-red-700';
+                if (normalized.includes('autofs') || normalized.includes('qnap')) classes = 'border-emerald-200 bg-emerald-50 text-emerald-800';
+                return `<span class="inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold ${classes}">${escapeHtml(tag)}</span>`;
+            }).join('');
         }
 
         // Update counts
@@ -472,9 +648,13 @@
             
             // Update backup button state
             const backupBtn = document.getElementById('backup-btn');
-            const hasHost = document.getElementById('ftp-host').value.trim() !== '';
+            const ftpConfig = getFtpConfigFromForm();
+            const sourceConfig = getSourceConfigFromForm();
+            const hasFtp = ftpConfig.host !== '' && ftpConfig.username !== '' && ftpConfig.password !== '';
+            const hasSource = sourceConfig.mode === 'local'
+                || (sourceConfig.ssh.host !== '' && sourceConfig.ssh.username !== '' && sourceConfig.ssh.password !== '');
             
-            if (selectedCount === 0 || !hasHost) {
+            if (selectedCount === 0 || !hasFtp || !hasSource) {
                 backupBtn.disabled = true;
                 backupBtn.classList.add('opacity-50', 'cursor-not-allowed');
             } else {
@@ -510,19 +690,18 @@
                     },
                     body: JSON.stringify({
                         files: selectedFiles,
-                        ftp_config: {
-                            host: document.getElementById('ftp-host').value,
-                            port: parseInt(document.getElementById('ftp-port').value),
-                            username: document.getElementById('ftp-username').value,
-                            password: document.getElementById('ftp-password').value
-                        }
+                        ftp_config: getFtpConfigFromForm(),
+                        source_config: getSourceConfigFromForm()
                     })
                 });
-                
+
+                const result = await response.json().catch(() => ({}));
+
                 if (!response.ok) {
-                    throw new Error('Backup failed');
+                    const localInfo = result.local_path ? `\nLokálny archív: ${result.local_path}` : '';
+                    throw new Error((result.error || 'Backup failed') + localInfo);
                 }
-                
+
                 // Simulate progress
                 for (let i = 0; i <= 100; i += 10) {
                     progressBar.style.width = i + '%';
@@ -530,7 +709,10 @@
                     await new Promise(resolve => setTimeout(resolve, 200));
                 }
                 
-                alert('Záloha bola úspešne vytvorená!');
+                const skippedCount = result.report?.skipped?.length || 0;
+                const includedCount = result.report?.included?.length || 0;
+                alert(`Záloha bola úspešne vytvorená.\nLokálna cesta: ${result.local_path || 'n/a'}\nFTP: ${result.ftp_status || 'n/a'}\nZahrnuté položky: ${includedCount}\nPreskočené položky: ${skippedCount}`);
+                await loadConfig();
                 
             } catch (error) {
                 console.error('Backup error:', error);
@@ -542,6 +724,49 @@
                 progressBar.style.width = '0%';
                 progressText.textContent = '0%';
             }
+        }
+
+        function renderBackupHistory(history) {
+            const container = document.getElementById('backup-history-list');
+            if (!container) return;
+
+            if (!history.length) {
+                container.innerHTML = `
+                    <div class="text-center py-8 text-muted-foreground">
+                        <svg class="w-12 h-12 mx-auto mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"/>
+                        </svg>
+                        <p>Zatiaľ neboli vytvorené žiadne zálohy</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = history.slice().reverse().map(entry => {
+                const timestamp = entry.timestamp || entry.date || '';
+                const included = entry.included_count ?? entry.files?.length ?? 0;
+                const skipped = entry.skipped_count ?? entry.skipped?.length ?? 0;
+                const ftpStatus = entry.ftp_status || entry.status || 'n/a';
+                const sourceLabel = entry.source_mode === 'remote_ssh'
+                    ? `SSH: ${entry.source_host || 'remote'}`
+                    : 'Lokálny zdroj';
+                return `
+                    <div class="rounded-lg border p-3 space-y-2">
+                        <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                            <div class="font-medium text-sm break-all">${escapeHtml(entry.filename || 'backup')}</div>
+                            <div class="text-xs text-muted-foreground">${escapeHtml(timestamp)}</div>
+                        </div>
+                        <div class="flex flex-wrap gap-2 text-xs">
+                            <span class="rounded-md bg-secondary px-2 py-1">Veľkosť: ${escapeHtml(entry.size || 'n/a')}</span>
+                            <span class="rounded-md bg-secondary px-2 py-1">${escapeHtml(sourceLabel)}</span>
+                            <span class="rounded-md ${ftpStatus === 'success' ? 'bg-secondary' : 'bg-amber-50 text-amber-800'} px-2 py-1">FTP: ${escapeHtml(ftpStatus)}</span>
+                            <span class="rounded-md bg-secondary px-2 py-1">Zahrnuté: ${included}</span>
+                            <span class="rounded-md ${skipped ? 'bg-amber-50 text-amber-800' : 'bg-secondary'} px-2 py-1">Preskočené: ${skipped}</span>
+                        </div>
+                        ${entry.local_path ? `<div class="text-xs text-muted-foreground font-mono break-all">${escapeHtml(entry.local_path)}</div>` : ''}
+                    </div>
+                `;
+            }).join('');
         }
 
         // Test FTP connection
@@ -561,22 +786,22 @@
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({
-                        host: document.getElementById('ftp-host').value,
-                        port: parseInt(document.getElementById('ftp-port').value),
-                        username: document.getElementById('ftp-username').value,
-                        password: document.getElementById('ftp-password').value
-                    })
+                    body: JSON.stringify(getFtpConfigFromForm())
                 });
                 
                 if (response.ok) {
+                    const result = await response.json().catch(() => ({}));
+                    statusDiv.querySelector('span').textContent = result.message || 'FTP upload test úspešný';
                     statusDiv.classList.remove('hidden');
                 } else {
+                    const result = await response.json().catch(() => ({}));
+                    errorDiv.querySelector('span').textContent = result.message || 'Chyba pripojenia';
                     errorDiv.classList.remove('hidden');
                 }
                 
             } catch (error) {
                 console.error('Connection test error:', error);
+                errorDiv.querySelector('span').textContent = error.message;
                 errorDiv.classList.remove('hidden');
             } finally {
                 btn.textContent = 'Test pripojenia';
@@ -584,12 +809,88 @@
             }
         }
 
+        async function testSshConnection() {
+            const btn = document.getElementById('test-ssh-btn');
+            const statusDiv = document.getElementById('ssh-status');
+            const errorDiv = document.getElementById('ssh-error');
+            const errorText = document.getElementById('ssh-error-text');
+
+            btn.textContent = 'Testujem...';
+            btn.disabled = true;
+            statusDiv.classList.add('hidden');
+            errorDiv.classList.add('hidden');
+
+            try {
+                const response = await fetch('/api/test-ssh', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ source_config: getSourceConfigFromForm() })
+                });
+                const result = await response.json().catch(() => ({}));
+
+                if (response.ok) {
+                    statusDiv.querySelector('span').textContent = result.message || 'SSH pripojenie úspešné';
+                    statusDiv.classList.remove('hidden');
+                } else {
+                    errorText.textContent = result.message || result.error || 'Chyba SSH pripojenia';
+                    errorDiv.classList.remove('hidden');
+                }
+            } catch (error) {
+                console.error('SSH test error:', error);
+                errorText.textContent = error.message;
+                errorDiv.classList.remove('hidden');
+            } finally {
+                btn.textContent = 'Test SSH';
+                btn.disabled = false;
+            }
+        }
+
+        async function saveSettings() {
+            const btn = document.getElementById('save-settings-btn');
+            const status = document.getElementById('settings-save-status');
+
+            btn.textContent = 'Ukladám...';
+            btn.disabled = true;
+            status.classList.add('hidden');
+
+            try {
+                const response = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        ftp_config: getFtpConfigFromForm(),
+                        source_config: getSourceConfigFromForm()
+                    })
+                });
+
+                if (!response.ok) {
+                    const result = await response.json().catch(() => ({}));
+                    throw new Error(result.error || 'Nastavenia sa nepodarilo uložiť');
+                }
+
+                status.classList.remove('hidden');
+                await loadConfig();
+                updateCounts();
+            } catch (error) {
+                console.error('Save settings error:', error);
+                alert('Chyba pri ukladaní nastavení: ' + error.message);
+            } finally {
+                btn.textContent = 'Uložiť nastavenia';
+                btn.disabled = false;
+            }
+        }
+
         // Update backup button state when FTP config changes
         document.addEventListener('DOMContentLoaded', function() {
-            const ftpInputs = ['ftp-host', 'ftp-port', 'ftp-username', 'ftp-password'];
-            ftpInputs.forEach(id => {
+            const configInputs = ['ftp-host', 'ftp-port', 'ftp-username', 'ftp-password', 'ftp-remote-dir', 'ssh-host', 'ssh-port', 'ssh-username', 'ssh-password'];
+            configInputs.forEach(id => {
                 document.getElementById(id).addEventListener('input', updateCounts);
             });
+            document.getElementById('source-mode').addEventListener('change', updateSourceModeVisibility);
         });
     </script>
 </body>

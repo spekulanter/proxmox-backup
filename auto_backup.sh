@@ -4,8 +4,11 @@ set -euo pipefail
 
 APP_DIR="/opt/proxmox-backup"
 
-# Prefer local API endpoint to trigger the backup
-curl -fsS -X POST http://127.0.0.1:5000/create_backup || {
+# Prefer local JSON API endpoint to trigger the backup from saved config
+curl -fsS -X POST \
+	-H "Content-Type: application/json" \
+	-d '{}' \
+	http://127.0.0.1:5000/api/backup || {
 	echo "API trigger zlyhal, skúšam priamo Python..."
 	if [ -x "${APP_DIR}/venv/bin/python" ]; then
 		"${APP_DIR}/venv/bin/python" - <<'PY'

@@ -36,11 +36,13 @@ Hlavné funkcie:
 
 - konfigurácia FTP pripojenia
 - test FTP pripojenia pred uložením alebo zálohou
-- výber súborov a adresárov na zálohovanie
+- kategorizovaný výber súborov a adresárov na zálohovanie
 - manuálne vytvorenie `.tar.gz` archívu
+- generovanie `backup-info/` inventára a `README-RESTORE.txt`
 - upload zálohy na FTP
 - lokálna história záloh
 - týždenné alebo mesačné automatické zálohovanie
+- záloha AUTO.FS/QNAP/WD konfigurácie bez automatického restore
 
 Pri úpravách preferuj spoľahlivosť a jasné chybové hlášky pred vizuálnymi efektmi alebo veľkými refaktormi.
 
@@ -50,6 +52,7 @@ Pri úpravách preferuj spoľahlivosť a jasné chybové hlášky pred vizuálny
 - `backup_config.json` a `backup_history.json` považuj za runtime dáta.
 - Pri zmene backup logiky dávaj pozor na prácu s absolútnymi cestami ako `/etc/pve/`, `/root/` a `/var/lib/vz/template/`.
 - Pri práci so súbormi používaj bezpečné dočasné cesty a po dokončení ich uprac.
+- Do archívu nikdy nepridávaj runtime/mount cesty ako `/mnt`, `/media`, `/proc`, `/sys`, `/dev`, `/run`, `/tmp`, `/var/tmp`, `/var/cache`, `/var/log` a `/lost+found`.
 - Ak meníš update alebo install skripty, mysli na to, že môžu bežať ako root.
 - Nepoužívaj deštruktívne príkazy typu `git reset --hard`, `rm -rf` alebo prepis systemd súborov mimo jasne očakávaného inštalačného toku.
 
@@ -82,7 +85,8 @@ Vyhni sa marketingovej landing page. Prvá obrazovka má byť samotná pracovná
 Po backend zmenách spusti aspoň:
 
 ```bash
-python -m py_compile app.py
+venv/bin/python -m py_compile app.py
+venv/bin/python tests/test_archive.py
 ```
 
 Ak je služba dostupná v cieľovom prostredí, použi:
