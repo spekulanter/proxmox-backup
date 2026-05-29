@@ -83,6 +83,11 @@ Aplikácia má predkonfigurované kľúčové Proxmox súbory rozdelené do kate
 - `/etc/modules`, `/etc/modprobe.d`, `/etc/sysctl.conf`, `/etc/sysctl.d`
 - `/var/spool/cron`, `/etc/cron*`, `/etc/vzdump.conf`, `/etc/ssl/pve`
 
+**🔐 Host účty a SSH prístup:**
+- `/etc/passwd`, `/etc/group`, `/etc/shadow`
+- `/etc/subuid`, `/etc/subgid`
+- `/etc/ssh`
+
 **🛠️ Admin a AUTO.FS/QNAP/WD:**
 - `/root`, `/usr/local/bin`, `/usr/local/sbin`
 - `/etc/auto.master`, `/etc/auto.master.d`, `/etc/auto.nfs`
@@ -94,6 +99,12 @@ Aplikácia má predkonfigurované kľúčové Proxmox súbory rozdelené do kate
 - `/opt`, `/home`, `/var/lib/vz/template`
 
 Archív vždy vynecháva mount/runtime/cache cesty ako `/mnt`, `/media`, `/proc`, `/sys`, `/dev`, `/run`, `/tmp`, `/var/tmp`, `/var/cache`, `/var/log`, `/lost+found` a `/etc/pve/.rrd`.
+
+### 🔁 Obnova cez SSH
+
+Sekcia "Obnova" používa iba lokálne archívy evidované v histórii a obnovuje ich cez Remote SSH. Pred aplikovaním vybraných ciest sa archív rozbalí do staging adresára na Proxmox hoste a existujúce cieľové súbory/adresáre sa skopírujú do rollback adresára `/root/proxmox-backup-restore-preapply-*`.
+
+Obnova je zámerne whitelistovaná na známe konfiguračné cesty a nepodporuje voliteľné veľké dáta ani wildcard položky. Aplikácia po obnove nerobí automatický reload ani restart služieb; stav Proxmoxu skontrolujte ručne.
 
 ### 💾 Ukladanie archívov
 

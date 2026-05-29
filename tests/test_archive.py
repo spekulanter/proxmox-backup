@@ -53,10 +53,15 @@ class FakeRemoteFile:
 class FakeSftp:
     def __init__(self):
         self.files = {}
+        self.puts = []
         self.closed = False
 
     def file(self, path, mode):
         return FakeRemoteFile(path, self.files)
+
+    def put(self, local_path, remote_path):
+        self.puts.append((local_path, remote_path))
+        self.files[remote_path] = Path(local_path).read_bytes()
 
     def close(self):
         self.closed = True
@@ -76,6 +81,8 @@ class FakeSshClient:
 
     def exec_command(self, command, timeout=None):
         self.commands.append(command)
+        if command.startswith("mktemp -d /tmp/pve-restore"):
+            return None, FakeStream("/tmp/pve-restore.TEST\n"), FakeStream()
         if command.startswith("mktemp -d"):
             return None, FakeStream("/tmp/pve-host-backup-info.TEST\n"), FakeStream()
         if command.startswith("mkdir -p"):
@@ -83,8 +90,10 @@ class FakeSshClient:
         if command.startswith("python3 -c"):
             return None, FakeStream(json.dumps(["/etc/pve/storage.cfg"])), FakeStream()
         if command.startswith("test -e"):
-            exit_code = 0 if "/mnt" in command or "/etc/hostname" in command else 1
+            exit_code = 0 if "/mnt" in command or "/etc/hostname" in command or "/tmp/pve-restore.TEST/staging" in command else 1
             return None, FakeStream(exit_code=exit_code), FakeStream()
+        if command.startswith("tar -xzf"):
+            return None, FakeStream(), FakeStream()
         if command.startswith("tar "):
             buffer = io.BytesIO()
             with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
@@ -93,6 +102,8 @@ class FakeSshClient:
                 info.size = len(payload)
                 tar.addfile(info, io.BytesIO(payload))
             return None, FakeStream(buffer.getvalue()), FakeStream()
+        if command.startswith("cp -a") or command.startswith("if test -e"):
+            return None, FakeStream(), FakeStream()
         if command.startswith("rm -rf"):
             return None, FakeStream(), FakeStream()
         return None, FakeStream("ok\n"), FakeStream()
@@ -137,6 +148,14 @@ class FakeFtp:
 
 
 def main():
+    migrated = app_module.migrate_config({"backup_files": [{"path": "/etc/pve", "selected": False}]})
+    migrated_by_path = {item["path"]: item for item in migrated["backup_files"]}
+    for path in ["/etc/passwd", "/etc/group", "/etc/shadow", "/etc/subuid", "/etc/subgid", "/etc/ssh"]:
+        assert path in migrated_by_path
+        assert migrated_by_path[path]["selected"] is True
+        assert migrated_by_path[path]["critical"] is True
+    assert migrated_by_path["/etc/pve"]["selected"] is False
+
     with tempfile.TemporaryDirectory(prefix="pve-backup-test-", dir=str(ROOT)) as workdir:
         source_dir = Path(workdir) / "mock-config"
         source_dir.mkdir()
@@ -205,6 +224,7 @@ def main():
         original_backup_dir = app_module.BACKUP_STORAGE_DIR
         original_build_source = app_module.build_backup_source
         original_upload = app_module.upload_to_ftp
+        original_ssh_factory = app_module.SSH_CLIENT_FACTORY
 
         try:
             app_module.CONFIG_FILE = str(Path(workdir) / "backup_config.json")
@@ -281,12 +301,125 @@ def main():
             assert seen_uploads and seen_uploads[0][0] == data["local_path"]
             assert seen_uploads[0][1]["remote_dir"] == "/pve-backups"
             assert Path(app_module.BACKUP_HISTORY_FILE).exists()
+
+            backup_dir = Path(app_module.BACKUP_STORAGE_DIR)
+            restore_archive = backup_dir / "restore.tar.gz"
+            with tarfile.open(restore_archive, "w:gz") as tar:
+                for name, payload in {
+                    "etc/passwd": b"root:x:0:0:root:/root:/bin/bash\n",
+                    "etc/ssh/sshd_config": b"PermitRootLogin yes\n",
+                    "opt/ignored": b"ignored\n",
+                }.items():
+                    info = tarfile.TarInfo(name)
+                    info.size = len(payload)
+                    tar.addfile(info, io.BytesIO(payload))
+
+            bad_archive = backup_dir / "bad.tar.gz"
+            with tarfile.open(bad_archive, "w:gz") as tar:
+                payload = b"bad"
+                info = tarfile.TarInfo("../etc/passwd")
+                info.size = len(payload)
+                tar.addfile(info, io.BytesIO(payload))
+
+            app_module.save_backup_history([
+                {
+                    "id": "restore-ok",
+                    "filename": restore_archive.name,
+                    "timestamp": "2026-05-29T12:00:00",
+                    "local_path": str(restore_archive),
+                    "size": "1 KB",
+                    "source_mode": "remote_ssh",
+                    "source_host": "pve.example",
+                },
+                {
+                    "id": "outside",
+                    "filename": "outside.tar.gz",
+                    "local_path": "/etc/passwd",
+                },
+                {
+                    "id": "bad",
+                    "filename": bad_archive.name,
+                    "local_path": str(bad_archive),
+                },
+            ])
+
+            response = client.get("/api/restore/archives")
+            assert response.status_code == 200
+            archives = response.get_json()["archives"]
+            assert any(item["id"] == "restore-ok" for item in archives)
+            assert not any(item["id"] == "outside" for item in archives)
+
+            response = client.get("/api/restore/preview/restore-ok")
+            assert response.status_code == 200, response.get_data(as_text=True)
+            preview_paths = {item["path"] for item in response.get_json()["items"]}
+            assert "/etc/passwd" in preview_paths
+            assert "/etc/ssh" in preview_paths
+            assert "/opt" not in preview_paths
+
+            response = client.get("/api/restore/preview/missing")
+            assert response.status_code == 404
+
+            response = client.get("/api/restore/preview/outside")
+            assert response.status_code == 400
+            assert "mimo" in response.get_json()["error"]
+
+            response = client.get("/api/restore/preview/bad")
+            assert response.status_code == 400
+            assert "Nebezpečný" in response.get_json()["error"]
+
+            response = client.post(
+                "/api/restore",
+                json={
+                    "backup_id": "restore-ok",
+                    "paths": ["/home"],
+                    "source_config": {
+                        "mode": "remote_ssh",
+                        "ssh": {
+                            "host": "pve.example",
+                            "port": 22,
+                            "username": "root",
+                            "password": "secret",
+                        },
+                    },
+                    "confirm": "OBNOVIT",
+                },
+            )
+            assert response.status_code == 400
+            assert "nie je povolená" in response.get_json()["error"]
+
+            fake_restore_client = FakeSshClient()
+            app_module.SSH_CLIENT_FACTORY = lambda: fake_restore_client
+            response = client.post(
+                "/api/restore",
+                json={
+                    "backup_id": "restore-ok",
+                    "paths": ["/etc/passwd"],
+                    "source_config": {
+                        "mode": "remote_ssh",
+                        "ssh": {
+                            "host": "pve.example",
+                            "port": 22,
+                            "username": "root",
+                            "password": "secret",
+                        },
+                    },
+                    "confirm": "OBNOVIT",
+                },
+            )
+            assert response.status_code == 200, response.get_data(as_text=True)
+            restore_data = response.get_json()
+            assert restore_data["backup_dir"].startswith("/root/proxmox-backup-restore-preapply-")
+            assert restore_data["applied"] == [{"path": "/etc/passwd"}]
+            assert any(command.startswith("tar -xzf") for command in fake_restore_client.commands)
+            assert any(command.startswith("cp -a") and "/etc/" in command for command in fake_restore_client.commands)
+            assert any(command.startswith("rm -rf /tmp/pve-restore.TEST") for command in fake_restore_client.commands)
         finally:
             app_module.CONFIG_FILE = original_config_file
             app_module.BACKUP_HISTORY_FILE = original_history_file
             app_module.BACKUP_STORAGE_DIR = original_backup_dir
             app_module.build_backup_source = original_build_source
             app_module.upload_to_ftp = original_upload
+            app_module.SSH_CLIENT_FACTORY = original_ssh_factory
 
     original_ftp = app_module.ftplib.FTP
     try:

@@ -19,7 +19,7 @@ app = Flask(__name__)
 app.secret_key = 'proxmox-backup-secret-key-change-in-production'
 
 # Konfiguračný súbor
-CONFIG_VERSION = 3
+CONFIG_VERSION = 4
 CONFIG_FILE = 'backup_config.json'
 BACKUP_HISTORY_FILE = 'backup_history.json'
 BACKUP_STORAGE_DIR = os.environ.get('BACKUP_STORAGE_DIR', 'backups')
@@ -45,6 +45,11 @@ BACKUP_CATEGORIES = [
         'id': 'system_config',
         'name': 'Systémová konfigurácia',
         'description': 'Sieť, balíky, systemd a ďalšie nastavenia hosta.'
+    },
+    {
+        'id': 'host_access',
+        'name': 'Host účty a SSH prístup',
+        'description': 'Lokálne účty, shadow databáza a SSH server konfigurácia.'
     },
     {
         'id': 'admin_scripts',
@@ -186,6 +191,66 @@ DEFAULT_BACKUP_FILES = [
         'category': 'critical_proxmox',
         'priority': 'critical',
         'tags': ['critical', 'network'],
+        'critical': True,
+        'selected': True
+    },
+    {
+        'path': '/etc/passwd',
+        'name': 'Lokálne používateľské účty',
+        'description': 'Základná databáza lokálnych používateľov a systémových účtov.',
+        'category': 'host_access',
+        'priority': 'critical',
+        'tags': ['critical', 'sensitive'],
+        'critical': True,
+        'selected': True
+    },
+    {
+        'path': '/etc/group',
+        'name': 'Lokálne skupiny',
+        'description': 'Základná databáza lokálnych skupín.',
+        'category': 'host_access',
+        'priority': 'critical',
+        'tags': ['critical', 'sensitive'],
+        'critical': True,
+        'selected': True
+    },
+    {
+        'path': '/etc/shadow',
+        'name': 'Shadow databáza',
+        'description': 'Hashované heslá lokálnych účtov; extrémne citlivý súbor.',
+        'category': 'host_access',
+        'priority': 'critical',
+        'tags': ['critical', 'sensitive'],
+        'critical': True,
+        'selected': True
+    },
+    {
+        'path': '/etc/subuid',
+        'name': 'Subuid mapovanie',
+        'description': 'Mapovanie subordinate UID rozsahov pre unprivileged kontajnery.',
+        'category': 'host_access',
+        'priority': 'critical',
+        'tags': ['critical', 'sensitive'],
+        'critical': True,
+        'selected': True
+    },
+    {
+        'path': '/etc/subgid',
+        'name': 'Subgid mapovanie',
+        'description': 'Mapovanie subordinate GID rozsahov pre unprivileged kontajnery.',
+        'category': 'host_access',
+        'priority': 'critical',
+        'tags': ['critical', 'sensitive'],
+        'critical': True,
+        'selected': True
+    },
+    {
+        'path': '/etc/ssh',
+        'name': 'SSH konfigurácia hosta',
+        'description': 'Konfigurácia SSH servera a host keys potrebné pri obnove identity hosta.',
+        'category': 'host_access',
+        'priority': 'critical',
+        'tags': ['critical', 'sensitive'],
         'critical': True,
         'selected': True
     },
@@ -1172,6 +1237,259 @@ def run_backup_job(selected_paths, ftp_config, source_config, configured_files):
         'size': get_file_size(local_path),
     }
 
+def restore_whitelist_items():
+    """Cesty, ktoré v1 restore smie aplikovať späť na host."""
+    items = []
+    for item in DEFAULT_BACKUP_FILES:
+        path = item['path']
+        if item.get('category') == 'optional_large':
+            continue
+        if glob.has_magic(path):
+            continue
+        if is_excluded_path(path):
+            continue
+        items.append(item)
+    return items
+
+def restore_whitelist_paths():
+    return {item['path'] for item in restore_whitelist_items()}
+
+def archive_name_for_path(path):
+    """Prevedie absolútnu cestu na tar arcname bez úvodného lomítka."""
+    return normalize_remote_path(path).lstrip('/')
+
+def tar_name_is_safe(name):
+    """Overí, že tar člen nemôže uniknúť zo staging adresára."""
+    if not name or name.startswith('/'):
+        return False
+    normalized = posixpath.normpath(name)
+    if normalized in ('', '.') or normalized.startswith('../') or normalized == '..':
+        return False
+    if '\x00' in name or '\n' in name or '\r' in name:
+        return False
+    return '..' not in normalized.split('/')
+
+def tar_link_is_safe(member):
+    """Povolí len relatívne linky bez úniku mimo staging stromu."""
+    if not (member.issym() or member.islnk()):
+        return True
+    linkname = member.linkname or ''
+    if not linkname or linkname.startswith('/'):
+        return False
+    if '\x00' in linkname or '\n' in linkname or '\r' in linkname:
+        return False
+    base = posixpath.dirname(member.name)
+    normalized_target = posixpath.normpath(posixpath.join(base, linkname))
+    return tar_name_is_safe(normalized_target)
+
+def validate_tar_member(member):
+    if not tar_name_is_safe(member.name):
+        raise ValueError(f"Nebezpečný názov v archíve: {member.name}")
+    if member.ischr() or member.isblk() or member.isfifo():
+        raise ValueError(f"Nepodporovaný špeciálny súbor v archíve: {member.name}")
+    if not tar_link_is_safe(member):
+        raise ValueError(f"Nebezpečný link v archíve: {member.name} -> {member.linkname}")
+
+def member_matches_restore_path(member_name, restore_path):
+    arcname = archive_name_for_path(restore_path)
+    return member_name == arcname or member_name.startswith(arcname.rstrip('/') + '/')
+
+def restore_archive_members(archive_path, selected_paths=None):
+    """Vráti validované tar členy, voliteľne iba pre vybrané restore cesty."""
+    selected_paths = selected_paths or []
+    members = []
+    with tarfile.open(archive_path, 'r:gz') as tar:
+        for member in tar.getmembers():
+            validate_tar_member(member)
+            if not selected_paths or any(member_matches_restore_path(member.name, path) for path in selected_paths):
+                members.append(member)
+    return members
+
+def preview_restore_archive(archive_path):
+    """Zistí, ktoré whitelisted cesty sú dostupné v archíve."""
+    members = restore_archive_members(archive_path)
+    member_names = [member.name for member in members]
+    available = []
+    for item in restore_whitelist_items():
+        path = item['path']
+        matching_names = [name for name in member_names if member_matches_restore_path(name, path)]
+        if matching_names:
+            available.append({
+                'path': path,
+                'name': item.get('name', path),
+                'description': item.get('description', ''),
+                'category': item.get('category', 'system_config'),
+                'critical': bool(item.get('critical')),
+                'tags': item.get('tags', []),
+                'member_count': len(matching_names),
+            })
+    return available
+
+def resolve_history_archive(backup_id):
+    """Nájde archív v histórii a overí, že stále leží v lokálnom backup adresári."""
+    history = load_backup_history()
+    entry = next((item for item in history if str(item.get('id')) == str(backup_id)), None)
+    if not entry:
+        raise FileNotFoundError('Archív nie je v histórii záloh')
+
+    backup_root = os.path.realpath(os.path.abspath(BACKUP_STORAGE_DIR))
+    local_path = entry.get('local_path')
+    if local_path:
+        archive_path = os.path.realpath(os.path.abspath(local_path))
+    elif entry.get('filename'):
+        archive_path = os.path.realpath(os.path.abspath(os.path.join(backup_root, entry['filename'])))
+    else:
+        raise ValueError('Záznam histórie neobsahuje cestu k archívu')
+
+    if not path_is_under(archive_path, backup_root):
+        raise ValueError('Archív je mimo lokálneho backup adresára')
+    if not os.path.isfile(archive_path):
+        raise FileNotFoundError('Lokálny archív už neexistuje')
+    return entry, archive_path
+
+def list_restore_archives():
+    """Zoznam archívov z histórie, ktoré sú stále dostupné lokálne."""
+    archives = []
+    for entry in load_backup_history():
+        try:
+            _entry, archive_path = resolve_history_archive(entry.get('id'))
+        except (ValueError, FileNotFoundError):
+            continue
+        archives.append({
+            'id': entry.get('id'),
+            'filename': entry.get('filename') or os.path.basename(archive_path),
+            'timestamp': entry.get('timestamp') or entry.get('date') or '',
+            'size': entry.get('size') or get_file_size(archive_path),
+            'source_host': entry.get('source_host'),
+            'source_mode': entry.get('source_mode'),
+            'local_path': archive_path,
+        })
+    return archives
+
+class RemoteSshRestoreService:
+    """Bezpečný restore lokálneho archívu na Proxmox host cez SSH/SFTP."""
+
+    def __init__(self, source_config, ssh_client_factory=None):
+        self.source = RemoteSshBackupSource(source_config, ssh_client_factory=ssh_client_factory)
+
+    def write_remote_file(self, client, remote_path, content):
+        sftp = client.open_sftp()
+        try:
+            with sftp.file(remote_path, 'w') as remote_file:
+                remote_file.write(content)
+        finally:
+            sftp.close()
+
+    def upload_archive(self, client, local_archive, remote_archive):
+        sftp = client.open_sftp()
+        try:
+            sftp.put(local_archive, remote_archive)
+        finally:
+            sftp.close()
+
+    def run_required(self, client, command, timeout=120):
+        exit_code, stdout, stderr = self.source.run_command(client, command, timeout=timeout)
+        if exit_code != 0:
+            raise RuntimeError(stderr.strip() or stdout.strip() or f"Remote command zlyhal: {command}")
+        return stdout
+
+    def apply_path(self, client, staging_dir, backup_dir, restore_path):
+        arcname = archive_name_for_path(restore_path)
+        staged_path = posixpath.join(staging_dir, arcname)
+        target_path = normalize_remote_path(restore_path)
+        target_parent = posixpath.dirname(target_path) or '/'
+        backup_parent = posixpath.join(backup_dir, posixpath.dirname(arcname))
+
+        test_command = f'test -e {shlex.quote(staged_path)} || test -L {shlex.quote(staged_path)}'
+        exit_code, _stdout, _stderr = self.source.run_command(client, test_command, timeout=30)
+        if exit_code != 0:
+            return {'path': restore_path, 'reason': 'missing_in_staging'}
+
+        self.run_required(client, f'mkdir -p {shlex.quote(target_parent)} {shlex.quote(backup_parent)}', timeout=30)
+        backup_command = (
+            f'if test -e {shlex.quote(target_path)} || test -L {shlex.quote(target_path)}; then '
+            f'cp -a {shlex.quote(target_path)} {shlex.quote(backup_parent)}/; '
+            f'fi'
+        )
+        self.run_required(client, backup_command, timeout=300)
+        self.run_required(client, f'cp -a {shlex.quote(staged_path)} {shlex.quote(target_parent)}/', timeout=300)
+        return None
+
+    def restore(self, archive_path, selected_paths):
+        member_names = [member.name for member in restore_archive_members(archive_path, selected_paths)]
+        if not member_names:
+            raise ValueError('Archív neobsahuje vybrané obnoviteľné položky')
+
+        client = self.source.connect()
+        remote_workdir = None
+        try:
+            remote_workdir = self.run_required(client, 'mktemp -d /tmp/pve-restore.XXXXXX', timeout=10).strip()
+            remote_archive = posixpath.join(remote_workdir, 'restore.tar.gz')
+            remote_members = posixpath.join(remote_workdir, 'members.txt')
+            staging_dir = posixpath.join(remote_workdir, 'staging')
+            backup_dir = f"/root/proxmox-backup-restore-preapply-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+            self.upload_archive(client, archive_path, remote_archive)
+            self.write_remote_file(client, remote_members, '\n'.join(member_names) + '\n')
+            self.run_required(client, f'mkdir -p {shlex.quote(staging_dir)} {shlex.quote(backup_dir)}', timeout=30)
+            extract_command = (
+                f'tar -xzf {shlex.quote(remote_archive)} '
+                f'-C {shlex.quote(staging_dir)} '
+                f'-T {shlex.quote(remote_members)}'
+            )
+            self.run_required(client, extract_command, timeout=600)
+
+            applied = []
+            skipped = []
+            for restore_path in selected_paths:
+                skip = self.apply_path(client, staging_dir, backup_dir, restore_path)
+                if skip:
+                    skipped.append(skip)
+                else:
+                    applied.append({'path': restore_path})
+
+            return {
+                'success': True,
+                'remote_host': self.source.ssh_config.get('host'),
+                'backup_dir': backup_dir,
+                'applied': applied,
+                'skipped': skipped,
+            }
+        finally:
+            if remote_workdir:
+                safe_workdir = remote_workdir.strip()
+                if safe_workdir.startswith('/tmp/pve-restore.'):
+                    self.source.run_command(client, f'rm -rf {shlex.quote(safe_workdir)}', timeout=30)
+            client.close()
+
+def run_restore_job(backup_id, selected_paths, source_config):
+    """Spoločný restore flow pre API."""
+    if not selected_paths:
+        raise ValueError('Nevybral si žiadne cesty na obnovu')
+
+    source_config = sanitize_source_config(source_config)
+    if source_config['mode'] != 'remote_ssh':
+        raise ValueError('Obnova je v tejto verzii podporovaná iba cez Remote SSH')
+
+    allowed_paths = restore_whitelist_paths()
+    clean_paths = []
+    for path in selected_paths:
+        normalized = normalize_remote_path(path)
+        if normalized not in allowed_paths:
+            raise ValueError(f'Cesta nie je povolená pre restore: {path}')
+        if glob.has_magic(normalized):
+            raise ValueError(f'Wildcard cesty nie sú podporované pre restore: {path}')
+        clean_paths.append(normalized)
+
+    _entry, archive_path = resolve_history_archive(backup_id)
+    available_paths = {item['path'] for item in preview_restore_archive(archive_path)}
+    missing = [path for path in clean_paths if path not in available_paths]
+    if missing:
+        raise ValueError(f'Archív neobsahuje vybrané cesty: {", ".join(missing)}')
+
+    restore_service = RemoteSshRestoreService(source_config)
+    return restore_service.restore(archive_path, clean_paths)
+
 @app.route('/')
 def index():
     """Hlavná stránka"""
@@ -1270,6 +1588,52 @@ def create_backup_api():
         if result['success']:
             return jsonify(result)
         return jsonify({**result, 'error': result['message']}), 502
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/restore/archives')
+def restore_archives_api():
+    """Archívy z histórie, ktoré sú stále lokálne dostupné na restore."""
+    return jsonify({'success': True, 'archives': list_restore_archives()})
+
+@app.route('/api/restore/preview/<backup_id>')
+def restore_preview_api(backup_id):
+    """Preview obnoviteľných whitelisted ciest v lokálnom archíve."""
+    try:
+        entry, archive_path = resolve_history_archive(backup_id)
+        return jsonify({
+            'success': True,
+            'archive': {
+                'id': entry.get('id'),
+                'filename': entry.get('filename') or os.path.basename(archive_path),
+                'timestamp': entry.get('timestamp') or entry.get('date') or '',
+                'local_path': archive_path,
+            },
+            'items': preview_restore_archive(archive_path),
+        })
+    except FileNotFoundError as e:
+        return jsonify({'success': False, 'error': str(e)}), 404
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/restore', methods=['POST'])
+def restore_api():
+    """Bezpečný restore vybraných ciest na Proxmox host cez SSH."""
+    data = request.get_json(silent=True) or {}
+    if data.get('confirm') != 'OBNOVIT':
+        return jsonify({'success': False, 'error': 'Pre obnovu je potrebné potvrdenie textom OBNOVIT'}), 400
+
+    config = load_config()
+    source_config = data.get('source_config') or config.get('source_config', DEFAULT_SOURCE_CONFIG)
+    try:
+        result = run_restore_job(data.get('backup_id'), data.get('paths') or [], source_config)
+        return jsonify(result)
+    except FileNotFoundError as e:
+        return jsonify({'success': False, 'error': str(e)}), 404
     except ValueError as e:
         return jsonify({'success': False, 'error': str(e)}), 400
     except Exception as e:

@@ -70,7 +70,7 @@
 
             <!-- Tabs -->
             <div class="flex flex-col gap-6">
-                <div class="bg-muted text-muted-foreground inline-flex h-10 w-fit items-center justify-center rounded-xl p-1 mx-auto gap-4 border border-border shadow-sm">
+                <div class="bg-muted text-muted-foreground inline-flex h-auto w-fit flex-wrap items-center justify-center rounded-xl p-1 mx-auto gap-2 border border-border shadow-sm">
                     <button onclick="showTab('backup')" id="tab-backup" class="data-[state=active]:bg-background dark:data-[state=active]:text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:outline-ring inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:shadow-md [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 bg-background text-foreground shadow-md border-border min-w-[120px]">
                         Zálohovanie
                     </button>
@@ -79,6 +79,9 @@
                     </button>
                     <button onclick="showTab('settings')" id="tab-settings" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
                         Nastavenia
+                    </button>
+                    <button onclick="showTab('restore')" id="tab-restore" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
+                        Obnova
                     </button>
                     <button onclick="showTab('history')" id="tab-history" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
                         História
@@ -343,6 +346,63 @@
                     </div>
                 </div>
 
+                <!-- Tab Content: Obnova -->
+                <div id="content-restore" class="space-y-6 hidden">
+                    <div class="bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm">
+                        <div class="grid auto-rows-min grid-rows-[auto_auto] items-start gap-1.5 px-6">
+                            <div class="leading-none font-semibold flex items-center gap-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h11M9 21V3m8 13l4-4m0 0l-4-4m4 4H9"/>
+                                </svg>
+                                Obnova cez SSH
+                            </div>
+                            <div class="text-muted-foreground text-sm">
+                                Obnoví vybrané konfiguračné cesty z lokálneho archívu na Proxmox host
+                            </div>
+                        </div>
+                        <div class="px-6 space-y-4">
+                            <div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                                Archív môže obsahovať heslá, tokeny a SSH kľúče. Pred aplikovaním sa existujúce cieľové súbory na hoste skopírujú do rollback adresára v <span class="font-mono">/root</span>.
+                            </div>
+
+                            <div class="grid gap-4 md:grid-cols-[1fr_auto]">
+                                <div>
+                                    <label for="restore-archive-select" class="flex items-center gap-2 text-sm leading-none font-medium">Lokálny archív</label>
+                                    <select id="restore-archive-select" class="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] mt-1">
+                                        <option value="">Načítavam archívy...</option>
+                                    </select>
+                                </div>
+                                <div class="flex items-end">
+                                    <button onclick="loadRestorePreview()" id="restore-preview-btn" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-xs hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2">
+                                        Preview
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div id="restore-preview-list" class="space-y-3">
+                                <div class="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
+                                    Vyber archív a načítaj preview obnoviteľných ciest.
+                                </div>
+                            </div>
+
+                            <div class="grid gap-4 md:grid-cols-[1fr_auto]">
+                                <div>
+                                    <label for="restore-confirm" class="flex items-center gap-2 text-sm leading-none font-medium">Potvrdenie</label>
+                                    <input type="text" id="restore-confirm" placeholder="OBNOVIT" class="file:text-foreground placeholder:text-muted-foreground flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] mt-1">
+                                </div>
+                                <div class="flex items-end">
+                                    <button onclick="runRestore()" id="restore-btn" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 bg-destructive text-destructive-foreground shadow-xs hover:bg-destructive/90 h-9 px-4 py-2">
+                                        Spustiť obnovu
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div id="restore-status" class="text-sm text-muted-foreground hidden"></div>
+                            <div id="restore-result" class="hidden rounded-lg border border-border px-4 py-3 text-sm"></div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Tab Content: História -->
                 <div id="content-history" class="space-y-6 hidden">
                     <div class="bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm">
@@ -379,11 +439,14 @@
         let backupFiles = [];
         let appConfig = {};
         let backupCategories = [];
+        let restoreArchives = [];
+        let restorePreviewItems = [];
         
         // Initialize app
         document.addEventListener('DOMContentLoaded', async function() {
             await loadConfig();
             await loadBackupFiles();
+            await loadRestoreArchives();
             
             // Auto backup toggle
             const autoBackupToggle = document.getElementById('auto-backup');
@@ -452,6 +515,9 @@
             
             // Show selected content
             document.getElementById('content-' + tabName).classList.remove('hidden');
+            if (tabName === 'restore') {
+                loadRestoreArchives();
+            }
             
             // Add active state to selected tab
             const activeTab = document.getElementById('tab-' + tabName);
@@ -490,6 +556,7 @@
                 sshSettings.classList.add('hidden');
             }
             updateCounts();
+            updateRestoreButton();
         }
 
         // Load backup files
@@ -769,6 +836,182 @@
             }).join('');
         }
 
+        async function loadRestoreArchives() {
+            const select = document.getElementById('restore-archive-select');
+            if (!select) return;
+
+            try {
+                const response = await fetch('/api/restore/archives');
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(data.error || 'Archívy sa nepodarilo načítať');
+                }
+                restoreArchives = data.archives || [];
+                renderRestoreArchives();
+            } catch (error) {
+                console.error('Restore archives error:', error);
+                select.innerHTML = `<option value="">${escapeHtml(error.message)}</option>`;
+            } finally {
+                updateRestoreButton();
+            }
+        }
+
+        function renderRestoreArchives() {
+            const select = document.getElementById('restore-archive-select');
+            if (!select) return;
+
+            if (!restoreArchives.length) {
+                select.innerHTML = '<option value="">Žiadny lokálny archív nie je dostupný</option>';
+                restorePreviewItems = [];
+                renderRestorePreview();
+                return;
+            }
+
+            select.innerHTML = '<option value="">Vyber archív</option>' + restoreArchives.map(archive => {
+                const label = `${archive.filename || 'backup'} | ${archive.timestamp || 'bez dátumu'} | ${archive.size || 'n/a'}`;
+                return `<option value="${escapeHtml(archive.id)}">${escapeHtml(label)}</option>`;
+            }).join('');
+        }
+
+        async function loadRestorePreview() {
+            const select = document.getElementById('restore-archive-select');
+            const archiveId = select.value;
+            const status = document.getElementById('restore-status');
+
+            if (!archiveId) {
+                alert('Vyber archív na obnovu');
+                return;
+            }
+
+            status.textContent = 'Načítavam preview archívu...';
+            status.classList.remove('hidden');
+
+            try {
+                const response = await fetch(`/api/restore/preview/${encodeURIComponent(archiveId)}`);
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(data.error || 'Preview sa nepodarilo načítať');
+                }
+                restorePreviewItems = data.items || [];
+                renderRestorePreview();
+                status.textContent = restorePreviewItems.length
+                    ? `Preview načítané: ${restorePreviewItems.length} obnoviteľných ciest`
+                    : 'Archív neobsahuje žiadne obnoviteľné whitelisted cesty';
+            } catch (error) {
+                console.error('Restore preview error:', error);
+                restorePreviewItems = [];
+                renderRestorePreview();
+                status.textContent = error.message;
+            } finally {
+                updateRestoreButton();
+            }
+        }
+
+        function renderRestorePreview() {
+            const container = document.getElementById('restore-preview-list');
+            if (!container) return;
+
+            if (!restorePreviewItems.length) {
+                container.innerHTML = `
+                    <div class="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
+                        Vyber archív a načítaj preview obnoviteľných ciest.
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = restorePreviewItems.map(item => `
+                <label class="flex items-start gap-3 rounded-lg border p-3">
+                    <input type="checkbox" class="restore-checkbox mt-1 h-4 w-4" data-path="${escapeHtml(item.path)}" onchange="updateRestoreButton()">
+                    <div class="flex-1 space-y-1">
+                        <div class="flex flex-wrap items-center gap-2">
+                            <span class="font-medium text-sm">${escapeHtml(item.name || item.path)}</span>
+                            ${renderTags(item)}
+                            <span class="rounded-md bg-secondary px-2 py-0.5 text-[11px] font-semibold">${item.member_count || 0} položiek</span>
+                        </div>
+                        <p class="text-sm text-muted-foreground">${escapeHtml(item.description || '')}</p>
+                        <p class="text-xs text-muted-foreground font-mono break-all">${escapeHtml(item.path)}</p>
+                    </div>
+                </label>
+            `).join('');
+        }
+
+        function getSelectedRestorePaths() {
+            return Array.from(document.querySelectorAll('.restore-checkbox:checked')).map(cb => cb.dataset.path);
+        }
+
+        function updateRestoreButton() {
+            const btn = document.getElementById('restore-btn');
+            if (!btn) return;
+
+            const sourceConfig = getSourceConfigFromForm();
+            const hasSsh = sourceConfig.mode === 'remote_ssh'
+                && sourceConfig.ssh.host !== ''
+                && sourceConfig.ssh.username !== ''
+                && sourceConfig.ssh.password !== '';
+            const archiveSelected = document.getElementById('restore-archive-select')?.value !== '';
+            const confirmed = document.getElementById('restore-confirm')?.value === 'OBNOVIT';
+            const hasPaths = getSelectedRestorePaths().length > 0;
+
+            btn.disabled = !(hasSsh && archiveSelected && confirmed && hasPaths);
+            btn.classList.toggle('opacity-50', btn.disabled);
+            btn.classList.toggle('cursor-not-allowed', btn.disabled);
+        }
+
+        async function runRestore() {
+            const archiveId = document.getElementById('restore-archive-select').value;
+            const paths = getSelectedRestorePaths();
+            const resultBox = document.getElementById('restore-result');
+            const status = document.getElementById('restore-status');
+            const btn = document.getElementById('restore-btn');
+
+            btn.textContent = 'Obnovujem...';
+            btn.disabled = true;
+            resultBox.classList.add('hidden');
+            status.textContent = 'Spúšťam remote restore cez SSH...';
+            status.classList.remove('hidden');
+
+            try {
+                const response = await fetch('/api/restore', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        backup_id: archiveId,
+                        paths,
+                        source_config: getSourceConfigFromForm(),
+                        confirm: document.getElementById('restore-confirm').value
+                    })
+                });
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(result.error || 'Restore zlyhal');
+                }
+
+                const applied = result.applied || [];
+                const skipped = result.skipped || [];
+                resultBox.className = 'rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-900';
+                resultBox.innerHTML = `
+                    <div class="font-medium">Obnova dokončená na ${escapeHtml(result.remote_host || 'remote host')}</div>
+                    <div class="mt-1">Rollback adresár: <span class="font-mono break-all">${escapeHtml(result.backup_dir || 'n/a')}</span></div>
+                    <div class="mt-2">Aplikované: ${applied.length} | Preskočené: ${skipped.length}</div>
+                    <div class="mt-2 text-xs">Skontroluj služby ručne. Aplikácia nerobí automatický reload ani restart Proxmox služieb.</div>
+                `;
+                resultBox.classList.remove('hidden');
+                status.textContent = 'Restore dokončený';
+            } catch (error) {
+                console.error('Restore error:', error);
+                resultBox.className = 'rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800';
+                resultBox.textContent = 'Chyba obnovy: ' + error.message;
+                resultBox.classList.remove('hidden');
+                status.textContent = 'Restore zlyhal';
+            } finally {
+                btn.textContent = 'Spustiť obnovu';
+                updateRestoreButton();
+            }
+        }
+
         // Test FTP connection
         async function testFtpConnection() {
             const btn = document.getElementById('test-connection-btn');
@@ -889,8 +1132,11 @@
             const configInputs = ['ftp-host', 'ftp-port', 'ftp-username', 'ftp-password', 'ftp-remote-dir', 'ssh-host', 'ssh-port', 'ssh-username', 'ssh-password'];
             configInputs.forEach(id => {
                 document.getElementById(id).addEventListener('input', updateCounts);
+                document.getElementById(id).addEventListener('input', updateRestoreButton);
             });
             document.getElementById('source-mode').addEventListener('change', updateSourceModeVisibility);
+            document.getElementById('restore-archive-select').addEventListener('change', updateRestoreButton);
+            document.getElementById('restore-confirm').addEventListener('input', updateRestoreButton);
         });
     </script>
 </body>
