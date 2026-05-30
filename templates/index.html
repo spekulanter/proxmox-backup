@@ -46,10 +46,15 @@
         }
     </script>
     <style>
+        html { scrollbar-gutter: stable; }
+        @supports not (scrollbar-gutter: stable) {
+            html { overflow-y: scroll; }
+        }
         .shadow-xs { box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05); }
         .ring-ring { --tw-ring-color: hsl(221.2 83.2% 53.3% / 0.2); }
         .focus-visible\:ring-ring\/50:focus-visible { --tw-ring-color: hsl(221.2 83.2% 53.3% / 0.5); }
         .focus-visible\:ring-\[3px\]:focus-visible { --tw-ring-width: 3px; }
+        #content-settings label[for] { margin-bottom: 0.375rem; }
     </style>
 </head>
 <body class="min-h-screen bg-background font-sans antialiased">
