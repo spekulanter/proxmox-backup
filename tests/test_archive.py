@@ -173,6 +173,8 @@ def main():
         assert migrated_by_path[path]["selected"] is True
         assert migrated_by_path[path]["critical"] is True
     assert migrated_by_path["/etc/pve"]["selected"] is False
+    for path in ["/etc/pve", "/etc/network", "/etc/resolv.conf", "/etc/passwd"]:
+        assert "pve upgrade" in migrated_by_path[path]["tags"]
 
     with tempfile.TemporaryDirectory(prefix="pve-backup-test-", dir=str(ROOT)) as workdir:
         source_dir = Path(workdir) / "mock-config"
@@ -254,6 +256,13 @@ def main():
             assert oct(os.stat(app_module.CONFIG_FILE).st_mode & 0o777) == "0o600"
 
             client = app_module.app.test_client()
+            response = client.post("/api/files/selection", json={"selected": False})
+            assert response.status_code == 200
+            assert all(not item["selected"] for item in response.get_json()["backup_files"])
+            response = client.post("/api/files/selection", json={"selected": True})
+            assert response.status_code == 200
+            assert all(item["selected"] for item in response.get_json()["backup_files"])
+
             response = client.post(
                 "/api/backup",
                 json={

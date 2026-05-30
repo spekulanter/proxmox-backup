@@ -74,17 +74,14 @@
                     <button onclick="showTab('backup')" id="tab-backup" class="data-[state=active]:bg-background dark:data-[state=active]:text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:outline-ring inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:shadow-md [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 bg-background text-foreground shadow-md border-border min-w-[120px]">
                         Zálohovanie
                     </button>
-                    <button onclick="showTab('files')" id="tab-files" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
-                        Súbory
-                    </button>
-                    <button onclick="showTab('settings')" id="tab-settings" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
-                        Nastavenia
-                    </button>
                     <button onclick="showTab('restore')" id="tab-restore" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
                         Obnova
                     </button>
                     <button onclick="showTab('history')" id="tab-history" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
                         História
+                    </button>
+                    <button onclick="showTab('settings')" id="tab-settings" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
+                        Nastavenia
                     </button>
                 </div>
 
@@ -180,10 +177,7 @@
                             </div>
                         </div>
                     </div>
-                </div>
 
-                <!-- Tab Content: Súbory -->
-                <div id="content-files" class="space-y-6 hidden">
                     <div class="bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm">
                         <div class="grid auto-rows-min grid-rows-[auto_auto] items-start gap-1.5 px-6">
                             <div class="leading-none font-semibold flex items-center gap-2">
@@ -197,6 +191,19 @@
                             </div>
                         </div>
                         <div class="px-6">
+                            <div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                <div class="text-sm text-muted-foreground">
+                                    Výber sa ukladá do konfigurácie zálohovania.
+                                </div>
+                                <div class="flex flex-wrap gap-2">
+                                    <button type="button" onclick="setAllBackupSelection(true)" class="inline-flex items-center justify-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium shadow-xs hover:bg-accent">
+                                        Vybrať všetko
+                                    </button>
+                                    <button type="button" onclick="setAllBackupSelection(false)" class="inline-flex items-center justify-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium shadow-xs hover:bg-accent">
+                                        Zrušiť výber
+                                    </button>
+                                </div>
+                            </div>
                             <div class="space-y-3" id="backup-files-list">
                                 <!-- Files will be loaded here -->
                             </div>
@@ -365,23 +372,18 @@
                                 Archív môže obsahovať heslá, tokeny a SSH kľúče. Pred aplikovaním sa existujúce cieľové súbory na hoste skopírujú do rollback adresára v <span class="font-mono">/root</span>.
                             </div>
 
-                            <div class="grid gap-4 md:grid-cols-[1fr_auto]">
+                            <div>
                                 <div>
                                     <label for="restore-archive-select" class="flex items-center gap-2 text-sm leading-none font-medium">Lokálny archív</label>
                                     <select id="restore-archive-select" class="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] mt-1">
                                         <option value="">Načítavam archívy...</option>
                                     </select>
                                 </div>
-                                <div class="flex items-end">
-                                    <button onclick="loadRestorePreview()" id="restore-preview-btn" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 border border-input bg-background shadow-xs hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2">
-                                        Preview
-                                    </button>
-                                </div>
                             </div>
 
                             <div id="restore-preview-list" class="space-y-3">
                                 <div class="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
-                                    Vyber archív a načítaj preview obnoviteľných ciest.
+                                    Vyber archív a obnoviteľné cesty sa načítajú automaticky.
                                 </div>
                             </div>
 
@@ -591,6 +593,28 @@
             }
         }
 
+        async function setAllBackupSelection(selected) {
+            try {
+                const response = await fetch('/api/files/selection', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ selected })
+                });
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok || !result.success) {
+                    throw new Error(result.error || 'Výber sa nepodarilo uložiť');
+                }
+                backupFiles = result.backup_files || backupFiles.map(file => ({ ...file, selected }));
+                renderBackupFiles();
+                updateCounts();
+            } catch (error) {
+                console.error('Bulk file selection error:', error);
+                alert('Chyba pri hromadnom výbere: ' + error.message);
+            }
+        }
+
         // Render backup files list
         function renderBackupFiles() {
             const container = document.getElementById('backup-files-list');
@@ -667,6 +691,7 @@
                 if (normalized === 'optional') classes = 'border-border bg-background text-muted-foreground';
                 if (normalized === 'large') classes = 'border-amber-200 bg-amber-50 text-amber-800';
                 if (normalized === 'sensitive') classes = 'border-red-200 bg-red-50 text-red-700';
+                if (normalized === 'pve upgrade') classes = 'border-sky-200 bg-sky-50 text-sky-800';
                 if (normalized.includes('autofs') || normalized.includes('qnap')) classes = 'border-emerald-200 bg-emerald-50 text-emerald-800';
                 return `<span class="inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold ${classes}">${escapeHtml(tag)}</span>`;
             }).join('');
@@ -868,6 +893,7 @@
         async function loadRestoreArchives() {
             const select = document.getElementById('restore-archive-select');
             if (!select) return;
+            const previousValue = select.value;
 
             try {
                 const response = await fetch('/api/restore/archives');
@@ -877,6 +903,9 @@
                 }
                 restoreArchives = data.archives || [];
                 renderRestoreArchives();
+                if (select.value && select.value !== previousValue) {
+                    await loadRestorePreview();
+                }
             } catch (error) {
                 console.error('Restore archives error:', error);
                 select.innerHTML = `<option value="">${escapeHtml(error.message)}</option>`;
@@ -903,6 +932,8 @@
             }).join('');
             if (currentValue && restoreArchives.some(archive => String(archive.id) === String(currentValue))) {
                 select.value = currentValue;
+            } else if (restoreArchives.length === 1) {
+                select.value = restoreArchives[0].id;
             }
         }
 
@@ -912,7 +943,10 @@
             const status = document.getElementById('restore-status');
 
             if (!archiveId) {
-                alert('Vyber archív na obnovu');
+                restorePreviewItems = [];
+                renderRestorePreview();
+                status.classList.add('hidden');
+                updateRestoreButton();
                 return;
             }
 
@@ -947,7 +981,7 @@
             if (!restorePreviewItems.length) {
                 container.innerHTML = `
                     <div class="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
-                        Vyber archív a načítaj preview obnoviteľných ciest.
+                        Vyber archív a obnoviteľné cesty sa načítajú automaticky.
                     </div>
                 `;
                 return;
@@ -1216,12 +1250,13 @@
                 document.getElementById(id).addEventListener('input', updateRestoreButton);
             });
             document.getElementById('source-mode').addEventListener('change', updateSourceModeVisibility);
-            document.getElementById('restore-archive-select').addEventListener('change', function() {
+            document.getElementById('restore-archive-select').addEventListener('change', async function() {
                 restorePreviewItems = [];
                 renderRestorePreview();
                 document.getElementById('restore-status').classList.add('hidden');
                 document.getElementById('restore-result').classList.add('hidden');
                 updateRestoreButton();
+                await loadRestorePreview();
             });
             document.getElementById('restore-confirm').addEventListener('input', updateRestoreButton);
         });

@@ -42,14 +42,14 @@ BACKUP_CATEGORIES = [
         'description': 'Kľúčová Proxmox konfigurácia potrebná pri obnove hosta.'
     },
     {
-        'id': 'system_config',
-        'name': 'Systémová konfigurácia',
-        'description': 'Sieť, balíky, systemd a ďalšie nastavenia hosta.'
-    },
-    {
         'id': 'host_access',
         'name': 'Host účty a SSH prístup',
         'description': 'Lokálne účty, shadow databáza a SSH server konfigurácia.'
+    },
+    {
+        'id': 'system_config',
+        'name': 'Systémová konfigurácia',
+        'description': 'Sieť, balíky, systemd a ďalšie nastavenia hosta.'
     },
     {
         'id': 'admin_scripts',
@@ -130,7 +130,7 @@ DEFAULT_BACKUP_FILES = [
         'description': 'VM/LXC configy, storage.cfg, users, firewall a datacenter nastavenia.',
         'category': 'critical_proxmox',
         'priority': 'critical',
-        'tags': ['critical', 'sensitive'],
+        'tags': ['critical', 'sensitive', 'pve upgrade'],
         'critical': True,
         'selected': True
     },
@@ -150,7 +150,7 @@ DEFAULT_BACKUP_FILES = [
         'description': 'Interfaces, bridge, VLAN a ďalšie sieťové nastavenia.',
         'category': 'critical_proxmox',
         'priority': 'critical',
-        'tags': ['critical', 'network'],
+        'tags': ['critical', 'network', 'pve upgrade'],
         'critical': True,
         'selected': True
     },
@@ -190,7 +190,7 @@ DEFAULT_BACKUP_FILES = [
         'description': 'Nastavenia DNS serverov.',
         'category': 'critical_proxmox',
         'priority': 'critical',
-        'tags': ['critical', 'network'],
+        'tags': ['critical', 'network', 'pve upgrade'],
         'critical': True,
         'selected': True
     },
@@ -200,7 +200,7 @@ DEFAULT_BACKUP_FILES = [
         'description': 'Základná databáza lokálnych používateľov a systémových účtov.',
         'category': 'host_access',
         'priority': 'critical',
-        'tags': ['critical', 'sensitive'],
+        'tags': ['critical', 'sensitive', 'pve upgrade'],
         'critical': True,
         'selected': True
     },
@@ -1680,6 +1680,17 @@ def toggle_file_api(file_index):
         save_config(config)
         return jsonify({'success': True, 'selected': config['backup_files'][file_index]['selected']})
     return jsonify({'success': False, 'error': 'Invalid file index'}), 400
+
+@app.route('/api/files/selection', methods=['POST'])
+def set_file_selection_api():
+    """API endpoint pre hromadné nastavenie výberu súborov."""
+    data = request.get_json(silent=True) or {}
+    selected = bool(data.get('selected'))
+    config = load_config()
+    for item in config['backup_files']:
+        item['selected'] = selected
+    save_config(config)
+    return jsonify({'success': True, 'selected': selected, 'backup_files': config['backup_files']})
 
 @app.route('/api/test-ftp', methods=['POST'])
 def test_ftp_api():
