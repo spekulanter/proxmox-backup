@@ -681,6 +681,18 @@
                 .replaceAll("'", '&#039;');
         }
 
+        function formatBytes(bytes) {
+            const value = Number(bytes) || 0;
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            let size = value;
+            let unitIndex = 0;
+            while (size >= 1024 && unitIndex < units.length - 1) {
+                size /= 1024;
+                unitIndex += 1;
+            }
+            return `${size.toFixed(size >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+        }
+
         function renderTags(file) {
             const tags = file.tags || [];
             return tags.map(tag => {
@@ -1006,10 +1018,13 @@
                             <div class="flex flex-wrap items-center gap-2">
                                 <span class="font-medium text-sm">${escapeHtml(item.name || item.path)}</span>
                                 ${renderTags(item)}
-                                <span class="rounded-md bg-secondary px-2 py-0.5 text-[11px] font-semibold">${item.member_count || 0} položiek</span>
+                                <button type="button" data-path="${escapeHtml(item.path)}" onclick="toggleRestoreMembers(event, this.dataset.path)" class="rounded-md bg-secondary px-2 py-0.5 text-[11px] font-semibold hover:bg-accent">
+                                    ${item.member_count || 0} položiek
+                                </button>
                             </div>
                             <p class="text-sm text-muted-foreground">${escapeHtml(item.description || '')}</p>
                             <p class="text-xs text-muted-foreground font-mono break-all">${escapeHtml(item.path)}</p>
+                            <div class="restore-member-list hidden pt-2" data-path="${escapeHtml(item.path)}"></div>
                         </div>
                     </label>
                 `).join('');
@@ -1031,6 +1046,9 @@
                         Vybrané na obnovu: <span id="restore-selected-count" class="font-medium text-foreground">0</span> z ${restorePreviewItems.length}
                     </div>
                     <div class="flex flex-wrap gap-2">
+                        <button type="button" onclick="toggleAllRestoreMembers(event)" class="inline-flex items-center justify-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium shadow-xs hover:bg-accent">
+                            Zobraziť celý obsah (${restorePreviewItems.reduce((sum, item) => sum + (Number(item.member_count) || 0), 0)})
+                        </button>
                         <button type="button" onclick="setAllRestoreSelection(true)" class="inline-flex items-center justify-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium shadow-xs hover:bg-accent">
                             Vybrať všetko
                         </button>
@@ -1039,9 +1057,96 @@
                         </button>
                     </div>
                 </div>
+                <div id="restore-all-member-list" class="hidden"></div>
                 ${sections}
             `;
             updateRestoreButton();
+        }
+
+        function renderMemberRows(members) {
+            return (members || []).map(member => {
+                const link = member.linkname ? ` -> ${member.linkname}` : '';
+                const size = member.type === 'file' ? formatBytes(member.size || 0) : '';
+                return `
+                    <div class="flex items-start gap-2 border-t border-border/60 py-1.5">
+                        <span class="w-14 shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">${escapeHtml(member.type)}</span>
+                        <span class="min-w-0 flex-1 break-all font-mono text-[11px]">${escapeHtml(member.name + link)}</span>
+                        <span class="shrink-0 text-[11px] text-muted-foreground">${escapeHtml(size)}</span>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderMemberListBox(data, title) {
+            const truncated = data.truncated
+                ? `<div class="mt-2 text-xs text-amber-800">Zobrazených je prvých ${data.limit} z ${data.total} položiek.</div>`
+                : '';
+            return `
+                <div class="rounded-md border bg-background px-3 py-2">
+                    <div class="mb-1 text-xs font-medium text-foreground">${escapeHtml(title)} (${data.total || 0})</div>
+                    <div class="max-h-96 overflow-auto">${renderMemberRows(data.members) || '<div class="text-xs text-muted-foreground">Žiadne položky.</div>'}</div>
+                    ${truncated}
+                </div>
+            `;
+        }
+
+        async function toggleAllRestoreMembers(event) {
+            event.preventDefault();
+            event.stopPropagation();
+
+            const archiveId = document.getElementById('restore-archive-select').value;
+            const container = document.getElementById('restore-all-member-list');
+            if (!archiveId || !container) return;
+
+            if (!container.classList.contains('hidden') && container.dataset.loaded === 'true') {
+                container.classList.add('hidden');
+                return;
+            }
+
+            container.classList.remove('hidden');
+            container.innerHTML = '<div class="text-xs text-muted-foreground">Načítavam celý obsah archívu...</div>';
+
+            try {
+                const response = await fetch(`/api/restore/preview/${encodeURIComponent(archiveId)}/members`);
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(data.error || 'Obsah archívu sa nepodarilo načítať');
+                }
+                container.innerHTML = renderMemberListBox(data, 'Všetky obnoviteľné položky v archíve');
+                container.dataset.loaded = 'true';
+            } catch (error) {
+                container.innerHTML = `<div class="text-xs text-destructive">${escapeHtml(error.message)}</div>`;
+            }
+        }
+
+        async function toggleRestoreMembers(event, restorePath) {
+            event.preventDefault();
+            event.stopPropagation();
+
+            const archiveId = document.getElementById('restore-archive-select').value;
+            const container = Array.from(document.querySelectorAll('.restore-member-list'))
+                .find(el => el.dataset.path === restorePath);
+            if (!archiveId || !container) return;
+
+            if (!container.classList.contains('hidden') && container.dataset.loaded === 'true') {
+                container.classList.add('hidden');
+                return;
+            }
+
+            container.classList.remove('hidden');
+            container.innerHTML = '<div class="text-xs text-muted-foreground">Načítavam položky...</div>';
+
+            try {
+                const response = await fetch(`/api/restore/preview/${encodeURIComponent(archiveId)}/members?path=${encodeURIComponent(restorePath)}`);
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(data.error || 'Položky sa nepodarilo načítať');
+                }
+                container.innerHTML = renderMemberListBox(data, 'Obsah v archíve');
+                container.dataset.loaded = 'true';
+            } catch (error) {
+                container.innerHTML = `<div class="text-xs text-destructive">${escapeHtml(error.message)}</div>`;
+            }
         }
 
         function setAllRestoreSelection(checked) {

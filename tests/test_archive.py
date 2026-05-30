@@ -416,6 +416,24 @@ def main():
             assert "/opt" in preview_paths
             assert "/var/lib/vz/template" in preview_paths
 
+            response = client.get("/api/restore/preview/restore-ok/members?path=/etc/ssh")
+            assert response.status_code == 200, response.get_data(as_text=True)
+            member_data = response.get_json()
+            assert member_data["total"] == 1
+            assert member_data["members"][0]["name"] == "etc/ssh/sshd_config"
+            assert member_data["members"][0]["type"] == "file"
+
+            response = client.get("/api/restore/preview/restore-ok/members")
+            assert response.status_code == 200, response.get_data(as_text=True)
+            all_member_names = {item["name"] for item in response.get_json()["members"]}
+            assert "etc/passwd" in all_member_names
+            assert "etc/ssh/sshd_config" in all_member_names
+            assert "var/lib/vz/template/iso/proxmox.iso" in all_member_names
+
+            response = client.get("/api/restore/preview/restore-ok/members?path=/not-allowed")
+            assert response.status_code == 400
+            assert "nie je povolená" in response.get_json()["error"]
+
             response = client.get("/api/restore/preview/missing")
             assert response.status_code == 404
 

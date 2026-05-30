@@ -1406,6 +1406,69 @@ def preview_restore_archive(archive_path):
             })
     return available
 
+def restore_member_type(member):
+    if member.isdir():
+        return 'dir'
+    if member.issym():
+        return 'symlink'
+    if member.islnk():
+        return 'hardlink'
+    if member.isfile():
+        return 'file'
+    return 'other'
+
+def restore_archive_member_details(archive_path, restore_path, limit=500):
+    """Vráti členy archívu pre jednu restore cestu s limitom pre veľké adresáre."""
+    normalized_path = normalize_remote_path(restore_path)
+    if normalized_path not in restore_whitelist_paths():
+        raise ValueError(f'Cesta nie je povolená pre restore: {restore_path}')
+    if glob.has_magic(normalized_path):
+        raise ValueError(f'Wildcard cesty nie sú podporované pre restore: {restore_path}')
+
+    members = restore_archive_members(archive_path, [normalized_path])
+    details = []
+    for member in members[:limit]:
+        details.append({
+            'name': member.name,
+            'type': restore_member_type(member),
+            'size': member.size if member.isfile() else 0,
+            'linkname': member.linkname if (member.issym() or member.islnk()) else '',
+        })
+    return {
+        'path': normalized_path,
+        'total': len(members),
+        'limit': limit,
+        'truncated': len(members) > limit,
+        'members': details,
+    }
+
+def restore_archive_all_member_details(archive_path, limit=2000):
+    """Vráti spoločný zoznam členov pre všetky obnoviteľné cesty."""
+    allowed_paths = [item['path'] for item in restore_whitelist_items()]
+    members = restore_archive_members(archive_path, allowed_paths)
+    seen = set()
+    unique_members = []
+    for member in members:
+        if member.name in seen:
+            continue
+        seen.add(member.name)
+        unique_members.append(member)
+
+    details = []
+    for member in unique_members[:limit]:
+        details.append({
+            'name': member.name,
+            'type': restore_member_type(member),
+            'size': member.size if member.isfile() else 0,
+            'linkname': member.linkname if (member.issym() or member.islnk()) else '',
+        })
+    return {
+        'total': len(unique_members),
+        'limit': limit,
+        'truncated': len(unique_members) > limit,
+        'members': details,
+    }
+
 def resolve_history_archive(backup_id):
     """Nájde archív v histórii a overí, že stále leží v lokálnom backup adresári."""
     history = load_backup_history()
@@ -1793,6 +1856,24 @@ def restore_preview_api(backup_id):
             },
             'items': preview_restore_archive(archive_path),
         })
+    except FileNotFoundError as e:
+        return jsonify({'success': False, 'error': str(e)}), 404
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/restore/preview/<backup_id>/members')
+def restore_members_api(backup_id):
+    """Detail členov archívu pre jednu obnoviteľnú cestu."""
+    restore_path = request.args.get('path', '')
+    try:
+        _entry, archive_path = resolve_history_archive(backup_id)
+        if restore_path:
+            detail = restore_archive_member_details(archive_path, restore_path)
+        else:
+            detail = restore_archive_all_member_details(archive_path)
+        return jsonify({'success': True, **detail})
     except FileNotFoundError as e:
         return jsonify({'success': False, 'error': str(e)}), 404
     except ValueError as e:
