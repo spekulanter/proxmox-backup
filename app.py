@@ -89,7 +89,6 @@ ARCHIVE_EXCLUDE_GLOBS = [
     '*/__pycache__/*',
     '*.pyc',
     '*.pyo',
-    '*.tar.gz',
     '*.log',
     '/opt/proxmox-backup/.git',
     '/opt/proxmox-backup/.git/*',
@@ -637,6 +636,14 @@ def ensure_backup_storage_dir():
     os.chmod(BACKUP_STORAGE_DIR, 0o700)
     return os.path.abspath(BACKUP_STORAGE_DIR)
 
+def effective_archive_excludes(base_excludes=None):
+    """Cesty vylúčené z archívu vrátane lokálneho adresára vlastných záloh."""
+    excludes = list(ARCHIVE_EXCLUDE_PATHS if base_excludes is None else base_excludes)
+    backup_dir = os.path.realpath(os.path.abspath(BACKUP_STORAGE_DIR))
+    if backup_dir not in excludes:
+        excludes.append(backup_dir)
+    return excludes
+
 def default_ssh_client_factory():
     """Vytvorí Paramiko klienta až v momente, keď je SSH naozaj potrebné."""
     try:
@@ -701,13 +708,13 @@ def is_excluded_path(path, base_excludes=None):
             return True
     return False
 
-def tar_filter(tarinfo):
+def tar_filter(tarinfo, base_excludes=None):
     """Filter pre rekurzívne tar.add volania."""
     if tarinfo.name == 'backup-info' or tarinfo.name.startswith('backup-info/'):
         return tarinfo
 
     archive_path = '/' + tarinfo.name.lstrip('/')
-    if is_excluded_path(archive_path):
+    if is_excluded_path(archive_path, effective_archive_excludes(base_excludes)):
         return None
     return tarinfo
 
@@ -803,24 +810,26 @@ def expand_backup_path(path):
 def add_path_to_archive(tar, source_path, report, base_excludes=None):
     """Pridá jednu cestu do archívu alebo ju zapíše do skipped reportu."""
     normalized = normalize_path(source_path)
-    if is_excluded_path(normalized, base_excludes):
+    excludes = effective_archive_excludes(base_excludes)
+    if is_excluded_path(normalized, excludes):
         report['skipped'].append({'path': source_path, 'reason': 'excluded'})
         return
 
     arcname = os.path.relpath(normalized, '/')
     try:
-        tar.add(normalized, arcname=arcname, recursive=True, filter=tar_filter)
+        tar.add(normalized, arcname=arcname, recursive=True, filter=lambda tarinfo: tar_filter(tarinfo, excludes))
         report['included'].append({'path': normalized, 'arcname': arcname})
     except (OSError, tarfile.TarError) as exc:
         report['skipped'].append({'path': source_path, 'reason': f'error: {exc}'})
 
 def create_backup_archive(selected_files, backup_filename, include_info=True, base_excludes=None):
     """Vytvorenie archívu so zálohou a reportom zahrnutých/chýbajúcich položiek."""
+    excludes = effective_archive_excludes(base_excludes)
     report = {
         'included': [],
         'skipped': [],
         'generated_info': [],
-        'excluded_paths': ARCHIVE_EXCLUDE_PATHS,
+        'excluded_paths': excludes,
     }
 
     with tempfile.TemporaryDirectory(prefix='pve-host-backup-info-') as info_dir:
@@ -836,10 +845,10 @@ def create_backup_archive(selected_files, backup_filename, include_info=True, ba
                     continue
 
                 for matched_path in matches:
-                    if base_excludes is not None and is_excluded_path(matched_path, base_excludes):
+                    if is_excluded_path(matched_path, excludes):
                         report['skipped'].append({'path': matched_path, 'reason': 'excluded'})
                         continue
-                    add_path_to_archive(tar, matched_path, report, base_excludes)
+                    add_path_to_archive(tar, matched_path, report, excludes)
 
             if include_info:
                 tar.add(info_dir, arcname='backup-info', recursive=True)
@@ -1310,8 +1319,6 @@ def restore_whitelist_items():
     items = []
     for item in DEFAULT_BACKUP_FILES:
         path = item['path']
-        if item.get('category') == 'optional_large':
-            continue
         if glob.has_magic(path):
             continue
         if is_excluded_path(path):

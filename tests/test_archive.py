@@ -183,26 +183,40 @@ def main():
             "qnap-storage -fstype=nfs 192.168.150.2:/ProxmoxBackups\n",
             encoding="utf-8",
         )
+        template_dir = Path(workdir) / "var-lib-vz-template"
+        template_dir.mkdir()
+        (template_dir / "debian-template.tar.gz").write_bytes(b"template")
+        backup_storage = Path(workdir) / "backups"
+        backup_storage.mkdir()
+        (backup_storage / "old-backup.tar.gz").write_bytes(b"old backup")
 
         archive_path = Path(workdir) / "backup.tar.gz"
+        original_backup_dir = app_module.BACKUP_STORAGE_DIR
+        app_module.BACKUP_STORAGE_DIR = str(backup_storage)
         report = app_module.create_backup_archive(
             [
                 {"path": str(source_dir), "name": "Mock config"},
+                {"path": str(template_dir), "name": "Templates"},
+                {"path": str(backup_storage), "name": "Local backup storage"},
                 {"path": "/mnt", "name": "Forbidden mount"},
                 {"path": str(Path(workdir) / "missing"), "name": "Missing"},
             ],
             str(archive_path),
             include_info=False,
         )
+        app_module.BACKUP_STORAGE_DIR = original_backup_dir
 
         assert archive_path.exists(), "archive was not created"
         assert any(item["path"] == str(source_dir.resolve()) for item in report["included"])
         assert any(item["reason"] == "missing" for item in report["skipped"])
+        assert any(item["path"] == str(backup_storage) and item["reason"] == "excluded" for item in report["skipped"])
 
         with tarfile.open(archive_path, "r:gz") as tar:
             names = tar.getnames()
 
         assert any(name.endswith("mock-config/auto.nfs") for name in names), names
+        assert any(name.endswith("var-lib-vz-template/debian-template.tar.gz") for name in names), names
+        assert not any(name.endswith("backups/old-backup.tar.gz") for name in names), names
         assert not any(name == "mnt" or name.startswith("mnt/") for name in names), names
 
     with tempfile.TemporaryDirectory(prefix="pve-remote-test-", dir=str(ROOT)) as workdir:
@@ -336,6 +350,7 @@ def main():
                     "etc/passwd": b"root:x:0:0:root:/root:/bin/bash\n",
                     "etc/ssh/sshd_config": b"PermitRootLogin yes\n",
                     "opt/ignored": b"ignored\n",
+                    "var/lib/vz/template/iso/proxmox.iso": b"iso\n",
                 }.items():
                     info = tarfile.TarInfo(name)
                     info.size = len(payload)
@@ -398,7 +413,8 @@ def main():
             assert "/etc/passwd" in preview_paths
             assert "/etc/ssh" in preview_paths
             assert "/etc/network" in preview_paths
-            assert "/opt" not in preview_paths
+            assert "/opt" in preview_paths
+            assert "/var/lib/vz/template" in preview_paths
 
             response = client.get("/api/restore/preview/missing")
             assert response.status_code == 404
@@ -419,7 +435,7 @@ def main():
                 "/api/restore",
                 json={
                     "backup_id": "restore-ok",
-                    "paths": ["/home"],
+                    "paths": ["/not-allowed"],
                     "source_config": {
                         "mode": "remote_ssh",
                         "ssh": {

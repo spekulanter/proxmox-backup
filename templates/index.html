@@ -808,7 +808,11 @@
                 
             } catch (error) {
                 console.error('Backup error:', error);
-                alert('Chyba pri vytváraní zálohy: ' + error.message);
+                const interrupted = error instanceof TypeError && String(error.message || '').toLowerCase().includes('failed to fetch');
+                const message = interrupted
+                    ? 'Spojenie s aplikáciou sa prerušilo počas zálohy. Pri veľkých ISO/šablónach to zvyčajne znamená timeout služby; po update/reštarte služby skús zálohu znova a skontroluj históriu.'
+                    : error.message;
+                alert('Chyba pri vytváraní zálohy: ' + message);
             } finally {
                 backupBtn.textContent = 'Vytvoriť zálohu teraz';
                 backupBtn.disabled = false;
