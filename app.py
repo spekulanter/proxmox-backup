@@ -19,7 +19,7 @@ app = Flask(__name__)
 app.secret_key = 'proxmox-backup-secret-key-change-in-production'
 
 # Konfiguračný súbor
-CONFIG_VERSION = 4
+CONFIG_VERSION = 5
 CONFIG_FILE = 'backup_config.json'
 BACKUP_HISTORY_FILE = 'backup_history.json'
 BACKUP_STORAGE_DIR = os.environ.get('BACKUP_STORAGE_DIR', 'backups')
@@ -494,7 +494,10 @@ def default_config():
         'backup_files': [item.copy() for item in DEFAULT_BACKUP_FILES],
         'backup_categories': BACKUP_CATEGORIES,
         'auto_backup_enabled': False,
-        'auto_backup_frequency': 'monthly'
+        'auto_backup_frequency': 'monthly',
+        'auto_backup_day': 6,
+        'auto_backup_hour': 2,
+        'auto_backup_minute': 0
     }
 
 def copy_source_config(source_config):
@@ -602,6 +605,9 @@ def migrate_config(config):
     migrated['backup_files'] = migrated_items
     migrated['auto_backup_enabled'] = bool(config.get('auto_backup_enabled', False))
     migrated['auto_backup_frequency'] = config.get('auto_backup_frequency', 'monthly')
+    migrated['auto_backup_day'] = int(config.get('auto_backup_day', 6))
+    migrated['auto_backup_hour'] = int(config.get('auto_backup_hour', 2))
+    migrated['auto_backup_minute'] = int(config.get('auto_backup_minute', 0))
     return migrated
 
 def load_config():
@@ -1980,6 +1986,41 @@ def delete_backup(backup_id):
     except Exception as exc:
         flash(f'Chyba pri mazaní zálohy: {exc}', 'error')
     return redirect(url_for('index'))
+
+@app.route('/api/auto-backup-settings', methods=['POST'])
+def save_auto_backup_settings_api():
+    """Uloženie nastavení automatickej zálohy (frekvencia, deň, čas)."""
+    data = request.get_json(silent=True) or {}
+    config = load_config()
+    if 'auto_backup_enabled' in data:
+        config['auto_backup_enabled'] = bool(data['auto_backup_enabled'])
+    if 'auto_backup_frequency' in data:
+        freq = data['auto_backup_frequency']
+        if freq in ('weekly', 'monthly'):
+            config['auto_backup_frequency'] = freq
+    if 'auto_backup_day' in data:
+        try:
+            config['auto_backup_day'] = max(0, min(27, int(data['auto_backup_day'])))
+        except (TypeError, ValueError):
+            pass
+    if 'auto_backup_hour' in data:
+        try:
+            config['auto_backup_hour'] = max(0, min(23, int(data['auto_backup_hour'])))
+        except (TypeError, ValueError):
+            pass
+    if 'auto_backup_minute' in data:
+        try:
+            config['auto_backup_minute'] = max(0, min(59, int(data['auto_backup_minute'])))
+        except (TypeError, ValueError):
+            pass
+    save_config(config)
+    return jsonify({'success': True, 'config': {
+        'auto_backup_enabled': config['auto_backup_enabled'],
+        'auto_backup_frequency': config['auto_backup_frequency'],
+        'auto_backup_day': config['auto_backup_day'],
+        'auto_backup_hour': config['auto_backup_hour'],
+        'auto_backup_minute': config['auto_backup_minute'],
+    }})
 
 @app.route('/toggle_auto_backup')
 def toggle_auto_backup():

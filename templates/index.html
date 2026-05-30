@@ -152,8 +152,8 @@
                                     <span class="text-sm font-medium">Povoliť automatickú zálohu</span>
                                     <label class="relative inline-flex items-center cursor-pointer">
                                         <input type="checkbox" id="auto-backup" class="sr-only peer">
-                                        <div class="peer data-[state=checked]:bg-primary data-[state=unchecked]:bg-input focus-visible:border-ring focus-visible:ring-ring/50 inline-flex h-[1.15rem] w-8 shrink-0 items-center rounded-full border border-transparent shadow-xs transition-all outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 bg-input peer-checked:bg-primary">
-                                            <div class="bg-background pointer-events-none block size-4 rounded-full ring-0 transition-transform peer-checked:translate-x-[calc(100%-2px)] translate-x-0"></div>
+                                        <div class="peer data-[state=checked]:bg-primary data-[state=unchecked]:bg-input focus-visible:border-ring focus-visible:ring-ring/50 inline-flex h-[1.15rem] w-8 shrink-0 items-center rounded-full border border-transparent shadow-xs transition-all outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 bg-input peer-checked:bg-primary peer-checked:[&>div]:translate-x-[14px]">
+                                            <div class="bg-background pointer-events-none block size-4 rounded-full ring-0 transition-transform translate-x-0"></div>
                                         </div>
                                     </label>
                                 </div>
@@ -161,18 +161,55 @@
                                 <div id="auto-backup-settings" class="space-y-3 hidden">
                                     <div>
                                         <label for="frequency" class="flex items-center gap-2 text-sm leading-none font-medium">Frekvencia</label>
-                                        <select id="frequency" class="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] mt-1">
+                                        <select id="frequency" onchange="onAutoBackupChange()" class="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] mt-1">
                                             <option value="weekly">Týždenne</option>
                                             <option value="monthly">Mesačne</option>
                                         </select>
                                     </div>
-                                    
+
+                                    <div class="grid grid-cols-2 gap-3">
+                                        <div id="ab-weekly-day">
+                                            <label for="ab-day-week" class="flex items-center gap-2 text-sm leading-none font-medium">Deň v týždni</label>
+                                            <select id="ab-day-week" onchange="onAutoBackupChange()" class="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] mt-1">
+                                                <option value="0">Pondelok</option>
+                                                <option value="1">Utorok</option>
+                                                <option value="2">Streda</option>
+                                                <option value="3">Štvrtok</option>
+                                                <option value="4">Piatok</option>
+                                                <option value="5">Sobota</option>
+                                                <option value="6">Nedeľa</option>
+                                            </select>
+                                        </div>
+                                        <div id="ab-monthly-day" class="hidden">
+                                            <label for="ab-day-month" class="flex items-center gap-2 text-sm leading-none font-medium">Deň v mesiaci</label>
+                                            <select id="ab-day-month" onchange="onAutoBackupChange()" class="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] mt-1">
+                                                <!-- naplní JS -->
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="flex items-center gap-2 text-sm leading-none font-medium">Čas spustenia</label>
+                                            <div class="flex items-center gap-1 mt-1">
+                                                <select id="ab-hour" onchange="onAutoBackupChange()" class="flex h-9 w-20 rounded-md border border-input bg-transparent px-2 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                                                    <!-- naplní JS -->
+                                                </select>
+                                                <span class="text-muted-foreground font-medium px-1">:</span>
+                                                <select id="ab-minute" onchange="onAutoBackupChange()" class="flex h-9 w-20 rounded-md border border-input bg-transparent px-2 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                                                    <option value="0">00</option>
+                                                    <option value="15">15</option>
+                                                    <option value="30">30</option>
+                                                    <option value="45">45</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                    </div>
+
                                     <div class="flex items-center gap-2 rounded-lg border border-border px-4 py-3 text-sm">
                                         <svg class="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                                         </svg>
                                         <div>Ďalšia automatická záloha: <span id="next-backup">Nedeľa 02:00</span></div>
                                     </div>
+                                    <div id="ab-save-status" class="hidden text-xs text-green-700">&#10003; Nastavenia uložené</div>
                                 </div>
                             </div>
                         </div>
@@ -453,19 +490,56 @@
             // Auto backup toggle
             const autoBackupToggle = document.getElementById('auto-backup');
             const autoBackupSettings = document.getElementById('auto-backup-settings');
-            
-            autoBackupToggle.addEventListener('change', function() {
+
+            // Populate hour select (00-23)
+            const abHour = document.getElementById('ab-hour');
+            for (let h = 0; h < 24; h++) {
+                const o = document.createElement('option');
+                o.value = h;
+                o.textContent = String(h).padStart(2, '0');
+                abHour.appendChild(o);
+            }
+
+            // Populate day-of-month select (1-28)
+            const abDayMonth = document.getElementById('ab-day-month');
+            for (let d = 1; d <= 28; d++) {
+                const o = document.createElement('option');
+                o.value = d - 1;
+                o.textContent = d + '. deň';
+                abDayMonth.appendChild(o);
+            }
+
+            // Restore saved values
+            const abFreq = appConfig.auto_backup_frequency || 'weekly';
+            const abDay = parseInt(appConfig.auto_backup_day ?? 6);
+            const abHourVal = parseInt(appConfig.auto_backup_hour ?? 2);
+            const abMinVal = parseInt(appConfig.auto_backup_minute ?? 0);
+            document.getElementById('frequency').value = abFreq;
+            document.getElementById('ab-day-week').value = abFreq === 'weekly' ? abDay : 6;
+            document.getElementById('ab-day-month').value = abFreq === 'monthly' ? abDay : 0;
+            document.getElementById('ab-hour').value = abHourVal;
+            document.getElementById('ab-minute').value = abMinVal;
+            abUpdateDayVisibility();
+            abUpdateNextText();
+
+            if (appConfig.auto_backup_enabled) {
+                autoBackupToggle.checked = true;
+                autoBackupSettings.classList.remove('hidden');
+            }
+
+            autoBackupToggle.addEventListener('change', async function() {
                 if (this.checked) {
                     autoBackupSettings.classList.remove('hidden');
                 } else {
                     autoBackupSettings.classList.add('hidden');
                 }
+                await abSaveSettings();
             });
-            
+
             // Frequency change
             const frequencySelect = document.getElementById('frequency');
             const nextBackupSpan = document.getElementById('next-backup');
-            
+
             frequencySelect.addEventListener('change', function() {
                 if (this.value === 'weekly') {
                     nextBackupSpan.textContent = 'Nedeľa 02:00';
@@ -474,6 +548,62 @@
                 }
             });
         });
+
+        function abUpdateDayVisibility() {
+            const freq = document.getElementById('frequency').value;
+            document.getElementById('ab-weekly-day').classList.toggle('hidden', freq !== 'weekly');
+            document.getElementById('ab-monthly-day').classList.toggle('hidden', freq !== 'monthly');
+        }
+
+        function abUpdateNextText() {
+            const freq = document.getElementById('frequency').value;
+            const h = parseInt(document.getElementById('ab-hour').value);
+            const m = parseInt(document.getElementById('ab-minute').value);
+            const t = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
+            const days = ['Pondelok','Utorok','Streda','Štvrtok','Piatok','Sobota','Nedeľa'];
+            let txt;
+            if (freq === 'weekly') {
+                txt = days[parseInt(document.getElementById('ab-day-week').value)] + ' ' + t;
+            } else {
+                txt = (parseInt(document.getElementById('ab-day-month').value) + 1) + '. deň v mesiaci ' + t;
+            }
+            document.getElementById('next-backup').textContent = txt;
+        }
+
+        async function onAutoBackupChange() {
+            abUpdateDayVisibility();
+            abUpdateNextText();
+            await abSaveSettings();
+        }
+
+        async function abSaveSettings() {
+            const freq = document.getElementById('frequency').value;
+            const day = parseInt(freq === 'weekly'
+                ? document.getElementById('ab-day-week').value
+                : document.getElementById('ab-day-month').value);
+            const payload = {
+                auto_backup_enabled: document.getElementById('auto-backup').checked,
+                auto_backup_frequency: freq,
+                auto_backup_day: day,
+                auto_backup_hour: parseInt(document.getElementById('ab-hour').value),
+                auto_backup_minute: parseInt(document.getElementById('ab-minute').value)
+            };
+            try {
+                const r = await fetch('/api/auto-backup-settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const result = await r.json().catch(() => ({}));
+                if (result.success) {
+                    const s = document.getElementById('ab-save-status');
+                    s.classList.remove('hidden');
+                    setTimeout(() => s.classList.add('hidden'), 2000);
+                }
+            } catch (e) {
+                console.error('Auto backup save error:', e);
+            }
+        }
 
         // Load configuration from API
         async function loadConfig() {
