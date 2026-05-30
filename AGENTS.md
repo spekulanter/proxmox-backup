@@ -2,6 +2,8 @@
 
 Pokyny pre agentov pracujúcich na projekte **Proxmox Backup Manager**.
 
+> Tento súbor je autoritatívny zdroj pokynov. `CLAUDE.md` naň odkazuje a dopĺňa ho.
+
 ## Kontext projektu
 
 Proxmox Backup Manager je jednoduchá Flask webová aplikácia na správu a automatizáciu záloh Proxmox VE serverov. Umožňuje nastaviť FTP server, vybrať kritické súbory a adresáre, spustiť manuálnu zálohu a sledovať históriu záloh.
@@ -12,21 +14,24 @@ Projekt je určený hlavne na beh v LXC kontajneri na Proxmoxe, typicky ako root
 
 - Backend: Python 3, Flask
 - Frontend: samostatné `templates/index.html` rozhranie s Tailwind CDN štýlom
-- Persistencia: lokálne JSON súbory
+- Persistencia: lokálne JSON súbory (`backup_config.json`, `backup_history.json`)
+- SSH zdroj zálohy: `paramiko` (remote_ssh mode — appka beží v LXC, číta Proxmox host cez SSH)
 - Deployment: `install_in_lxc.sh`, `update.sh`, systemd, gunicorn
 - Automatizácia záloh: `auto_backup.sh`
 
 ## Dôležité súbory
 
-- `app.py` - hlavná Flask aplikácia a API endpointy
+- `app.py` - hlavná Flask aplikácia a API endpointy (2000+ riadkov, single-file)
 - `templates/index.html` - webové rozhranie aplikácie
-- `requirements.txt` - Python závislosti
+- `requirements.txt` - Python závislosti (Flask, Werkzeug, gunicorn, paramiko)
 - `install_in_lxc.sh` - idempotentný inštalačný/update skript pre LXC
 - `update.sh` - manuálny update nainštalovanej aplikácie
 - `auto_backup.sh` - spúšťač automatickej zálohy
 - `test.sh` - rýchly smoke test služby a HTTP endpointov
+- `tests/test_archive.py` - rozsiahly unit/integration test (archív, SSH, FTP, restore, API)
 - `backup_config.json` - lokálna runtime konfigurácia, obsahuje citlivé údaje
 - `backup_history.json` - lokálna runtime história záloh, vytvára sa aplikáciou
+- `backups/` - lokálny adresár pre uložené `.tar.gz` archívy (chmod 700, mimo git)
 
 ## Produktové očakávania
 
@@ -35,14 +40,17 @@ Aplikácia má zostať ľahká, praktická a zrozumiteľná pre administrátora 
 Hlavné funkcie:
 
 - konfigurácia FTP pripojenia
-- test FTP pripojenia pred uložením alebo zálohou
-- kategorizovaný výber súborov a adresárov na zálohovanie
-- manuálne vytvorenie `.tar.gz` archívu
+- konfigurácia zdroja zálohy: `remote_ssh` (LXC číta Proxmox cez SSH) alebo `local` (appka beží priamo na hosta)
+- test FTP aj SSH pripojenia pred uložením alebo zálohou
+- kategorizovaný výber súborov a adresárov na zálohovanie (6 kategórií)
+- manuálne vytvorenie `.tar.gz` archívu (lokálne alebo streamom cez SSH)
 - generovanie `backup-info/` inventára a `README-RESTORE.txt`
 - upload zálohy na FTP
-- lokálna história záloh
+- lokálna história záloh s FTP sync stavom
+- mazanie zálohy lokálne aj z FTP
+- **restore workflow**: preview obsahu archívu → výber ciest → bezpečný restore na Proxmox host cez SSH (whitelist, staging, pre-apply záloha)
 - týždenné alebo mesačné automatické zálohovanie
-- záloha AUTO.FS/QNAP/WD konfigurácie bez automatického restore
+- záloha AUTO.FS/QNAP/WD konfigurácie
 
 Pri úpravách preferuj spoľahlivosť a jasné chybové hlášky pred vizuálnymi efektmi alebo veľkými refaktormi.
 
@@ -61,9 +69,12 @@ Pri úpravách preferuj spoľahlivosť a jasné chybové hlášky pred vizuálny
 - Zachovaj jednoduchú single-app architektúru, pokiaľ úloha výslovne nevyžaduje väčšie delenie.
 - Preferuj malé, čitateľné zmeny pred plošným refaktorom.
 - API odpovede vracaj ako JSON a používateľské akcie vo webovom rozhraní komunikuj jasnými stavmi.
-- Ak pridáš novú konfiguráciu, zahrň jej predvolenú hodnotu do `load_config()`.
+- Ak pridáš novú konfiguráciu, zahrň jej predvolenú hodnotu do `default_config()` aj `migrate_config()`.
+- Ak meníš štruktúru `backup_config.json`, zvýš `CONFIG_VERSION` a aktualizuj `migrate_config()`.
 - Ak pridáš nový runtime súbor, aktualizuj dokumentáciu a `.gitignore`, ak má zostať lokálny.
 - Slovenské texty v UI a hláškach drž konzistentné.
+- Legacy form-based routes (`/toggle_file`, `/create_backup`, `/save_ftp_config` atď.) sú zachované pre kompatibilitu; nové funkcie pridávaj cez `/api/*` endpointy.
+- Restore je povolený iba na cesty z `restore_whitelist_paths()` (odvodené z `DEFAULT_BACKUP_FILES` bez wildcardov a exclude-ciest).
 
 ## UI smerovanie
 
@@ -106,6 +117,24 @@ bash -n test.sh
 
 Pri zmenách frontendu over, že hlavná stránka stále obsahuje názov aplikácie a vie volať existujúce API endpointy.
 
+## API endpointy (prehľad)
+
+| Endpoint | Metóda | Popis |
+|----------|--------|-------|
+| `/api/config` | GET | Konfigurácia + história záloh + štatistiky |
+| `/api/files` | GET | Zoznam súborov na zálohovanie |
+| `/api/files/<idx>/toggle` | POST | Prepnutie výberu jedného súboru |
+| `/api/files/selection` | POST | Hromadný výber/odznačenie |
+| `/api/settings` | POST | Uloženie FTP a source konfigurácie |
+| `/api/test-ftp` | POST | Test FTP pripojenia |
+| `/api/test-ssh` | POST | Test SSH pripojenia na Proxmox host |
+| `/api/backup` | POST | Spustenie zálohy |
+| `/api/backups/<id>` | DELETE | Zmazanie zálohy (lokálne + FTP + história) |
+| `/api/restore/archives` | GET | Lokálne dostupné archívy na restore |
+| `/api/restore/preview/<id>` | GET | Preview obnoviteľných ciest v archíve |
+| `/api/restore/preview/<id>/members` | GET | Detail členov archívu (`?path=...` alebo všetky) |
+| `/api/restore` | POST | Spustenie restore (vyžaduje `confirm: "OBNOVIT"`) |
+
 ## Subagenti
 
 Projekt má odporúčané subagent profily v `.codex/agents/`:
@@ -123,9 +152,10 @@ Pri väčšej úlohe použi najmenší praktický počet subagentov. Nepúšťaj
 Predvolená služba:
 
 - názov služby: `proxmox-backup.service`
-- pracovný adresár: `/opt/proxmox-backup`
+- pracovný adresár: `/opt/proxmox-backup` (v repozitári kód leží v `/opt`, nie v podadresári)
 - port: `5000`
-- produkčný server: gunicorn
+- produkčný server: gunicorn (2 workers, timeout 7200s kvôli dlhým SSH streamom)
+- env premenná: `BACKUP_STORAGE_DIR` (predvolene `backups/` relatívne k working directory)
 
 Užitočné prevádzkové príkazy:
 
@@ -141,4 +171,8 @@ journalctl -u proxmox-backup.service -f
 - V pracovnom strome môžu byť lokálne zmeny používateľa. Pred úpravami skontroluj stav a neprepisuj cudzie zmeny.
 - Tento projekt môže bežať priamo v `/opt`; nepredpokladaj vždy štandardný repozitár v domovskom adresári.
 - Ak `rg` nie je dostupné, použi `find`, `grep` alebo bežné shell nástroje.
-- Dokument `AGENTS.md` je zdroj pokynov pre prácu v tomto repozitári; pôvodný produktový brief bol zredukovaný do týchto praktických pravidiel.
+- `app.py` má 2000+ riadkov — pred väčšou zmenou si prečítaj relevantnú sekciu, nie len prvých 100 riadkov.
+- Remote SSH záloha streamuje `tar` výstup cez paramiko do lokálneho súboru — timeout gunicornu 7200s je zámerný.
+- Restore má vlastný whitelist (`restore_whitelist_paths`), staging adresár a pre-apply zálohu na hostovi — neobchádzaj tieto kroky.
+- `CLAUDE.md` je alias/doplnok tohto súboru pre Claude-based agenty.
+- Dokument `AGENTS.md` je autoritatívny zdroj pokynov pre prácu v tomto repozitári.
