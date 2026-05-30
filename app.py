@@ -1141,6 +1141,74 @@ def upload_to_ftp(local_file, ftp_config):
     except Exception as e:
         return False, f"Chyba pri nahrávaní na FTP: {str(e)}"
 
+def ftp_config_complete(ftp_config):
+    ftp_config = sanitize_ftp_config(ftp_config)
+    return bool(ftp_config.get('host') and ftp_config.get('username') and ftp_config.get('password'))
+
+def delete_from_ftp(filename, ftp_config):
+    """Zmaže archív z FTP; chýbajúci súbor berie ako hotový stav."""
+    if not filename:
+        return False, 'Záznam nemá názov súboru pre FTP'
+    ftp_config = sanitize_ftp_config(ftp_config)
+    if not ftp_config_complete(ftp_config):
+        return False, 'FTP konfigurácia chýba, vzdialený súbor sa nedá zmazať'
+
+    ftp = None
+    try:
+        ftp = ftplib.FTP(timeout=30)
+        ftp.connect(ftp_config['host'], ftp_config['port'])
+        ftp.login(ftp_config['username'], ftp_config['password'])
+        ftp_cwd_to_target(ftp, ftp_config.get('remote_dir', ''))
+        try:
+            ftp.delete(filename)
+            return True, 'Súbor zmazaný z FTP'
+        except ftplib.error_perm as exc:
+            if str(exc).startswith('550'):
+                return True, 'Súbor na FTP už neexistoval'
+            raise
+    except Exception as exc:
+        return False, f'Chyba pri mazaní z FTP: {exc}'
+    finally:
+        if ftp:
+            try:
+                ftp.quit()
+            except Exception:
+                pass
+
+def ftp_file_exists(filename, ftp_config):
+    """Best-effort kontrola existencie súboru na FTP."""
+    if not filename or not ftp_config_complete(ftp_config):
+        return None
+
+    ftp = None
+    try:
+        ftp = ftplib.FTP(timeout=10)
+        ftp_config = sanitize_ftp_config(ftp_config)
+        ftp.connect(ftp_config['host'], ftp_config['port'])
+        ftp.login(ftp_config['username'], ftp_config['password'])
+        ftp_cwd_to_target(ftp, ftp_config.get('remote_dir', ''))
+        try:
+            ftp.size(filename)
+            return True
+        except Exception:
+            try:
+                names = ftp.nlst(filename)
+                return bool(names)
+            except ftplib.error_perm as exc:
+                if str(exc).startswith('550'):
+                    return False
+                return None
+            except Exception:
+                return None
+    except Exception:
+        return None
+    finally:
+        if ftp:
+            try:
+                ftp.quit()
+            except Exception:
+                pass
+
 def get_file_size(filepath):
     """Získanie veľkosti súboru v ľudsky čitateľnom formáte"""
     if os.path.exists(filepath):
@@ -1270,17 +1338,23 @@ def tar_name_is_safe(name):
     return '..' not in normalized.split('/')
 
 def tar_link_is_safe(member):
-    """Povolí len relatívne linky bez úniku mimo staging stromu."""
+    """Povolí systémové linky, ale nie linky do runtime/mount ciest."""
     if not (member.issym() or member.islnk()):
         return True
     linkname = member.linkname or ''
-    if not linkname or linkname.startswith('/'):
+    if not linkname:
         return False
     if '\x00' in linkname or '\n' in linkname or '\r' in linkname:
         return False
+
+    if linkname.startswith('/'):
+        return not is_remote_excluded_path(linkname)
+
     base = posixpath.dirname(member.name)
     normalized_target = posixpath.normpath(posixpath.join(base, linkname))
-    return tar_name_is_safe(normalized_target)
+    if not tar_name_is_safe(normalized_target):
+        return False
+    return not is_remote_excluded_path('/' + normalized_target.lstrip('/'))
 
 def validate_tar_member(member):
     if not tar_name_is_safe(member.name):
@@ -1332,6 +1406,13 @@ def resolve_history_archive(backup_id):
     if not entry:
         raise FileNotFoundError('Archív nie je v histórii záloh')
 
+    archive_path = resolve_backup_entry_local_path(entry)
+    if not os.path.isfile(archive_path):
+        raise FileNotFoundError('Lokálny archív už neexistuje')
+    return entry, archive_path
+
+def resolve_backup_entry_local_path(entry):
+    """Bezpečne určí lokálnu cestu archívu z history entry."""
     backup_root = os.path.realpath(os.path.abspath(BACKUP_STORAGE_DIR))
     local_path = entry.get('local_path')
     if local_path:
@@ -1343,9 +1424,75 @@ def resolve_history_archive(backup_id):
 
     if not path_is_under(archive_path, backup_root):
         raise ValueError('Archív je mimo lokálneho backup adresára')
+    return archive_path
+
+def backup_entry_is_visible(entry, ftp_config=None):
+    """História má zobrazovať len archívy, ktoré ešte reálne existujú."""
+    try:
+        archive_path = resolve_backup_entry_local_path(entry)
+    except ValueError:
+        return False
     if not os.path.isfile(archive_path):
-        raise FileNotFoundError('Lokálny archív už neexistuje')
-    return entry, archive_path
+        return False
+
+    if ftp_config and entry.get('ftp_status') == 'success':
+        exists = ftp_file_exists(entry.get('filename') or os.path.basename(archive_path), ftp_config)
+        if exists is False:
+            return False
+    return True
+
+def visible_backup_history(config=None, persist_pruned=True):
+    """Vyfiltruje históriu od záznamov bez lokálneho archívu alebo bez FTP súboru."""
+    config = config or load_config()
+    history = load_backup_history()
+    ftp_config = config.get('ftp_config', {})
+    visible = [entry for entry in history if backup_entry_is_visible(entry, ftp_config)]
+    if persist_pruned and len(visible) != len(history):
+        save_backup_history(visible)
+    return visible
+
+def delete_backup_entry(backup_id, ftp_config):
+    """Zmaže lokálny archív, vzdialený FTP súbor a odstráni záznam z histórie."""
+    history = load_backup_history()
+    entry = next((item for item in history if str(item.get('id')) == str(backup_id)), None)
+    if not entry:
+        raise FileNotFoundError('Záloha nie je v histórii')
+
+    try:
+        archive_path = resolve_backup_entry_local_path(entry)
+    except ValueError as exc:
+        raise ValueError(str(exc))
+
+    ftp_deleted = None
+    ftp_message = 'FTP mazanie nebolo potrebné'
+    if entry.get('ftp_status') == 'success':
+        ftp_deleted, ftp_message = delete_from_ftp(entry.get('filename'), ftp_config)
+        if not ftp_deleted:
+            return {
+                'success': False,
+                'local_deleted': local_deleted,
+                'local_message': local_message,
+                'ftp_deleted': False,
+                'ftp_message': ftp_message,
+                'history_removed': False,
+            }
+
+    local_deleted = False
+    local_message = 'Lokálny archív neexistoval'
+    if os.path.exists(archive_path):
+        os.remove(archive_path)
+        local_deleted = True
+        local_message = 'Lokálny archív zmazaný'
+
+    save_backup_history([item for item in history if str(item.get('id')) != str(backup_id)])
+    return {
+        'success': True,
+        'local_deleted': local_deleted,
+        'local_message': local_message,
+        'ftp_deleted': ftp_deleted,
+        'ftp_message': ftp_message,
+        'history_removed': True,
+    }
 
 def list_restore_archives():
     """Zoznam archívov z histórie, ktoré sú stále dostupné lokálne."""
@@ -1499,7 +1646,7 @@ def index():
 def get_config():
     """API endpoint pre konfiguráciu"""
     config = load_config()
-    backup_history = load_backup_history()
+    backup_history = visible_backup_history(config)
     
     selected_count = sum(1 for f in config['backup_files'] if f['selected'])
     critical_selected = sum(1 for f in config['backup_files'] if f['critical'] and f['selected'])
@@ -1588,6 +1735,21 @@ def create_backup_api():
         if result['success']:
             return jsonify(result)
         return jsonify({**result, 'error': result['message']}), 502
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/backups/<backup_id>', methods=['DELETE'])
+def delete_backup_api(backup_id):
+    """Zmaže zálohu lokálne, na FTP a z histórie."""
+    config = load_config()
+    try:
+        result = delete_backup_entry(backup_id, config.get('ftp_config', {}))
+        status_code = 200 if result.get('success') else 502
+        return jsonify(result), status_code
+    except FileNotFoundError as e:
+        return jsonify({'success': False, 'error': str(e)}), 404
     except ValueError as e:
         return jsonify({'success': False, 'error': str(e)}), 400
     except Exception as e:
@@ -1708,11 +1870,16 @@ def create_backup():
 
 @app.route('/delete_backup/<backup_id>')
 def delete_backup(backup_id):
-    """Vymazanie zálohy z histórie"""
-    history = load_backup_history()
-    history = [b for b in history if b['id'] != backup_id]
-    save_backup_history(history)
-    flash('Záloha vymazaná z histórie', 'success')
+    """Legacy route: zmaže zálohu lokálne, na FTP a z histórie."""
+    config = load_config()
+    try:
+        result = delete_backup_entry(backup_id, config.get('ftp_config', {}))
+        if result.get('success'):
+            flash('Záloha zmazaná lokálne, na FTP a z histórie', 'success')
+        else:
+            flash(result.get('ftp_message') or 'Zálohu sa nepodarilo úplne zmazať', 'error')
+    except Exception as exc:
+        flash(f'Chyba pri mazaní zálohy: {exc}', 'error')
     return redirect(url_for('index'))
 
 @app.route('/toggle_auto_backup')

@@ -7,6 +7,7 @@ import tarfile
 import tempfile
 import io
 import json
+import ftplib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -120,6 +121,7 @@ class FakeFtp:
         self.cwd_calls = []
         self.stored = []
         self.deleted = []
+        self.files = {}
         self.closed = False
         FakeFtp.instances.append(self)
 
@@ -138,10 +140,26 @@ class FakeFtp:
         return self.cwd_calls[-1] if self.cwd_calls else "/"
 
     def storbinary(self, command, file_obj):
-        self.stored.append((command, file_obj.read()))
+        payload = file_obj.read()
+        self.stored.append((command, payload))
+        filename = command.replace("STOR ", "", 1)
+        self.files[filename] = payload
 
     def delete(self, filename):
         self.deleted.append(filename)
+        self.files.pop(filename, None)
+
+    def size(self, filename):
+        if filename not in self.files:
+            raise ftplib.error_perm("550 File not found")
+        return len(self.files[filename])
+
+    def nlst(self, filename=None):
+        if filename:
+            if filename in self.files:
+                return [filename]
+            raise ftplib.error_perm("550 File not found")
+        return list(self.files.keys())
 
     def quit(self):
         self.closed = True
@@ -313,6 +331,10 @@ def main():
                     info = tarfile.TarInfo(name)
                     info.size = len(payload)
                     tar.addfile(info, io.BytesIO(payload))
+                link = tarfile.TarInfo("etc/network/if-pre-up.d/bridge")
+                link.type = tarfile.SYMTYPE
+                link.linkname = "/lib/bridge-utils/ifupdown.sh"
+                tar.addfile(link)
 
             bad_archive = backup_dir / "bad.tar.gz"
             with tarfile.open(bad_archive, "w:gz") as tar:
@@ -320,6 +342,13 @@ def main():
                 info = tarfile.TarInfo("../etc/passwd")
                 info.size = len(payload)
                 tar.addfile(info, io.BytesIO(payload))
+
+            bad_link_archive = backup_dir / "bad-link.tar.gz"
+            with tarfile.open(bad_link_archive, "w:gz") as tar:
+                link = tarfile.TarInfo("etc/network/if-up.d/runtime")
+                link.type = tarfile.SYMTYPE
+                link.linkname = "/run/unsafe-target"
+                tar.addfile(link)
 
             app_module.save_backup_history([
                 {
@@ -341,6 +370,11 @@ def main():
                     "filename": bad_archive.name,
                     "local_path": str(bad_archive),
                 },
+                {
+                    "id": "bad-link",
+                    "filename": bad_link_archive.name,
+                    "local_path": str(bad_link_archive),
+                },
             ])
 
             response = client.get("/api/restore/archives")
@@ -354,6 +388,7 @@ def main():
             preview_paths = {item["path"] for item in response.get_json()["items"]}
             assert "/etc/passwd" in preview_paths
             assert "/etc/ssh" in preview_paths
+            assert "/etc/network" in preview_paths
             assert "/opt" not in preview_paths
 
             response = client.get("/api/restore/preview/missing")
@@ -366,6 +401,10 @@ def main():
             response = client.get("/api/restore/preview/bad")
             assert response.status_code == 400
             assert "Nebezpečný" in response.get_json()["error"]
+
+            response = client.get("/api/restore/preview/bad-link")
+            assert response.status_code == 400
+            assert "Nebezpečný link" in response.get_json()["error"]
 
             response = client.post(
                 "/api/restore",
@@ -449,6 +488,57 @@ def main():
             assert success, message
             assert FakeFtp.instances[-1].cwd_calls == ["/pve-backups"]
             assert FakeFtp.instances[-1].stored == [("STOR backup.tar.gz", b"archive")]
+
+        with tempfile.TemporaryDirectory(prefix="pve-delete-test-", dir=str(ROOT)) as workdir:
+            original_config_file = app_module.CONFIG_FILE
+            original_history_file = app_module.BACKUP_HISTORY_FILE
+            original_backup_dir = app_module.BACKUP_STORAGE_DIR
+            try:
+                app_module.CONFIG_FILE = str(Path(workdir) / "backup_config.json")
+                app_module.BACKUP_HISTORY_FILE = str(Path(workdir) / "backup_history.json")
+                app_module.BACKUP_STORAGE_DIR = str(Path(workdir) / "backups")
+                backup_dir = Path(app_module.BACKUP_STORAGE_DIR)
+                backup_dir.mkdir()
+                archive = backup_dir / "delete-me.tar.gz"
+                archive.write_bytes(b"archive")
+                missing_archive = backup_dir / "missing.tar.gz"
+
+                config = app_module.default_config()
+                config["ftp_config"] = ftp_config
+                app_module.save_config(config)
+                app_module.save_backup_history([
+                    {
+                        "id": "missing-local",
+                        "filename": missing_archive.name,
+                        "local_path": str(missing_archive),
+                        "ftp_status": "failed",
+                    },
+                ])
+
+                client = app_module.app.test_client()
+                response = client.get("/api/config")
+                assert response.status_code == 200
+                visible_ids = {entry["id"] for entry in response.get_json()["backup_history"]}
+                assert "missing-local" not in visible_ids
+
+                app_module.save_backup_history([
+                    {
+                        "id": "delete-me",
+                        "filename": archive.name,
+                        "local_path": str(archive),
+                        "ftp_status": "success",
+                    },
+                ])
+
+                response = client.delete("/api/backups/delete-me")
+                assert response.status_code == 200, response.get_data(as_text=True)
+                assert not archive.exists()
+                assert not app_module.load_backup_history()
+                assert FakeFtp.instances[-1].deleted == [archive.name]
+            finally:
+                app_module.CONFIG_FILE = original_config_file
+                app_module.BACKUP_HISTORY_FILE = original_history_file
+                app_module.BACKUP_STORAGE_DIR = original_backup_dir
     finally:
         app_module.ftplib.FTP = original_ftp
 

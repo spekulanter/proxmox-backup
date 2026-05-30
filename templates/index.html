@@ -821,7 +821,12 @@
                     <div class="rounded-lg border p-3 space-y-2">
                         <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                             <div class="font-medium text-sm break-all">${escapeHtml(entry.filename || 'backup')}</div>
-                            <div class="text-xs text-muted-foreground">${escapeHtml(timestamp)}</div>
+                            <div class="flex items-center gap-3">
+                                <div class="text-xs text-muted-foreground">${escapeHtml(timestamp)}</div>
+                                <button type="button" data-backup-id="${escapeHtml(entry.id)}" onclick="deleteBackup(this.dataset.backupId)" class="inline-flex items-center justify-center rounded-md border border-red-200 bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-100">
+                                    Odstrániť
+                                </button>
+                            </div>
                         </div>
                         <div class="flex flex-wrap gap-2 text-xs">
                             <span class="rounded-md bg-secondary px-2 py-1">Veľkosť: ${escapeHtml(entry.size || 'n/a')}</span>
@@ -834,6 +839,30 @@
                     </div>
                 `;
             }).join('');
+        }
+
+        async function deleteBackup(backupId) {
+            if (!backupId) return;
+            if (!confirm('Zmazať túto zálohu lokálne, na FTP a odstrániť ju z histórie?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/backups/${encodeURIComponent(backupId)}`, {
+                    method: 'DELETE'
+                });
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok || !result.success) {
+                    throw new Error(result.error || result.ftp_message || 'Zálohu sa nepodarilo zmazať');
+                }
+                alert(`Záloha zmazaná.\n${result.local_message || ''}\n${result.ftp_message || ''}`);
+                await loadConfig();
+                await loadRestoreArchives();
+            } catch (error) {
+                console.error('Delete backup error:', error);
+                alert('Chyba pri mazaní zálohy: ' + error.message);
+                await loadConfig();
+            }
         }
 
         async function loadRestoreArchives() {
@@ -859,6 +888,7 @@
         function renderRestoreArchives() {
             const select = document.getElementById('restore-archive-select');
             if (!select) return;
+            const currentValue = select.value;
 
             if (!restoreArchives.length) {
                 select.innerHTML = '<option value="">Žiadny lokálny archív nie je dostupný</option>';
@@ -871,6 +901,9 @@
                 const label = `${archive.filename || 'backup'} | ${archive.timestamp || 'bez dátumu'} | ${archive.size || 'n/a'}`;
                 return `<option value="${escapeHtml(archive.id)}">${escapeHtml(label)}</option>`;
             }).join('');
+            if (currentValue && restoreArchives.some(archive => String(archive.id) === String(currentValue))) {
+                select.value = currentValue;
+            }
         }
 
         async function loadRestorePreview() {
@@ -920,20 +953,64 @@
                 return;
             }
 
-            container.innerHTML = restorePreviewItems.map(item => `
-                <label class="flex items-start gap-3 rounded-lg border p-3">
-                    <input type="checkbox" class="restore-checkbox mt-1 h-4 w-4" data-path="${escapeHtml(item.path)}" onchange="updateRestoreButton()">
-                    <div class="flex-1 space-y-1">
-                        <div class="flex flex-wrap items-center gap-2">
-                            <span class="font-medium text-sm">${escapeHtml(item.name || item.path)}</span>
-                            ${renderTags(item)}
-                            <span class="rounded-md bg-secondary px-2 py-0.5 text-[11px] font-semibold">${item.member_count || 0} položiek</span>
+            const categories = backupCategories.length
+                ? backupCategories
+                : [{ id: 'system_config', name: 'Súbory', description: 'Obnoviteľné položky archívu' }];
+
+            const sections = categories.map(category => {
+                const itemsInCategory = restorePreviewItems.filter(item => (item.category || 'system_config') === category.id);
+                if (!itemsInCategory.length) return '';
+
+                const rows = itemsInCategory.map(item => `
+                    <label class="flex items-start gap-3 rounded-lg border p-3">
+                        <input type="checkbox" class="restore-checkbox mt-1 h-4 w-4" data-path="${escapeHtml(item.path)}" checked onchange="updateRestoreButton()">
+                        <div class="flex-1 space-y-1">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <span class="font-medium text-sm">${escapeHtml(item.name || item.path)}</span>
+                                ${renderTags(item)}
+                                <span class="rounded-md bg-secondary px-2 py-0.5 text-[11px] font-semibold">${item.member_count || 0} položiek</span>
+                            </div>
+                            <p class="text-sm text-muted-foreground">${escapeHtml(item.description || '')}</p>
+                            <p class="text-xs text-muted-foreground font-mono break-all">${escapeHtml(item.path)}</p>
                         </div>
-                        <p class="text-sm text-muted-foreground">${escapeHtml(item.description || '')}</p>
-                        <p class="text-xs text-muted-foreground font-mono break-all">${escapeHtml(item.path)}</p>
+                    </label>
+                `).join('');
+
+                return `
+                    <div class="space-y-3">
+                        <div class="pt-2">
+                            <h3 class="text-sm font-semibold text-foreground">${escapeHtml(category.name)}</h3>
+                            <p class="text-xs text-muted-foreground">${escapeHtml(category.description || '')}</p>
+                        </div>
+                        ${rows}
                     </div>
-                </label>
-            `).join('');
+                `;
+            }).join('');
+
+            container.innerHTML = `
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div class="text-sm text-muted-foreground">
+                        Vybrané na obnovu: <span id="restore-selected-count" class="font-medium text-foreground">0</span> z ${restorePreviewItems.length}
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                        <button type="button" onclick="setAllRestoreSelection(true)" class="inline-flex items-center justify-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium shadow-xs hover:bg-accent">
+                            Vybrať všetko
+                        </button>
+                        <button type="button" onclick="setAllRestoreSelection(false)" class="inline-flex items-center justify-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium shadow-xs hover:bg-accent">
+                            Zrušiť výber
+                        </button>
+                    </div>
+                </div>
+                ${sections}
+            `;
+            updateRestoreButton();
+        }
+
+        function setAllRestoreSelection(checked) {
+            document.querySelectorAll('.restore-checkbox').forEach(cb => {
+                cb.checked = checked;
+            });
+            updateRestoreButton();
         }
 
         function getSelectedRestorePaths() {
@@ -952,6 +1029,10 @@
             const archiveSelected = document.getElementById('restore-archive-select')?.value !== '';
             const confirmed = document.getElementById('restore-confirm')?.value === 'OBNOVIT';
             const hasPaths = getSelectedRestorePaths().length > 0;
+            const selectedCount = document.getElementById('restore-selected-count');
+            if (selectedCount) {
+                selectedCount.textContent = String(getSelectedRestorePaths().length);
+            }
 
             btn.disabled = !(hasSsh && archiveSelected && confirmed && hasPaths);
             btn.classList.toggle('opacity-50', btn.disabled);
@@ -1135,7 +1216,13 @@
                 document.getElementById(id).addEventListener('input', updateRestoreButton);
             });
             document.getElementById('source-mode').addEventListener('change', updateSourceModeVisibility);
-            document.getElementById('restore-archive-select').addEventListener('change', updateRestoreButton);
+            document.getElementById('restore-archive-select').addEventListener('change', function() {
+                restorePreviewItems = [];
+                renderRestorePreview();
+                document.getElementById('restore-status').classList.add('hidden');
+                document.getElementById('restore-result').classList.add('hidden');
+                updateRestoreButton();
+            });
             document.getElementById('restore-confirm').addEventListener('input', updateRestoreButton);
         });
     </script>
