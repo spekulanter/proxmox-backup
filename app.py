@@ -735,37 +735,74 @@ def build_restore_readme(selected_files):
 
 Vygenerované: {datetime.now().isoformat(timespec='seconds')}
 
-Táto záloha je backup-only. Aplikácia v tejto verzii neprepisuje systémové súbory automaticky.
-Obnovu rob ručne a pred prepisom vždy skontroluj obsah archívu.
+Táto záloha obsahuje konfiguráciu Proxmox hosta, nie VM/CT disky. Disky VM/LXC obnovuj
+samostatne z Proxmox vzdump/PBS/NAS záloh alebo z pôvodného storage.
+Pred každým prepisom najprv rozbaľ archív do dočasného adresára a skontroluj obsah.
 
 ## Vybrané cesty
 
 {selected_paths}
 
-## Odporúčaný postup obnovy
+## Keď zomrel celý server
 
-1. Nainštaluj čistý Proxmox VE a over sieť.
-2. Rozbaľ archív do dočasného adresára, nie priamo do `/`.
-3. Skontroluj `backup-info/` výstupy: `pveversion-v.txt`, `pvesm-config.txt`, `pve-backup-jobs.json`, sieť a storage.
-4. Obnov Proxmox konfiguráciu najmä z `/etc/pve` a `/var/lib/pve-cluster/config.db` podľa situácie a Proxmox dokumentácie.
-5. Obnov sieťové a storage súbory: `/etc/network`, `/etc/hosts`, `/etc/hostname`, `/etc/fstab`, `/etc/resolv.conf`.
-6. Pre AUTO.FS/QNAP/WD nainštaluj balíky:
+1. Nainštaluj čistý Proxmox VE, ideálne rovnakú alebo kompatibilnú major verziu ako pôvodný host.
+2. Počas inštalácie použi pôvodný hostname, ak ho chceš obnoviť bez presunu node configov
+   v `/etc/pve/nodes/<hostname>/`. Ak zmeníš hostname, VM/LXC configy bude treba prispôsobiť.
+3. Ako prvé spojazdni minimálnu sieť: správny management IP, gateway, DNS a bridge. Pred prepisom
+   `/etc/network` porovnaj názvy sieťových kariet cez `ip link`, lebo nový hardvér môže mať iné názvy.
+4. Získaj archív z FTP/NAS/lokálneho disku a rozbaľ ho iba do dočasného adresára, napríklad:
+   `mkdir -p /root/pve-restore-review && tar -xzf proxmox_backup_*.tar.gz -C /root/pve-restore-review`
+5. Skontroluj `backup-info/` výstupy: `pveversion-v.txt`, `pvesm-config.txt`, `pve-backup-jobs.json`,
+   `network-interfaces.txt`, `ip-addr.txt`, `lsblk-f.txt`, `findmnt.txt` a storage konfiguráciu.
+6. Obnov alebo znovu nainštaluj LXC s Proxmox Backup Managerom. Ak nemáš zálohu LXC, môžeš aplikáciu
+   nainštalovať nanovo a archív obnovovať ručne alebo ho vložiť do lokálneho `backups/` adresára spolu
+   s príslušnou históriou, aby ho aplikácia videla v restore UI.
+7. Pred automatickou obnovou cez aplikáciu nastav SSH prístup na nový Proxmox host a otestuj pripojenie.
+   Aplikácia pred prepisom vytvorí rollback kópiu existujúcich cieľových ciest v `/root`.
+
+## Poradie obnovy konfigurácie
+
+1. Najprv rieš sieť a identitu hosta: `/etc/hostname`, `/etc/hosts`, `/etc/network`,
+   `/etc/resolv.conf` a podľa potreby `/etc/fstab`.
+2. Proxmox konfiguráciu obnovuj hlavne z `/etc/pve` a `/var/lib/pve-cluster/config.db`.
+   Úplnú obnovu `config.db` rob iba na novom hoste, keď nič nebeží: zastav `pve-cluster`, nahraď
+   `/var/lib/pve-cluster/config.db`, nastav práva `0600`, uprav hostname/hosts podľa pôvodného hosta
+   a reštartuj server.
+3. VM/LXC definície sú v `/etc/pve/nodes/<node>/qemu-server/` a `/etc/pve/nodes/<node>/lxc/`.
+   Poznámky z Proxmox GUI sú súčasťou týchto configov ako `description`.
+4. Obnov storage nastavenia až po overení, že nové disky, ZFS pooly, mounty, NFS/CIFS exporty a názvy
+   storage sedia s pôvodnou konfiguráciou.
+5. Lokálne účty a mapovania (`/etc/passwd`, `/etc/group`, `/etc/shadow`, `/etc/subuid`, `/etc/subgid`)
+   obnovuj opatrne, najmä ak už na novom hoste vznikli nové účty.
+6. SSH konfiguráciu (`/etc/ssh`) obnov len vtedy, keď chceš zachovať starú SSH identitu hosta a kľúče.
+
+## AUTO.FS / QNAP / WD
+
+1. Nainštaluj potrebné balíky:
    `apt update && apt install -y autofs nfs-common`
-7. Obnov `/etc/auto.master`, `/etc/auto.master.d/`, `/etc/auto.nfs`.
-8. Obnov `/usr/local/sbin/pve_vzdump_enable_run_disable.sh` a nastav:
+2. Obnov `/etc/auto.master`, `/etc/auto.master.d/`, `/etc/auto.nfs`.
+3. Obnov `/usr/local/sbin/pve_vzdump_enable_run_disable.sh` a nastav:
    `chmod 0755 /usr/local/sbin/pve_vzdump_enable_run_disable.sh`
-9. Obnov `pve-backup-*.service` a `pve-backup-*.timer` do `/etc/systemd/system/`.
-10. Ručne skontroluj `NODE`, `JOB_ID`, IP adresy QNAP/WD a NFS exporty.
-11. Spusti:
+4. Obnov `pve-backup-*.service` a `pve-backup-*.timer` do `/etc/systemd/system/`.
+5. Ručne skontroluj `NODE`, `JOB_ID`, IP adresy QNAP/WD a NFS exporty.
+6. Spusti:
     `systemctl daemon-reload`
     `systemctl enable --now autofs`
     `systemctl list-timers | grep pve-backup`
-12. Otestuj autofs mount cez `ls -la /autofs/<storage>` a až potom spúšťaj vzdump service.
+7. Otestuj autofs mount cez `ls -la /autofs/<storage>` a až potom spúšťaj vzdump service.
+
+## Kontroly po obnove
+
+1. Over sieť cez konzolu aj SSH, až potom reštartuj ďalšie služby.
+2. Skontroluj `pvesm status`, `pvesm config`, `qm list`, `pct list` a Proxmox GUI.
+3. Over, že VM/CT disky existujú na storage, ktoré ukazujú configy v `/etc/pve`.
+4. Spusti iba tie VM/LXC, pri ktorých sedí storage, bridge a mount pointy.
 
 ## Dôležité bezpečnostné poznámky
 
 - Archív môže obsahovať heslá, tokeny a SSH kľúče z `/root`, `/etc` alebo Proxmox konfigurácie.
 - Ukladaj ho iba na dôveryhodný FTP/NAS a zváž šifrovanie transportu alebo archívu.
+- Nikdy nerozbaľuj celý archív priamo do `/`.
 - Cesty `/mnt`, `/media`, `/proc`, `/sys`, `/dev`, `/run`, `/tmp`, `/var/tmp`, `/var/cache`, `/var/log` sú zámerne vynechané.
 """
 
