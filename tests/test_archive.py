@@ -116,6 +116,8 @@ class FakeSshClient:
 class FakeFtp:
     instances = []
     files = {}
+    mtimes = {}
+    fail_connect = False
 
     def __init__(self, timeout=None):
         self.timeout = timeout
@@ -127,6 +129,8 @@ class FakeFtp:
         FakeFtp.instances.append(self)
 
     def connect(self, host, port):
+        if FakeFtp.fail_connect:
+            raise OSError("FTP down")
         self.host = host
         self.port = port
 
@@ -155,12 +159,26 @@ class FakeFtp:
             raise ftplib.error_perm("550 File not found")
         return len(self.files[filename])
 
+    def sendcmd(self, command):
+        if command.startswith("MDTM "):
+            filename = command.replace("MDTM ", "", 1)
+            if filename not in self.files:
+                raise ftplib.error_perm("550 File not found")
+            return f"213 {FakeFtp.mtimes.get(filename, '20260529120000')}"
+        return "200 OK"
+
     def nlst(self, filename=None):
         if filename:
             if filename in self.files:
                 return [filename]
             raise ftplib.error_perm("550 File not found")
         return list(self.files.keys())
+
+    def retrbinary(self, command, callback):
+        filename = command.replace("RETR ", "", 1)
+        if filename not in self.files:
+            raise ftplib.error_perm("550 File not found")
+        callback(self.files[filename])
 
     def quit(self):
         self.closed = True
@@ -692,6 +710,104 @@ def main():
                 assert not app_module.load_backup_history()
                 assert FakeFtp.instances[-1].deleted == [archive.name]
             finally:
+                app_module.CONFIG_FILE = original_config_file
+                app_module.BACKUP_HISTORY_FILE = original_history_file
+                app_module.BACKUP_STORAGE_DIR = original_backup_dir
+
+        with tempfile.TemporaryDirectory(prefix="pve-ftp-list-test-", dir=str(ROOT)) as workdir:
+            original_config_file = app_module.CONFIG_FILE
+            original_history_file = app_module.BACKUP_HISTORY_FILE
+            original_backup_dir = app_module.BACKUP_STORAGE_DIR
+            try:
+                app_module.CONFIG_FILE = str(Path(workdir) / "backup_config.json")
+                app_module.BACKUP_HISTORY_FILE = str(Path(workdir) / "backup_history.json")
+                app_module.BACKUP_STORAGE_DIR = str(Path(workdir) / "backups")
+                backup_dir = Path(app_module.BACKUP_STORAGE_DIR)
+                backup_dir.mkdir()
+                FakeFtp.files = {}
+                FakeFtp.mtimes = {}
+                FakeFtp.fail_connect = False
+
+                local_only = backup_dir / "local-only.tar.gz"
+                local_only.write_bytes(b"local-only")
+                both = backup_dir / "both.tar.gz"
+                both.write_bytes(b"both-local")
+
+                ftp_only_bytes = io.BytesIO()
+                with tarfile.open(fileobj=ftp_only_bytes, mode="w:gz") as tar:
+                    payload = b"PermitRootLogin yes\n"
+                    info = tarfile.TarInfo("etc/ssh/sshd_config")
+                    info.size = len(payload)
+                    tar.addfile(info, io.BytesIO(payload))
+
+                FakeFtp.files = {
+                    "both.tar.gz": b"both-ftp",
+                    "ftp-only.tar.gz": ftp_only_bytes.getvalue(),
+                    "notes.txt": b"ignore",
+                }
+                FakeFtp.mtimes = {
+                    "both.tar.gz": "20260529110000",
+                    "ftp-only.tar.gz": "20260529120000",
+                }
+
+                config = app_module.default_config()
+                config["ftp_config"] = ftp_config
+                app_module.save_config(config)
+                app_module.save_backup_history([
+                    {
+                        "id": "local-only",
+                        "filename": local_only.name,
+                        "timestamp": "2026-05-29T10:00:00",
+                        "local_path": str(local_only),
+                        "ftp_status": "failed",
+                    },
+                    {
+                        "id": "both",
+                        "filename": both.name,
+                        "timestamp": "2026-05-29T11:00:00",
+                        "local_path": str(both),
+                        "ftp_status": "success",
+                    },
+                ])
+
+                client = app_module.app.test_client()
+                response = client.get("/api/backups")
+                assert response.status_code == 200, response.get_data(as_text=True)
+                data = response.get_json()
+                by_filename = {item["filename"]: item for item in data["backups"]}
+                assert by_filename["local-only.tar.gz"]["storage_locations"] == ["local"]
+                assert by_filename["both.tar.gz"]["storage_locations"] == ["local", "ftp"]
+                assert by_filename["ftp-only.tar.gz"]["storage_locations"] == ["ftp"]
+                assert by_filename["ftp-only.tar.gz"]["id"] == "ftp:ftp-only.tar.gz"
+
+                FakeFtp.fail_connect = True
+                response = client.get("/api/backups")
+                assert response.status_code == 200
+                data = response.get_json()
+                assert data["ftp"]["available"] is False
+                assert "FTP down" in data["ftp"]["warning"]
+                assert any(item["id"] == "local-only" for item in data["backups"])
+                FakeFtp.fail_connect = False
+
+                response = client.get("/api/backups/local-only/download")
+                assert response.status_code == 200, response.get_data(as_text=True)
+                assert response.data == b"local-only"
+                assert "attachment" in response.headers.get("Content-Disposition", "")
+
+                response = client.get("/api/backups/ftp:ftp-only.tar.gz/download")
+                assert response.status_code == 200, response.get_data(as_text=True)
+                assert (backup_dir / "ftp-only.tar.gz").exists()
+                assert any(item["filename"] == "ftp-only.tar.gz" for item in app_module.load_backup_history())
+
+                response = client.get("/api/restore/preview/ftp:ftp-only.tar.gz")
+                assert response.status_code == 200, response.get_data(as_text=True)
+                assert "/etc/ssh" in {item["path"] for item in response.get_json()["items"]}
+
+                response = client.post("/api/backups/ftp:..%5Cbad.tar.gz/cache")
+                assert response.status_code == 400
+                assert "Neplatný" in response.get_json()["error"]
+            finally:
+                FakeFtp.fail_connect = False
                 app_module.CONFIG_FILE = original_config_file
                 app_module.BACKUP_HISTORY_FILE = original_history_file
                 app_module.BACKUP_STORAGE_DIR = original_backup_dir

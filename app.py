@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from flask import Flask, request, jsonify, redirect, url_for, flash, render_template
+from flask import Flask, request, jsonify, redirect, url_for, flash, render_template, send_file
 import os
 import json
 import tarfile
@@ -1220,6 +1220,153 @@ def ftp_config_complete(ftp_config):
     ftp_config = sanitize_ftp_config(ftp_config)
     return bool(ftp_config.get('host') and ftp_config.get('username') and ftp_config.get('password'))
 
+def ftp_connect(ftp_config, timeout=30):
+    """Otvorí FTP session a prepne ju do nakonfigurovaného adresára."""
+    ftp_config = sanitize_ftp_config(ftp_config)
+    ftp = ftplib.FTP(timeout=timeout)
+    ftp.connect(ftp_config['host'], ftp_config['port'])
+    ftp.login(ftp_config['username'], ftp_config['password'])
+    ftp_cwd_to_target(ftp, ftp_config.get('remote_dir', ''))
+    return ftp
+
+def safe_backup_filename(filename):
+    """Povolí iba jednoduchý názov .tar.gz archívu bez adresárových častí."""
+    name = os.path.basename(str(filename or '').strip())
+    if not name or name != str(filename or '').strip():
+        raise ValueError('Neplatný názov archívu')
+    if not name.endswith('.tar.gz'):
+        raise ValueError('Podporované sú iba .tar.gz archívy')
+    if any(char in name for char in ('/', '\\', '\x00', '\n', '\r')):
+        raise ValueError('Neplatný názov archívu')
+    return name
+
+def filename_from_backup_id(backup_id):
+    """Preloží virtual FTP id späť na bezpečný názov súboru."""
+    backup_id = str(backup_id or '')
+    if backup_id.startswith('ftp:'):
+        return safe_backup_filename(backup_id[4:])
+    return None
+
+def ftp_backup_id(filename):
+    return f"ftp:{safe_backup_filename(filename)}"
+
+def format_file_size_bytes(size):
+    try:
+        size = int(size)
+    except (TypeError, ValueError):
+        return 'n/a'
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size < 1024.0:
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{size:.1f} TB"
+
+def parse_ftp_mdtm(value):
+    """Prevedie FTP MDTM odpoveď na ISO timestamp, ak ju server poskytne."""
+    if not value:
+        return ''
+    raw = str(value).strip()
+    if raw.startswith('213 '):
+        raw = raw[4:].strip()
+    try:
+        return datetime.strptime(raw[:14], '%Y%m%d%H%M%S').isoformat()
+    except (TypeError, ValueError):
+        return ''
+
+def list_ftp_backups(ftp_config):
+    """Best-effort zoznam .tar.gz archívov z FTP."""
+    ftp_config = sanitize_ftp_config(ftp_config)
+    if not ftp_config_complete(ftp_config):
+        return {
+            'available': False,
+            'warning': 'FTP konfigurácia nie je kompletná',
+            'archives': [],
+        }
+
+    ftp = None
+    try:
+        ftp = ftp_connect(ftp_config, timeout=20)
+        names = ftp.nlst()
+        archives = []
+        for raw_name in names:
+            filename = os.path.basename(str(raw_name))
+            try:
+                filename = safe_backup_filename(filename)
+            except ValueError:
+                continue
+
+            size_bytes = None
+            timestamp = ''
+            try:
+                size_bytes = ftp.size(filename)
+            except Exception:
+                size_bytes = None
+            try:
+                timestamp = parse_ftp_mdtm(ftp.sendcmd(f'MDTM {filename}'))
+            except Exception:
+                timestamp = ''
+
+            archives.append({
+                'filename': filename,
+                'id': ftp_backup_id(filename),
+                'timestamp': timestamp,
+                'size_bytes': size_bytes,
+                'size': format_file_size_bytes(size_bytes) if size_bytes is not None else 'n/a',
+            })
+        return {
+            'available': True,
+            'warning': '',
+            'archives': sorted(archives, key=lambda item: item.get('timestamp') or item.get('filename') or ''),
+        }
+    except Exception as exc:
+        return {
+            'available': False,
+            'warning': f'FTP zálohy sa nepodarilo načítať: {exc}',
+            'archives': [],
+        }
+    finally:
+        if ftp:
+            try:
+                ftp.quit()
+            except Exception:
+                pass
+
+def download_from_ftp(filename, ftp_config):
+    """Stiahne FTP archív do lokálneho backup adresára a vráti jeho cestu."""
+    filename = safe_backup_filename(filename)
+    ftp_config = sanitize_ftp_config(ftp_config)
+    if not ftp_config_complete(ftp_config):
+        raise ValueError('FTP konfigurácia chýba, archív sa nedá stiahnuť')
+
+    backup_dir = ensure_backup_storage_dir()
+    local_path = os.path.realpath(os.path.abspath(os.path.join(backup_dir, filename)))
+    backup_root = os.path.realpath(os.path.abspath(backup_dir))
+    if not path_is_under(local_path, backup_root):
+        raise ValueError('Archív je mimo lokálneho backup adresára')
+
+    temp_path = f"{local_path}.download"
+    ftp = None
+    try:
+        ftp = ftp_connect(ftp_config, timeout=60)
+        with open(temp_path, 'wb') as output_file:
+            ftp.retrbinary(f'RETR {filename}', output_file.write)
+        os.replace(temp_path, local_path)
+        os.chmod(local_path, 0o600)
+        return local_path
+    except Exception as exc:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:
+            pass
+        raise RuntimeError(f'Chyba pri sťahovaní z FTP: {exc}') from exc
+    finally:
+        if ftp:
+            try:
+                ftp.quit()
+            except Exception:
+                pass
+
 def delete_from_ftp(filename, ftp_config):
     """Zmaže archív z FTP; chýbajúci súbor berie ako hotový stav."""
     if not filename:
@@ -1580,15 +1727,15 @@ def resolve_backup_entry_local_path(entry):
     return archive_path
 
 def backup_entry_is_visible(entry, ftp_config=None):
-    """História má zobrazovať lokálne dostupné archívy aj pri dočasnom FTP výpadku."""
+    """História zobrazuje lokálne archívy a známe FTP archívy."""
     try:
         archive_path = resolve_backup_entry_local_path(entry)
     except ValueError:
         return False
-    return os.path.isfile(archive_path)
+    return os.path.isfile(archive_path) or entry.get('ftp_status') == 'success'
 
 def visible_backup_history(config=None, persist_pruned=True):
-    """Vyfiltruje históriu od záznamov bez lokálneho archívu."""
+    """Vyfiltruje históriu od záznamov bez lokálneho archívu alebo známeho FTP súboru."""
     config = config or load_config()
     history = load_backup_history()
     visible = [entry for entry in history if backup_entry_is_visible(entry)]
@@ -1596,12 +1743,234 @@ def visible_backup_history(config=None, persist_pruned=True):
         save_backup_history(visible)
     return visible
 
+def local_backup_available(entry):
+    try:
+        return os.path.isfile(resolve_backup_entry_local_path(entry))
+    except (ValueError, TypeError):
+        return False
+
+def decorate_backup_entry(entry, local_available=False, ftp_available=False, ftp_unknown=False, ftp_warning=''):
+    """Doplní storage metadáta pre UI bez zmeny uloženého záznamu."""
+    decorated = dict(entry)
+    filename = decorated.get('filename') or os.path.basename(str(decorated.get('local_path') or ''))
+    decorated['id'] = str(decorated.get('id') or (ftp_backup_id(filename) if filename else ''))
+    decorated['filename'] = filename
+    decorated['local_available'] = bool(local_available)
+    decorated['ftp_available'] = bool(ftp_available)
+    decorated['ftp_unknown'] = bool(ftp_unknown)
+    decorated['storage_locations'] = []
+    if local_available:
+        decorated['storage_locations'].append('local')
+        try:
+            archive_path = resolve_backup_entry_local_path(decorated)
+            decorated['local_path'] = archive_path
+            decorated['size'] = decorated.get('size') or get_file_size(archive_path)
+        except ValueError:
+            pass
+    if ftp_available:
+        decorated['storage_locations'].append('ftp')
+        decorated['ftp_status'] = 'success'
+    elif ftp_unknown:
+        decorated['ftp_status'] = decorated.get('ftp_status') or 'unknown'
+        if ftp_warning:
+            decorated['ftp_message'] = ftp_warning
+    elif decorated.get('ftp_status') == 'success':
+        decorated['ftp_status'] = 'missing'
+    decorated.setdefault('size', 'n/a')
+    return decorated
+
+def merge_backup_history_with_ftp(config=None):
+    """Zlúči lokálnu históriu so živým FTP zoznamom bez pádu pri FTP výpadku."""
+    config = config or load_config()
+    ftp_config = config.get('ftp_config', {})
+    history = visible_backup_history(config, persist_pruned=False)
+    ftp_result = list_ftp_backups(ftp_config)
+    ftp_by_filename = {
+        item['filename']: item
+        for item in ftp_result.get('archives', [])
+        if item.get('filename')
+    }
+
+    merged = []
+    known_filenames = set()
+    for entry in history:
+        filename = entry.get('filename')
+        known_filenames.add(filename)
+        local_available = local_backup_available(entry)
+        ftp_meta = ftp_by_filename.get(filename)
+        ftp_available = bool(ftp_meta)
+        ftp_unknown = not ftp_result.get('available') and entry.get('ftp_status') == 'success'
+        decorated = decorate_backup_entry(
+            entry,
+            local_available=local_available,
+            ftp_available=ftp_available,
+            ftp_unknown=ftp_unknown,
+            ftp_warning=ftp_result.get('warning', ''),
+        )
+        if ftp_meta:
+            decorated['ftp_size'] = ftp_meta.get('size')
+            decorated['ftp_size_bytes'] = ftp_meta.get('size_bytes')
+            if not decorated.get('timestamp'):
+                decorated['timestamp'] = ftp_meta.get('timestamp', '')
+            if not decorated.get('size') or decorated.get('size') == 'n/a':
+                decorated['size'] = ftp_meta.get('size') or 'n/a'
+        merged.append(decorated)
+
+    for filename, ftp_meta in ftp_by_filename.items():
+        if filename in known_filenames:
+            continue
+        merged.append(decorate_backup_entry(
+            {
+                'id': ftp_backup_id(filename),
+                'filename': filename,
+                'timestamp': ftp_meta.get('timestamp', ''),
+                'date': ftp_meta.get('timestamp', ''),
+                'size': ftp_meta.get('size') or 'n/a',
+                'ftp_status': 'success',
+                'status': 'ftp_only',
+                'backup_mode': 'ftp',
+            },
+            local_available=False,
+            ftp_available=True,
+        ))
+
+    merged.sort(key=backup_history_sort_key, reverse=True)
+    return {
+        'success': True,
+        'backups': merged,
+        'ftp': {
+            'available': bool(ftp_result.get('available')),
+            'warning': ftp_result.get('warning', ''),
+            'count': len(ftp_result.get('archives', [])),
+        },
+    }
+
+def find_backup_entry_or_virtual(backup_id, config=None):
+    """Nájde uložený záznam alebo vytvorí virtuálny FTP-only záznam."""
+    config = config or load_config()
+    history = load_backup_history()
+    entry = next((item for item in history if str(item.get('id')) == str(backup_id)), None)
+    if entry:
+        return entry, False
+
+    filename = filename_from_backup_id(backup_id)
+    if not filename:
+        raise FileNotFoundError('Záloha nie je v histórii')
+    entry = next((item for item in history if item.get('filename') == filename), None)
+    if entry:
+        return entry, False
+
+    ftp_result = list_ftp_backups(config.get('ftp_config', {}))
+    if not ftp_result.get('available'):
+        raise FileNotFoundError(ftp_result.get('warning') or 'FTP archívy nie sú dostupné')
+    ftp_meta = next((item for item in ftp_result.get('archives', []) if item.get('filename') == filename), None)
+    if not ftp_meta:
+        raise FileNotFoundError('Archív nie je dostupný na FTP')
+    return {
+        'id': ftp_backup_id(filename),
+        'filename': filename,
+        'timestamp': ftp_meta.get('timestamp', ''),
+        'date': ftp_meta.get('timestamp', ''),
+        'size': ftp_meta.get('size') or 'n/a',
+        'ftp_status': 'success',
+        'status': 'ftp_only',
+        'backup_mode': 'ftp',
+    }, True
+
+def persist_cached_backup_entry(entry, archive_path):
+    """Zapíše alebo aktualizuje históriu po lokálnom cache FTP archívu."""
+    filename = safe_backup_filename(entry.get('filename'))
+    history = load_backup_history()
+    existing = next(
+        (item for item in history if str(item.get('id')) == str(entry.get('id')) or item.get('filename') == filename),
+        None,
+    )
+    now = datetime.now()
+    if existing:
+        existing.update({
+            'filename': filename,
+            'local_path': archive_path,
+            'ftp_status': 'success',
+            'ftp_message': 'Archív dostupný na FTP',
+            'status': 'success',
+            'size': get_file_size(archive_path),
+        })
+        if not existing.get('timestamp'):
+            existing['timestamp'] = entry.get('timestamp') or now.isoformat()
+        if not existing.get('date'):
+            existing['date'] = entry.get('date') or now.strftime('%d.%m.%Y %H:%M')
+    else:
+        existing = dict(entry)
+        if str(existing.get('id', '')).startswith('ftp:'):
+            existing['id'] = str(time.time_ns())
+        existing.update({
+            'filename': filename,
+            'local_path': archive_path,
+            'ftp_status': 'success',
+            'ftp_message': 'Archív stiahnutý z FTP',
+            'status': 'success',
+            'size': get_file_size(archive_path),
+            'timestamp': existing.get('timestamp') or now.isoformat(),
+            'date': existing.get('date') or now.strftime('%d.%m.%Y %H:%M'),
+        })
+        history.append(existing)
+    save_backup_history(history)
+    return existing
+
+def ensure_backup_cached(backup_id, config=None):
+    """Zaistí lokálnu kópiu archívu z histórie alebo FTP-only záznamu."""
+    config = config or load_config()
+    entry, _virtual = find_backup_entry_or_virtual(backup_id, config)
+    try:
+        archive_path = resolve_backup_entry_local_path(entry)
+        if os.path.isfile(archive_path):
+            return entry, archive_path, False
+    except ValueError:
+        if entry.get('local_path'):
+            raise
+
+    if entry.get('ftp_status') != 'success' and not str(entry.get('id', '')).startswith('ftp:'):
+        raise FileNotFoundError('Lokálny archív už neexistuje a FTP kópia nie je potvrdená')
+
+    archive_path = download_from_ftp(entry.get('filename'), config.get('ftp_config', {}))
+    persisted_entry = persist_cached_backup_entry(entry, archive_path)
+    return persisted_entry, archive_path, True
+
+def restore_archive_source(entry, cached=False):
+    """Popíše, odkiaľ sa pre preview/restore reálne číta archív."""
+    if cached:
+        return {
+            'source': 'ftp_cached',
+            'label': 'FTP -> lokálna cache',
+            'message': 'Archív bol stiahnutý z FTP a používa sa jeho lokálna cache kópia.',
+        }
+    if entry.get('ftp_status') == 'success':
+        return {
+            'source': 'local',
+            'label': 'Lokálna kópia',
+            'message': 'Používa sa lokálna kópia archívu; FTP kópia je dostupná ako ďalšie úložisko.',
+        }
+    return {
+        'source': 'local',
+        'label': 'Lokálna kópia',
+        'message': 'Používa sa lokálna kópia archívu.',
+    }
+
 def delete_backup_entry(backup_id, ftp_config):
     """Zmaže lokálny archív, vzdialený FTP súbor a odstráni záznam z histórie."""
     history = load_backup_history()
     entry = next((item for item in history if str(item.get('id')) == str(backup_id)), None)
+    virtual_entry = False
     if not entry:
-        raise FileNotFoundError('Záloha nie je v histórii')
+        filename = filename_from_backup_id(backup_id)
+        if not filename:
+            raise FileNotFoundError('Záloha nie je v histórii')
+        entry = {
+            'id': backup_id,
+            'filename': filename,
+            'ftp_status': 'success',
+        }
+        virtual_entry = True
 
     try:
         archive_path = resolve_backup_entry_local_path(entry)
@@ -1629,7 +1998,11 @@ def delete_backup_entry(backup_id, ftp_config):
         local_deleted = True
         local_message = 'Lokálny archív zmazaný'
 
-    save_backup_history([item for item in history if str(item.get('id')) != str(backup_id)])
+    if virtual_entry:
+        new_history = [item for item in history if item.get('filename') != entry.get('filename')]
+    else:
+        new_history = [item for item in history if str(item.get('id')) != str(backup_id)]
+    save_backup_history(new_history)
     return {
         'success': True,
         'local_deleted': local_deleted,
@@ -1756,23 +2129,24 @@ def enforce_backup_retention(config, ftp_config):
     return {'deleted': deleted, 'warnings': warnings}
 
 def list_restore_archives():
-    """Zoznam archívov z histórie, ktoré sú stále dostupné lokálne."""
-    archives = []
-    for entry in reversed(load_backup_history()):
-        try:
-            _entry, archive_path = resolve_history_archive(entry.get('id'))
-        except (ValueError, FileNotFoundError):
-            continue
-        archives.append({
+    """Zoznam archívov dostupných lokálne alebo cez FTP cache-on-demand."""
+    result = merge_backup_history_with_ftp(load_config())
+    return [
+        {
             'id': entry.get('id'),
-            'filename': entry.get('filename') or os.path.basename(archive_path),
+            'filename': entry.get('filename'),
             'timestamp': entry.get('timestamp') or entry.get('date') or '',
-            'size': entry.get('size') or get_file_size(archive_path),
+            'size': entry.get('size') or 'n/a',
             'source_host': entry.get('source_host'),
             'source_mode': entry.get('source_mode'),
-            'local_path': archive_path,
-        })
-    return archives
+            'local_path': entry.get('local_path', ''),
+            'local_available': entry.get('local_available', False),
+            'ftp_available': entry.get('ftp_available', False),
+            'storage_locations': entry.get('storage_locations', []),
+        }
+        for entry in result.get('backups', [])
+        if entry.get('local_available') or entry.get('ftp_available')
+    ]
 
 class RemoteSshRestoreService:
     """Bezpečný restore lokálneho archívu na Proxmox host cez SSH/SFTP."""
@@ -1889,14 +2263,17 @@ def run_restore_job(backup_id, selected_paths, source_config):
             raise ValueError(f'Wildcard cesty nie sú podporované pre restore: {path}')
         clean_paths.append(normalized)
 
-    _entry, archive_path = resolve_history_archive(backup_id)
+    entry, archive_path, cached = ensure_backup_cached(backup_id)
     available_paths = {item['path'] for item in preview_restore_archive(archive_path)}
     missing = [path for path in clean_paths if path not in available_paths]
     if missing:
         raise ValueError(f'Archív neobsahuje vybrané cesty: {", ".join(missing)}')
 
     restore_service = RemoteSshRestoreService(source_config)
-    return restore_service.restore(archive_path, clean_paths)
+    result = restore_service.restore(archive_path, clean_paths)
+    result['archive_source'] = restore_archive_source(entry, cached)
+    result['archive_filename'] = entry.get('filename') or os.path.basename(archive_path)
+    return result
 
 @app.route('/')
 def index():
@@ -2059,6 +2436,55 @@ def create_auto_backup_api():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/api/backups')
+def list_backups_api():
+    """Zlúčený zoznam lokálnych a FTP archívov."""
+    config = load_config()
+    result = merge_backup_history_with_ftp(config)
+    return jsonify(result)
+
+@app.route('/api/backups/<backup_id>/cache', methods=['POST'])
+def cache_backup_api(backup_id):
+    """Stiahne FTP-only archív do lokálneho backup adresára."""
+    config = load_config()
+    try:
+        entry, archive_path, cached = ensure_backup_cached(backup_id, config)
+        return jsonify({
+            'success': True,
+            'cached': cached,
+            'archive': {
+                'id': entry.get('id'),
+                'filename': entry.get('filename') or os.path.basename(archive_path),
+                'local_path': archive_path,
+                'size': get_file_size(archive_path),
+            },
+        })
+    except FileNotFoundError as e:
+        return jsonify({'success': False, 'error': str(e)}), 404
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    except RuntimeError as e:
+        return jsonify({'success': False, 'error': str(e)}), 502
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/backups/<backup_id>/download')
+def download_backup_api(backup_id):
+    """Stiahne archív cez browser; FTP-only archívy najprv cacheuje lokálne."""
+    config = load_config()
+    try:
+        entry, archive_path, _cached = ensure_backup_cached(backup_id, config)
+        filename = safe_backup_filename(entry.get('filename') or os.path.basename(archive_path))
+        return send_file(archive_path, as_attachment=True, download_name=filename)
+    except FileNotFoundError as e:
+        return jsonify({'success': False, 'error': str(e)}), 404
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    except RuntimeError as e:
+        return jsonify({'success': False, 'error': str(e)}), 502
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/api/backups/<backup_id>', methods=['DELETE'])
 def delete_backup_api(backup_id):
     """Zmaže zálohu lokálne, na FTP a z histórie."""
@@ -2071,6 +2497,8 @@ def delete_backup_api(backup_id):
         return jsonify({'success': False, 'error': str(e)}), 404
     except ValueError as e:
         return jsonify({'success': False, 'error': str(e)}), 400
+    except RuntimeError as e:
+        return jsonify({'success': False, 'error': str(e)}), 502
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -2081,11 +2509,13 @@ def restore_archives_api():
 
 @app.route('/api/restore/preview/<backup_id>')
 def restore_preview_api(backup_id):
-    """Preview obnoviteľných whitelisted ciest v lokálnom archíve."""
+    """Preview obnoviteľných whitelisted ciest v lokálnom alebo FTP-cached archíve."""
     try:
-        entry, archive_path = resolve_history_archive(backup_id)
+        entry, archive_path, cached = ensure_backup_cached(backup_id)
         return jsonify({
             'success': True,
+            'cached': cached,
+            'archive_source': restore_archive_source(entry, cached),
             'archive': {
                 'id': entry.get('id'),
                 'filename': entry.get('filename') or os.path.basename(archive_path),
@@ -2098,6 +2528,8 @@ def restore_preview_api(backup_id):
         return jsonify({'success': False, 'error': str(e)}), 404
     except ValueError as e:
         return jsonify({'success': False, 'error': str(e)}), 400
+    except RuntimeError as e:
+        return jsonify({'success': False, 'error': str(e)}), 502
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -2106,7 +2538,7 @@ def restore_members_api(backup_id):
     """Detail členov archívu pre jednu obnoviteľnú cestu."""
     restore_path = request.args.get('path', '')
     try:
-        _entry, archive_path = resolve_history_archive(backup_id)
+        _entry, archive_path, _cached = ensure_backup_cached(backup_id)
         if restore_path:
             detail = restore_archive_member_details(archive_path, restore_path)
         else:
@@ -2116,6 +2548,8 @@ def restore_members_api(backup_id):
         return jsonify({'success': False, 'error': str(e)}), 404
     except ValueError as e:
         return jsonify({'success': False, 'error': str(e)}), 400
+    except RuntimeError as e:
+        return jsonify({'success': False, 'error': str(e)}), 502
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

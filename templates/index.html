@@ -486,10 +486,10 @@
                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
                                 </svg>
-                                História záloh
+                                Zálohy
                             </div>
                             <div class="text-muted-foreground text-sm">
-                                Prehľad vytvorených záloh na FTP serveri
+                                Lokálne archívy aj zálohy dostupné na FTP serveri
                             </div>
                         </div>
                         <div class="px-6">
@@ -516,12 +516,15 @@
         let activeBackupProfile = 'manual';
         let appConfig = {};
         let backupCategories = [];
+        let backupList = [];
+        let backupFtpStatus = {};
         let restoreArchives = [];
         let restorePreviewItems = [];
         
         // Initialize app
         document.addEventListener('DOMContentLoaded', async function() {
             await loadConfig();
+            await loadBackups();
             await loadBackupFiles();
             await loadRestoreArchives();
             
@@ -666,10 +669,25 @@
                 document.getElementById('ssh-username').value = sourceConfig.ssh?.username || 'root';
                 document.getElementById('ssh-password').value = sourceConfig.ssh?.password || '';
                 updateSourceModeVisibility();
-                renderBackupHistory(data.backup_history || []);
                 
             } catch (error) {
                 console.error('Error loading config:', error);
+            }
+        }
+
+        async function loadBackups() {
+            try {
+                const response = await fetch('/api/backups');
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !data.success) {
+                    throw new Error(data.error || 'Zálohy sa nepodarilo načítať');
+                }
+                backupList = data.backups || [];
+                backupFtpStatus = data.ftp || {};
+                renderBackupHistory(backupList, backupFtpStatus);
+            } catch (error) {
+                console.error('Error loading backups:', error);
+                renderBackupHistory([], { available: false, warning: error.message });
             }
         }
 
@@ -688,6 +706,9 @@
             document.getElementById('content-' + tabName).classList.remove('hidden');
             if (tabName === 'restore') {
                 loadRestoreArchives();
+            }
+            if (tabName === 'history') {
+                loadBackups();
             }
             
             // Add active state to selected tab
@@ -1028,6 +1049,8 @@
                     : `FTP: failed (${result.ftp_message || 'dohrá sa pri ďalšej dostupnosti FTP'})`;
                 alert(`Záloha bola vytvorená.\nLokálna cesta: ${result.local_path || 'n/a'}\n${ftpLine}\nZahrnuté položky: ${includedCount}\nPreskočené položky: ${skippedCount}${warnings}`);
                 await loadConfig();
+                await loadBackups();
+                await loadRestoreArchives();
                 
             } catch (error) {
                 console.error('Backup error:', error);
@@ -1045,12 +1068,18 @@
             }
         }
 
-        function renderBackupHistory(history) {
+        function renderBackupHistory(history, ftpStatus = {}) {
             const container = document.getElementById('backup-history-list');
             if (!container) return;
 
+            const warningHtml = ftpStatus.warning ? `
+                <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                    ${escapeHtml(ftpStatus.warning)}
+                </div>
+            ` : '';
+
             if (!history.length) {
-                container.innerHTML = `
+                container.innerHTML = warningHtml + `
                     <div class="text-center py-8 text-muted-foreground">
                         <svg class="w-12 h-12 mx-auto mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"/>
@@ -1061,26 +1090,54 @@
                 return;
             }
 
-            container.innerHTML = history.slice().reverse().map(entry => {
+            container.innerHTML = warningHtml + history.map(entry => {
                 const timestamp = entry.timestamp || entry.date || '';
                 const included = entry.included_count ?? entry.files?.length ?? 0;
                 const skipped = entry.skipped_count ?? entry.skipped?.length ?? 0;
                 const ftpStatus = entry.ftp_status || entry.status || 'n/a';
+                const locations = entry.storage_locations || [];
+                const locationLabel = locations.includes('local') && locations.includes('ftp')
+                    ? 'Lokálne + FTP'
+                    : locations.includes('ftp')
+                        ? 'FTP'
+                        : entry.ftp_unknown
+                            ? 'FTP (?)'
+                            : locations.includes('local')
+                                ? 'Lokálne'
+                                : 'Nedostupné';
+                const locationClass = locations.includes('local') && locations.includes('ftp')
+                    ? 'bg-emerald-50 text-emerald-800'
+                    : locations.includes('ftp')
+                        ? 'bg-sky-50 text-sky-800'
+                        : entry.ftp_unknown
+                            ? 'bg-amber-50 text-amber-800'
+                            : locations.includes('local')
+                                ? 'bg-secondary'
+                                : 'bg-red-50 text-red-700';
                 const sourceLabel = entry.source_mode === 'remote_ssh'
                     ? `SSH: ${entry.source_host || 'remote'}`
                     : 'Lokálny zdroj';
+                const downloadButton = entry.local_available || entry.ftp_available || entry.ftp_unknown
+                    ? `<a href="/api/backups/${encodeURIComponent(entry.id)}/download" class="inline-flex items-center justify-center rounded-md border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent">Stiahnuť</a>`
+                    : '';
+                const cacheButton = entry.ftp_available && !entry.local_available
+                    ? `<button type="button" data-backup-id="${escapeHtml(entry.id)}" onclick="cacheBackup(this.dataset.backupId)" class="inline-flex items-center justify-center rounded-md border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent">Načítať lokálne</button>`
+                    : '';
                 return `
                     <div class="rounded-lg border p-3 space-y-2">
                         <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                             <div class="font-medium text-sm break-all">${escapeHtml(entry.filename || 'backup')}</div>
-                            <div class="flex items-center gap-3">
+                            <div class="flex flex-wrap items-center gap-2">
                                 <div class="text-xs text-muted-foreground">${escapeHtml(timestamp)}</div>
+                                ${downloadButton}
+                                ${cacheButton}
                                 <button type="button" data-backup-id="${escapeHtml(entry.id)}" onclick="deleteBackup(this.dataset.backupId)" class="inline-flex items-center justify-center rounded-md border border-red-200 bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-100">
                                     Odstrániť
                                 </button>
                             </div>
                         </div>
                         <div class="flex flex-wrap gap-2 text-xs">
+                            <span class="rounded-md ${locationClass} px-2 py-1">${escapeHtml(locationLabel)}</span>
                             <span class="rounded-md bg-secondary px-2 py-1">Veľkosť: ${escapeHtml(entry.size || 'n/a')}</span>
                             <span class="rounded-md bg-secondary px-2 py-1">${escapeHtml(sourceLabel)}</span>
                             <span class="rounded-md ${ftpStatus === 'success' ? 'bg-secondary' : 'bg-amber-50 text-amber-800'} px-2 py-1">FTP: ${escapeHtml(ftpStatus)}</span>
@@ -1091,6 +1148,25 @@
                     </div>
                 `;
             }).join('');
+        }
+
+        async function cacheBackup(backupId) {
+            if (!backupId) return;
+            try {
+                const response = await fetch(`/api/backups/${encodeURIComponent(backupId)}/cache`, {
+                    method: 'POST'
+                });
+                const result = await response.json().catch(() => ({}));
+                if (!response.ok || !result.success) {
+                    throw new Error(result.error || 'Archív sa nepodarilo načítať lokálne');
+                }
+                await loadBackups();
+                await loadRestoreArchives();
+                alert(result.cached ? 'Archív bol stiahnutý z FTP do lokálneho úložiska.' : 'Archív už bol dostupný lokálne.');
+            } catch (error) {
+                console.error('Cache backup error:', error);
+                alert('Chyba pri načítaní archívu: ' + error.message);
+            }
         }
 
         async function deleteBackup(backupId) {
@@ -1109,11 +1185,13 @@
                 }
                 alert(`Záloha zmazaná.\n${result.local_message || ''}\n${result.ftp_message || ''}`);
                 await loadConfig();
+                await loadBackups();
                 await loadRestoreArchives();
             } catch (error) {
                 console.error('Delete backup error:', error);
                 alert('Chyba pri mazaní zálohy: ' + error.message);
                 await loadConfig();
+                await loadBackups();
             }
         }
 
@@ -1147,14 +1225,20 @@
             const currentValue = select.value;
 
             if (!restoreArchives.length) {
-                select.innerHTML = '<option value="">Žiadny lokálny archív nie je dostupný</option>';
+                select.innerHTML = '<option value="">Žiadny archív nie je dostupný</option>';
                 restorePreviewItems = [];
                 renderRestorePreview();
                 return;
             }
 
             select.innerHTML = '<option value="">Vyber archív</option>' + restoreArchives.map(archive => {
-                const label = `${archive.filename || 'backup'} | ${archive.timestamp || 'bez dátumu'} | ${archive.size || 'n/a'}`;
+                const locations = archive.storage_locations || [];
+                const storageLabel = locations.includes('local') && locations.includes('ftp')
+                    ? 'Lokálne + FTP (restore použije lokálne)'
+                    : locations.includes('ftp')
+                        ? 'FTP (pred restore sa stiahne)'
+                        : 'Lokálne';
+                const label = `${archive.filename || 'backup'} | ${storageLabel} | ${archive.timestamp || 'bez dátumu'} | ${archive.size || 'n/a'}`;
                 return `<option value="${escapeHtml(archive.id)}">${escapeHtml(label)}</option>`;
             }).join('');
             if (currentValue && restoreArchives.some(archive => String(archive.id) === String(currentValue))) {
@@ -1177,7 +1261,12 @@
                 return;
             }
 
-            status.textContent = 'Načítavam preview archívu...';
+            const selectedArchive = restoreArchives.find(archive => String(archive.id) === String(archiveId));
+            status.textContent = selectedArchive?.ftp_available && !selectedArchive?.local_available
+                ? 'Sťahujem archív z FTP a načítavam preview...'
+                : selectedArchive?.ftp_available && selectedArchive?.local_available
+                    ? 'Načítavam preview z lokálnej kópie. FTP kópia existuje tiež.'
+                    : 'Načítavam preview z lokálnej kópie...';
             status.classList.remove('hidden');
 
             try {
@@ -1188,9 +1277,15 @@
                 }
                 restorePreviewItems = data.items || [];
                 renderRestorePreview();
+                const sourceMessage = data.archive_source?.message || '';
                 status.textContent = restorePreviewItems.length
-                    ? `Preview načítané: ${restorePreviewItems.length} obnoviteľných ciest`
+                    ? `${sourceMessage ? sourceMessage + ' ' : ''}Preview načítané: ${restorePreviewItems.length} obnoviteľných ciest`
                     : 'Archív neobsahuje žiadne obnoviteľné whitelisted cesty';
+                if (data.cached) {
+                    await loadBackups();
+                    await loadRestoreArchives();
+                    select.value = data.archive?.id || archiveId;
+                }
             } catch (error) {
                 console.error('Restore preview error:', error);
                 restorePreviewItems = [];
@@ -1466,7 +1561,12 @@
             btn.textContent = 'Obnovujem...';
             btn.disabled = true;
             resultBox.classList.add('hidden');
-            status.textContent = 'Spúšťam remote restore cez SSH...';
+            const selectedArchive = restoreArchives.find(archive => String(archive.id) === String(archiveId));
+            status.textContent = selectedArchive?.ftp_available && !selectedArchive?.local_available
+                ? 'Sťahujem archív z FTP a spúšťam remote restore cez SSH...'
+                : selectedArchive?.ftp_available && selectedArchive?.local_available
+                    ? 'Používam lokálnu kópiu archívu; FTP kópia existuje tiež. Spúšťam remote restore cez SSH...'
+                    : 'Používam lokálnu kópiu archívu a spúšťam remote restore cez SSH...';
             status.classList.remove('hidden');
 
             try {
@@ -1492,6 +1592,8 @@
                 resultBox.className = 'rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-900';
                 resultBox.innerHTML = `
                     <div class="font-medium">Obnova dokončená na ${escapeHtml(result.remote_host || 'remote host')}</div>
+                    <div class="mt-1">Použitý archív: <span class="font-mono break-all">${escapeHtml(result.archive_filename || 'n/a')}</span></div>
+                    <div class="mt-1">Zdroj archívu: ${escapeHtml(result.archive_source?.label || 'Lokálna kópia')}</div>
                     <div class="mt-1">Rollback adresár: <span class="font-mono break-all">${escapeHtml(result.backup_dir || 'n/a')}</span></div>
                     <div class="mt-2">Aplikované: ${applied.length} | Preskočené: ${skipped.length}</div>
                     <div class="mt-2 text-xs">Skontroluj služby ručne. Aplikácia nerobí automatický reload ani restart Proxmox služieb.</div>
@@ -1616,6 +1718,8 @@
 
                 status.classList.remove('hidden');
                 await loadConfig();
+                await loadBackups();
+                await loadRestoreArchives();
                 updateCounts();
             } catch (error) {
                 console.error('Save settings error:', error);

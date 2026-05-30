@@ -48,6 +48,8 @@ Hlavné funkcie:
 - generovanie `backup-info/` inventára a `README-RESTORE.txt`
 - upload zálohy na FTP
 - lokálna história záloh s FTP sync stavom; pri dočasnom FTP výpadku ostane archív lokálne a pri ďalšej dostupnosti FTP sa chýbajúce lokálne archívy dohrávajú automaticky
+- zjednotený prehľad záloh z lokálnej histórie aj FTP servera; FTP výpadok nesmie rozbiť zobrazenie lokálnych záloh
+- browser download archívov; FTP-only archív sa pred downloadom, preview alebo restore najprv stiahne do lokálneho `backups/` cache
 - retencia záloh cez `max_backup_count` - spoločný limit pre lokálny archív aj FTP, najstaršie nadlimitné zálohy sa mažú z oboch úložísk
 - mazanie zálohy lokálne aj z FTP
 - **restore workflow**: preview obsahu archívu → výber ciest → bezpečný restore na Proxmox host cez SSH (whitelist, staging, pre-apply záloha)
@@ -76,6 +78,8 @@ Pri úpravách preferuj spoľahlivosť a jasné chybové hlášky pred vizuálny
 - `backup_files` je ručný výber a `auto_backup_files` je samostatný výber pre automatické zálohy; nespájaj ich späť do jedného stavu.
 - `max_backup_count` je spoločná retencia pre lokálne archívy aj FTP. Pri zmene retenčnej logiky zachovaj best-effort FTP mazanie a varovania namiesto pádu úspešne vytvorenej lokálnej zálohy.
 - Pri FTP výpadku musí lokálne vytvorená záloha zostať v histórii s FTP stavom a neskorší backup má skúsiť chýbajúce lokálne archívy dohrať na FTP.
+- FTP-only archívy z `/api/backups` sú virtuálne, kým ich používateľ nestiahne, nenačíta lokálne alebo nepoužije na restore; vtedy sa bezpečne cacheujú do `BACKUP_STORAGE_DIR`.
+- Pri restore platí: ak existuje lokálna kópia, používa sa lokálna kópia; FTP sa použije iba ako zdroj na dotiahnutie chýbajúceho archívu do lokálneho cache.
 - Ak pridáš nový runtime súbor, aktualizuj dokumentáciu a `.gitignore`, ak má zostať lokálny.
 - Slovenské texty v UI a hláškach drž konzistentné.
 - Legacy form-based routes (`/toggle_file`, `/create_backup`, `/save_ftp_config` atď.) sú zachované pre kompatibilitu; nové funkcie pridávaj cez `/api/*` endpointy.
@@ -138,8 +142,11 @@ Pri zmenách frontendu over, že hlavná stránka stále obsahuje názov apliká
 | `/api/test-ssh` | POST | Test SSH pripojenia na Proxmox host |
 | `/api/backup` | POST | Spustenie zálohy |
 | `/api/backup/auto` | POST | Spustenie automatickej zálohy podľa `auto_backup_files` |
+| `/api/backups` | GET | Zjednotený zoznam lokálnych a FTP archívov vrátane dostupnosti úložísk |
+| `/api/backups/<id>/cache` | POST | Stiahnutie FTP-only archívu do lokálneho cache |
+| `/api/backups/<id>/download` | GET | Stiahnutie archívu cez browser; FTP-only archív sa najprv cacheuje lokálne |
 | `/api/backups/<id>` | DELETE | Zmazanie zálohy (lokálne + FTP + história) |
-| `/api/restore/archives` | GET | Lokálne dostupné archívy na restore |
+| `/api/restore/archives` | GET | Archívy dostupné na restore lokálne alebo cez FTP cache-on-demand |
 | `/api/restore/preview/<id>` | GET | Preview obnoviteľných ciest v archíve |
 | `/api/restore/preview/<id>/members` | GET | Detail členov archívu (`?path=...` alebo všetky) |
 | `/api/restore` | POST | Spustenie restore (vyžaduje `confirm: "OBNOVIT"`) |
