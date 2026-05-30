@@ -1081,14 +1081,77 @@
             const truncated = data.truncated
                 ? `<div class="mt-2 text-xs text-amber-800">Zobrazených je prvých ${data.limit} z ${data.total} položiek.</div>`
                 : '';
+            const membersHtml = renderMemberRows(data.members) || '<div class="text-xs text-muted-foreground">Žiadne položky.</div>';
+            const safeTitle = escapeHtml(title);
+            const total = data.total || 0;
             return `
                 <div class="rounded-md border bg-background px-3 py-2">
-                    <div class="mb-1 text-xs font-medium text-foreground">${escapeHtml(title)} (${data.total || 0})</div>
-                    <div class="max-h-96 overflow-auto">${renderMemberRows(data.members) || '<div class="text-xs text-muted-foreground">Žiadne položky.</div>'}</div>
+                    <div class="mb-1 flex items-center justify-between gap-2">
+                        <span class="text-xs font-medium text-foreground">${safeTitle} (${total})</span>
+                        <button type="button"
+                            title="Otvoriť vo veľkom okne"
+                            onclick="openMemberModal(this)"
+                            data-title="${safeTitle}"
+                            data-total="${total}"
+                            class="inline-flex items-center gap-1 rounded border border-input bg-background px-2 py-0.5 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground transition-colors">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5v-4m0 4h-4m4 0l-5-5"/>
+                            </svg>
+                            Maximalizovať
+                        </button>
+                    </div>
+                    <div class="member-list-rows max-h-96 overflow-auto pr-3">${membersHtml}</div>
                     ${truncated}
                 </div>
             `;
         }
+
+        function openMemberModal(btn) {
+            const box = btn.closest('.rounded-md');
+            const title = btn.dataset.title || 'Obsah archívu';
+            const total = btn.dataset.total || '0';
+            const rowsHtml = box.querySelector('.member-list-rows')?.innerHTML || '';
+            const truncatedHtml = box.querySelector('.mt-2.text-xs.text-amber-800')?.outerHTML || '';
+
+            let overlay = document.getElementById('member-modal-overlay');
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.id = 'member-modal-overlay';
+                overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.55);padding:16px;';
+                overlay.addEventListener('click', function(e) {
+                    if (e.target === overlay) closeMemberModal();
+                });
+                document.body.appendChild(overlay);
+            }
+
+            overlay.innerHTML = `
+                <div style="background:var(--background,#fff);border:1px solid var(--border,#e5e7eb);border-radius:10px;display:flex;flex-direction:column;width:100%;max-width:1100px;height:90vh;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+                    <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border,#e5e7eb);flex-shrink:0;">
+                        <span style="font-size:13px;font-weight:600;">${title} (${total})</span>
+                        <button type="button" onclick="closeMemberModal()" title="Zavrieť"
+                            style="display:inline-flex;align-items:center;justify-content:center;border-radius:6px;border:1px solid var(--border,#e5e7eb);background:transparent;padding:4px 8px;cursor:pointer;font-size:18px;line-height:1;color:var(--muted-foreground,#6b7280);transition:background .15s;"
+                            onmouseover="this.style.background='var(--accent,#f3f4f6)'" onmouseout="this.style.background='transparent'">
+                            &times;
+                        </button>
+                    </div>
+                    <div style="flex:1;overflow:auto;padding:12px 16px;font-size:12px;">
+                        ${rowsHtml}
+                        ${truncatedHtml}
+                    </div>
+                </div>
+            `;
+            overlay.style.display = 'flex';
+        }
+
+        function closeMemberModal() {
+            const overlay = document.getElementById('member-modal-overlay');
+            if (overlay) overlay.style.display = 'none';
+        }
+
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') closeMemberModal();
+        });
 
         async function toggleAllRestoreMembers(event) {
             event.preventDefault();

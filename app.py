@@ -1567,7 +1567,7 @@ def delete_backup_entry(backup_id, ftp_config):
 def list_restore_archives():
     """Zoznam archívov z histórie, ktoré sú stále dostupné lokálne."""
     archives = []
-    for entry in load_backup_history():
+    for entry in reversed(load_backup_history()):
         try:
             _entry, archive_path = resolve_history_archive(entry.get('id'))
         except (ValueError, FileNotFoundError):
