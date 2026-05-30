@@ -19,7 +19,8 @@ app = Flask(__name__)
 app.secret_key = 'proxmox-backup-secret-key-change-in-production'
 
 # Konfiguračný súbor
-CONFIG_VERSION = 5
+CONFIG_VERSION = 6
+DEFAULT_MAX_BACKUP_COUNT = 10
 CONFIG_FILE = 'backup_config.json'
 BACKUP_HISTORY_FILE = 'backup_history.json'
 BACKUP_STORAGE_DIR = os.environ.get('BACKUP_STORAGE_DIR', 'backups')
@@ -486,7 +487,9 @@ def default_config():
         'ftp_config': {'host': '', 'username': '', 'password': '', 'port': 21, 'remote_dir': ''},
         'source_config': copy_source_config(DEFAULT_SOURCE_CONFIG),
         'backup_files': [item.copy() for item in DEFAULT_BACKUP_FILES],
+        'auto_backup_files': [item.copy() for item in DEFAULT_BACKUP_FILES],
         'backup_categories': BACKUP_CATEGORIES,
+        'max_backup_count': DEFAULT_MAX_BACKUP_COUNT,
         'auto_backup_enabled': False,
         'auto_backup_frequency': 'monthly',
         'auto_backup_day': 6,
@@ -507,6 +510,16 @@ def normalize_port(value, default):
     except (TypeError, ValueError):
         pass
     return default
+
+def sanitize_max_backup_count(value):
+    """Normalizácia spoločného retenčného limitu lokálnych aj FTP záloh."""
+    try:
+        count = int(value)
+        if count >= 1:
+            return min(count, 1000)
+    except (TypeError, ValueError):
+        pass
+    return DEFAULT_MAX_BACKUP_COUNT
 
 def sanitize_ftp_config(ftp_config):
     """Doplnenie a normalizácia FTP konfigurácie."""
@@ -562,13 +575,8 @@ def migrate_backup_item(item):
     migrated.setdefault('selected', True)
     return migrated
 
-def migrate_config(config):
-    """Migrácia starého runtime JSON formátu na aktuálny model."""
-    defaults = default_config()
-    if not isinstance(config, dict):
-        return defaults
-
-    existing_items = config.get('backup_files')
+def migrate_backup_items(existing_items):
+    """Migrácia zoznamu backup položiek pri zachovaní existujúceho výberu."""
     if not isinstance(existing_items, list):
         existing_items = []
 
@@ -598,10 +606,26 @@ def migrate_config(config):
         if normalized_path not in used_paths:
             migrated_items.append(migrate_backup_item(item))
 
+    return migrated_items
+
+def migrate_config(config):
+    """Migrácia starého runtime JSON formátu na aktuálny model."""
+    defaults = default_config()
+    if not isinstance(config, dict):
+        return defaults
+
+    migrated_items = migrate_backup_items(config.get('backup_files'))
+    if isinstance(config.get('auto_backup_files'), list):
+        migrated_auto_items = migrate_backup_items(config.get('auto_backup_files'))
+    else:
+        migrated_auto_items = [item.copy() for item in migrated_items]
+
     migrated = defaults
     migrated['ftp_config'] = sanitize_ftp_config(config.get('ftp_config', defaults['ftp_config']))
     migrated['source_config'] = sanitize_source_config(config.get('source_config', defaults['source_config']))
     migrated['backup_files'] = migrated_items
+    migrated['auto_backup_files'] = migrated_auto_items
+    migrated['max_backup_count'] = sanitize_max_backup_count(config.get('max_backup_count', defaults['max_backup_count']))
     migrated['auto_backup_enabled'] = bool(config.get('auto_backup_enabled', False))
     migrated['auto_backup_frequency'] = config.get('auto_backup_frequency', 'monthly')
     migrated['auto_backup_day'] = int(config.get('auto_backup_day', 6))
@@ -1284,7 +1308,7 @@ def resolve_selected_file_objects(selected_paths, configured_files):
 
 def build_backup_filename(source_config):
     """Názov archívu s timestampom a krátkym označením zdroja."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     source_config = sanitize_source_config(source_config)
     if source_config['mode'] == 'remote_ssh' and source_config['ssh'].get('host'):
         host_part = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in source_config['ssh']['host'])
@@ -1303,11 +1327,12 @@ def validate_ftp_for_backup(ftp_config):
     if missing:
         raise ValueError(f"FTP konfigurácia chýba: {', '.join(missing)}")
 
-def run_backup_job(selected_paths, ftp_config, source_config, configured_files):
+def run_backup_job(selected_paths, ftp_config, source_config, configured_files, config=None, backup_mode='manual'):
     """Spoločný backup flow pre API aj starší formulárový route handler."""
     if not selected_paths:
         raise ValueError('No files selected')
 
+    config = config or load_config()
     ftp_config = sanitize_ftp_config(ftp_config)
     source_config = sanitize_source_config(source_config)
     validate_ftp_for_backup(ftp_config)
@@ -1322,12 +1347,14 @@ def run_backup_job(selected_paths, ftp_config, source_config, configured_files):
     os.chmod(local_path, 0o600)
 
     ftp_success, ftp_message = upload_to_ftp(local_path, ftp_config)
+    now = datetime.now()
     history_entry = {
-        'id': str(int(time.time())),
+        'id': str(time.time_ns()),
         'filename': backup_filename,
-        'timestamp': datetime.now().isoformat(),
-        'date': datetime.now().strftime('%d.%m.%Y %H:%M'),
+        'timestamp': now.isoformat(),
+        'date': now.strftime('%d.%m.%Y %H:%M'),
         'files': selected_paths,
+        'backup_mode': backup_mode,
         'source_mode': source_config['mode'],
         'source_host': source_config['ssh'].get('host') if source_config['mode'] == 'remote_ssh' else 'local',
         'local_path': local_path,
@@ -1345,14 +1372,28 @@ def run_backup_job(selected_paths, ftp_config, source_config, configured_files):
     history.append(history_entry)
     save_backup_history(history)
 
+    sync_results = sync_missing_ftp_backups(ftp_config, skip_ids={history_entry['id']})
+    retention_result = enforce_backup_retention(config, ftp_config)
+    warnings = []
+    if not ftp_success:
+        warnings.append(ftp_message)
+    warnings.extend(result.get('message', '') for result in sync_results if not result.get('success'))
+    warnings.extend(retention_result.get('warnings', []))
+    warnings = [warning for warning in warnings if warning]
+    if warnings:
+        annotate_backup_history_entry(history_entry['id'], {'retention_warnings': warnings})
+
     return {
-        'success': ftp_success,
-        'message': 'Backup created successfully' if ftp_success else ftp_message,
+        'success': True,
+        'message': 'Backup created successfully' if ftp_success else 'Backup created locally, FTP upload failed',
         'report': report,
         'filename': backup_filename,
         'local_path': local_path,
         'ftp_status': history_entry['ftp_status'],
         'ftp_message': ftp_message,
+        'ftp_sync_results': sync_results,
+        'retention_deleted': retention_result.get('deleted', []),
+        'retention_warnings': warnings,
         'size': get_file_size(local_path),
     }
 
@@ -1539,26 +1580,18 @@ def resolve_backup_entry_local_path(entry):
     return archive_path
 
 def backup_entry_is_visible(entry, ftp_config=None):
-    """História má zobrazovať len archívy, ktoré ešte reálne existujú."""
+    """História má zobrazovať lokálne dostupné archívy aj pri dočasnom FTP výpadku."""
     try:
         archive_path = resolve_backup_entry_local_path(entry)
     except ValueError:
         return False
-    if not os.path.isfile(archive_path):
-        return False
-
-    if ftp_config and entry.get('ftp_status') == 'success':
-        exists = ftp_file_exists(entry.get('filename') or os.path.basename(archive_path), ftp_config)
-        if exists is False:
-            return False
-    return True
+    return os.path.isfile(archive_path)
 
 def visible_backup_history(config=None, persist_pruned=True):
-    """Vyfiltruje históriu od záznamov bez lokálneho archívu alebo bez FTP súboru."""
+    """Vyfiltruje históriu od záznamov bez lokálneho archívu."""
     config = config or load_config()
     history = load_backup_history()
-    ftp_config = config.get('ftp_config', {})
-    visible = [entry for entry in history if backup_entry_is_visible(entry, ftp_config)]
+    visible = [entry for entry in history if backup_entry_is_visible(entry)]
     if persist_pruned and len(visible) != len(history):
         save_backup_history(visible)
     return visible
@@ -1575,6 +1608,8 @@ def delete_backup_entry(backup_id, ftp_config):
     except ValueError as exc:
         raise ValueError(str(exc))
 
+    local_deleted = False
+    local_message = 'Lokálny archív neexistoval'
     ftp_deleted = None
     ftp_message = 'FTP mazanie nebolo potrebné'
     if entry.get('ftp_status') == 'success':
@@ -1589,8 +1624,6 @@ def delete_backup_entry(backup_id, ftp_config):
                 'history_removed': False,
             }
 
-    local_deleted = False
-    local_message = 'Lokálny archív neexistoval'
     if os.path.exists(archive_path):
         os.remove(archive_path)
         local_deleted = True
@@ -1605,6 +1638,122 @@ def delete_backup_entry(backup_id, ftp_config):
         'ftp_message': ftp_message,
         'history_removed': True,
     }
+
+def backup_history_sort_key(entry):
+    """Stabilné zoradenie histórie od najstaršej zálohy."""
+    timestamp = entry.get('timestamp')
+    if timestamp:
+        try:
+            return datetime.fromisoformat(timestamp)
+        except (TypeError, ValueError):
+            pass
+    try:
+        return datetime.fromtimestamp(int(entry.get('id', 0)))
+    except (TypeError, ValueError, OSError, OverflowError):
+        return datetime.min
+
+def annotate_backup_history_entry(backup_id, updates):
+    """Doplní metadáta do záznamu, ak ešte nebol odstránený retenciou."""
+    history = load_backup_history()
+    changed = False
+    for entry in history:
+        if str(entry.get('id')) == str(backup_id):
+            entry.update(updates)
+            changed = True
+            break
+    if changed:
+        save_backup_history(history)
+    return changed
+
+def sync_missing_ftp_backups(ftp_config, skip_ids=None):
+    """Best-effort dohratie lokálnych archívov, ktoré na FTP chýbajú."""
+    ftp_config = sanitize_ftp_config(ftp_config)
+    if not ftp_config_complete(ftp_config):
+        return []
+
+    skip_ids = {str(item) for item in (skip_ids or set())}
+    history = load_backup_history()
+    results = []
+    changed = False
+
+    for entry in sorted(history, key=backup_history_sort_key):
+        entry_id = str(entry.get('id'))
+        if entry_id in skip_ids:
+            continue
+        filename = entry.get('filename')
+        if not filename:
+            continue
+        try:
+            archive_path = resolve_backup_entry_local_path(entry)
+        except ValueError:
+            continue
+        if not os.path.isfile(archive_path):
+            continue
+
+        needs_upload = entry.get('ftp_status') != 'success'
+        if not needs_upload:
+            exists = ftp_file_exists(filename, ftp_config)
+            if exists is False:
+                needs_upload = True
+            elif exists is None:
+                continue
+        if not needs_upload:
+            continue
+
+        success, message = upload_to_ftp(archive_path, ftp_config)
+        results.append({
+            'id': entry_id,
+            'filename': filename,
+            'success': success,
+            'message': message,
+        })
+        entry['ftp_status'] = 'success' if success else 'failed'
+        entry['ftp_message'] = 'Dodatočne nahrané na FTP' if success else message
+        if success and entry.get('status') == 'ftp_failed':
+            entry['status'] = 'success'
+        changed = True
+        if not success:
+            break
+
+    if changed:
+        save_backup_history(history)
+    return results
+
+def enforce_backup_retention(config, ftp_config):
+    """Udrží najviac max_backup_count lokálnych archívov a zmaže ich aj z FTP."""
+    max_count = sanitize_max_backup_count((config or {}).get('max_backup_count', DEFAULT_MAX_BACKUP_COUNT))
+    history = load_backup_history()
+    candidates = []
+    for entry in history:
+        try:
+            archive_path = resolve_backup_entry_local_path(entry)
+        except ValueError:
+            continue
+        if os.path.isfile(archive_path):
+            candidates.append(entry)
+
+    overflow = len(candidates) - max_count
+    if overflow <= 0:
+        return {'deleted': [], 'warnings': []}
+
+    deleted = []
+    warnings = []
+    for entry in sorted(candidates, key=backup_history_sort_key)[:overflow]:
+        result = delete_backup_entry(entry.get('id'), ftp_config)
+        if result.get('success'):
+            deleted.append({
+                'id': entry.get('id'),
+                'filename': entry.get('filename'),
+                'local_deleted': result.get('local_deleted'),
+                'ftp_deleted': result.get('ftp_deleted'),
+            })
+        else:
+            warnings.append(
+                f"Retencia nezmazala {entry.get('filename') or entry.get('id')}: "
+                f"{result.get('ftp_message') or result.get('local_message') or 'neznáma chyba'}"
+            )
+
+    return {'deleted': deleted, 'warnings': warnings}
 
 def list_restore_archives():
     """Zoznam archívov z histórie, ktoré sú stále dostupné lokálne."""
@@ -1804,6 +1953,33 @@ def set_file_selection_api():
     save_config(config)
     return jsonify({'success': True, 'selected': selected, 'backup_files': config['backup_files']})
 
+@app.route('/api/auto-files')
+def get_auto_files():
+    """API endpoint pre zoznam súborov automatickej zálohy."""
+    config = load_config()
+    return jsonify(config['auto_backup_files'])
+
+@app.route('/api/auto-files/<int:file_index>/toggle', methods=['POST'])
+def toggle_auto_file_api(file_index):
+    """API endpoint pre prepnutie výberu súboru automatickej zálohy."""
+    config = load_config()
+    if 0 <= file_index < len(config['auto_backup_files']):
+        config['auto_backup_files'][file_index]['selected'] = not config['auto_backup_files'][file_index]['selected']
+        save_config(config)
+        return jsonify({'success': True, 'selected': config['auto_backup_files'][file_index]['selected']})
+    return jsonify({'success': False, 'error': 'Invalid file index'}), 400
+
+@app.route('/api/auto-files/selection', methods=['POST'])
+def set_auto_file_selection_api():
+    """API endpoint pre hromadné nastavenie výberu automatickej zálohy."""
+    data = request.get_json(silent=True) or {}
+    selected = bool(data.get('selected'))
+    config = load_config()
+    for item in config['auto_backup_files']:
+        item['selected'] = selected
+    save_config(config)
+    return jsonify({'success': True, 'selected': selected, 'backup_files': config['auto_backup_files']})
+
 @app.route('/api/test-ftp', methods=['POST'])
 def test_ftp_api():
     """API endpoint pre test FTP pripojenia"""
@@ -1838,6 +2014,8 @@ def save_settings_api():
         config['ftp_config'] = sanitize_ftp_config(data.get('ftp_config'))
     if 'source_config' in data:
         config['source_config'] = sanitize_source_config(data.get('source_config'))
+    if 'max_backup_count' in data:
+        config['max_backup_count'] = sanitize_max_backup_count(data.get('max_backup_count'))
     save_config(config)
     return jsonify({'success': True, 'config': config})
 
@@ -1854,10 +2032,28 @@ def create_backup_api():
     source_config = data.get('source_config') or config.get('source_config', DEFAULT_SOURCE_CONFIG)
     
     try:
-        result = run_backup_job(selected_files, ftp_config, source_config, config['backup_files'])
-        if result['success']:
-            return jsonify(result)
-        return jsonify({**result, 'error': result['message']}), 502
+        result = run_backup_job(selected_files, ftp_config, source_config, config['backup_files'], config=config, backup_mode='manual')
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/backup/auto', methods=['POST'])
+def create_auto_backup_api():
+    """API endpoint pre automatickú zálohu so samostatným výberom súborov."""
+    config = load_config()
+    selected_files = [f['path'] for f in config['auto_backup_files'] if f['selected']]
+    try:
+        result = run_backup_job(
+            selected_files,
+            config.get('ftp_config', {}),
+            config.get('source_config', DEFAULT_SOURCE_CONFIG),
+            config['auto_backup_files'],
+            config=config,
+            backup_mode='auto',
+        )
+        return jsonify(result)
     except ValueError as e:
         return jsonify({'success': False, 'error': str(e)}), 400
     except Exception as e:
@@ -1997,9 +2193,14 @@ def create_backup():
             config.get('ftp_config', {}),
             config.get('source_config', DEFAULT_SOURCE_CONFIG),
             config['backup_files'],
+            config=config,
+            backup_mode='manual',
         )
         if result['success']:
-            flash('Záloha úspešne vytvorená a nahraná na FTP server!', 'success')
+            if result.get('ftp_status') == 'success':
+                flash('Záloha úspešne vytvorená a nahraná na FTP server!', 'success')
+            else:
+                flash(f"Záloha bola vytvorená lokálne, FTP upload zlyhal: {result.get('ftp_message')}", 'error')
         else:
             flash(f"Archív ostal lokálne v LXC, ale FTP upload zlyhal: {result['message']}", 'error')
     except ValueError as e:

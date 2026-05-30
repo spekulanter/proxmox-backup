@@ -229,8 +229,18 @@
                         </div>
                         <div class="px-6">
                             <div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                                <div class="text-sm text-muted-foreground">
-                                    Výber sa ukladá do konfigurácie zálohovania.
+                                <div class="space-y-2">
+                                    <div class="text-sm text-muted-foreground" id="backup-profile-help">
+                                        Ručný výber sa použije pri tlačidle “Vytvoriť zálohu teraz”.
+                                    </div>
+                                    <div class="inline-flex rounded-md border border-border bg-muted p-1">
+                                        <button type="button" id="profile-manual" onclick="setBackupProfile('manual')" class="rounded px-3 py-1.5 text-sm font-medium bg-background shadow-xs">
+                                            Ručná záloha
+                                        </button>
+                                        <button type="button" id="profile-auto" onclick="setBackupProfile('auto')" class="rounded px-3 py-1.5 text-sm font-medium text-muted-foreground">
+                                            Automatická záloha
+                                        </button>
+                                    </div>
                                 </div>
                                 <div class="flex flex-wrap gap-2">
                                     <button type="button" onclick="setAllBackupSelection(true)" class="inline-flex items-center justify-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium shadow-xs hover:bg-accent">
@@ -314,6 +324,27 @@
                                         <span id="ssh-error-text">Chyba SSH pripojenia</span>
                                     </div>
                                 </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm">
+                        <div class="grid auto-rows-min grid-rows-[auto_auto] items-start gap-1.5 px-6">
+                            <div class="leading-none font-semibold flex items-center gap-2">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/>
+                                </svg>
+                                Retencia záloh
+                            </div>
+                            <div class="text-muted-foreground text-sm">
+                                Nastavte, koľko archívov sa má ponechať lokálne aj na FTP
+                            </div>
+                        </div>
+                        <div class="px-6 space-y-4">
+                            <div>
+                                <label for="max-backup-count" class="flex items-center gap-2 text-sm leading-none font-medium">Maximálny počet záloh</label>
+                                <input type="number" id="max-backup-count" min="1" step="1" placeholder="10" class="file:text-foreground placeholder:text-muted-foreground flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                                <p class="mt-1 text-xs text-muted-foreground">Platí pre lokálny archív aj FTP. Pri prekročení limitu sa najstaršia záloha zmaže z oboch úložísk.</p>
                             </div>
                         </div>
                     </div>
@@ -476,6 +507,8 @@
     <script>
         // Global state
         let backupFiles = [];
+        let autoBackupFiles = [];
+        let activeBackupProfile = 'manual';
         let appConfig = {};
         let backupCategories = [];
         let restoreArchives = [];
@@ -619,6 +652,7 @@
                 document.getElementById('ftp-username').value = appConfig.ftp_config?.username || '';
                 document.getElementById('ftp-password').value = appConfig.ftp_config?.password || '';
                 document.getElementById('ftp-remote-dir').value = appConfig.ftp_config?.remote_dir || '';
+                document.getElementById('max-backup-count').value = appConfig.max_backup_count || 10;
 
                 const sourceConfig = appConfig.source_config || { mode: 'remote_ssh', ssh: {} };
                 document.getElementById('source-mode').value = sourceConfig.mode || 'remote_ssh';
@@ -694,9 +728,12 @@
         // Load backup files
         async function loadBackupFiles() {
             try {
-                const response = await fetch('/api/files');
-                const files = await response.json();
-                backupFiles = files;
+                const [manualResponse, autoResponse] = await Promise.all([
+                    fetch('/api/files'),
+                    fetch('/api/auto-files')
+                ]);
+                backupFiles = await manualResponse.json();
+                autoBackupFiles = await autoResponse.json();
                 renderBackupFiles();
                 updateCounts();
             } catch (error) {
@@ -704,16 +741,47 @@
             }
         }
 
+        function getActiveBackupFiles() {
+            return activeBackupProfile === 'auto' ? autoBackupFiles : backupFiles;
+        }
+
+        function setActiveBackupFiles(files) {
+            if (activeBackupProfile === 'auto') {
+                autoBackupFiles = files;
+            } else {
+                backupFiles = files;
+            }
+        }
+
+        function getActiveFilesEndpoint() {
+            return activeBackupProfile === 'auto' ? '/api/auto-files' : '/api/files';
+        }
+
+        function setBackupProfile(profile) {
+            activeBackupProfile = profile === 'auto' ? 'auto' : 'manual';
+            document.getElementById('profile-manual').className = activeBackupProfile === 'manual'
+                ? 'rounded px-3 py-1.5 text-sm font-medium bg-background shadow-xs'
+                : 'rounded px-3 py-1.5 text-sm font-medium text-muted-foreground';
+            document.getElementById('profile-auto').className = activeBackupProfile === 'auto'
+                ? 'rounded px-3 py-1.5 text-sm font-medium bg-background shadow-xs'
+                : 'rounded px-3 py-1.5 text-sm font-medium text-muted-foreground';
+            document.getElementById('backup-profile-help').textContent = activeBackupProfile === 'auto'
+                ? 'Automatický výber sa použije pri plánovaných zálohách.'
+                : 'Ručný výber sa použije pri tlačidle “Vytvoriť zálohu teraz”.';
+            renderBackupFiles();
+            updateCounts();
+        }
+
         // Toggle file selection
         async function toggleFileSelection(index) {
             try {
-                const response = await fetch(`/api/files/${index}/toggle`, {
+                const response = await fetch(`${getActiveFilesEndpoint()}/${index}/toggle`, {
                     method: 'POST'
                 });
                 
                 if (response.ok) {
                     const result = await response.json();
-                    backupFiles[index].selected = result.selected;
+                    getActiveBackupFiles()[index].selected = result.selected;
                     updateCounts();
                 } else {
                     console.error('Error toggling file selection');
@@ -725,7 +793,7 @@
 
         async function setAllBackupSelection(selected) {
             try {
-                const response = await fetch('/api/files/selection', {
+                const response = await fetch(`${getActiveFilesEndpoint()}/selection`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -736,7 +804,7 @@
                 if (!response.ok || !result.success) {
                     throw new Error(result.error || 'Výber sa nepodarilo uložiť');
                 }
-                backupFiles = result.backup_files || backupFiles.map(file => ({ ...file, selected }));
+                setActiveBackupFiles(result.backup_files || getActiveBackupFiles().map(file => ({ ...file, selected })));
                 renderBackupFiles();
                 updateCounts();
             } catch (error) {
@@ -749,13 +817,14 @@
         function renderBackupFiles() {
             const container = document.getElementById('backup-files-list');
             container.innerHTML = '';
+            const activeFiles = getActiveBackupFiles();
 
             const categories = backupCategories.length
                 ? backupCategories
                 : [{ id: 'system_config', name: 'Súbory', description: 'Vybrané položky zálohy' }];
 
             categories.forEach(category => {
-                const filesInCategory = backupFiles
+                const filesInCategory = activeFiles
                     .map((file, index) => ({ file, index }))
                     .filter(entry => (entry.file.category || 'system_config') === category.id);
 
@@ -844,10 +913,11 @@
             const checkboxes = document.querySelectorAll('.file-checkbox');
             const selectedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
             const totalCount = checkboxes.length;
+            const activeFiles = getActiveBackupFiles();
             
             const criticalBoxes = Array.from(checkboxes).filter(cb => {
                 const path = cb.dataset.path;
-                const file = backupFiles.find(f => f.path === path);
+                const file = activeFiles.find(f => f.path === path);
                 return file && file.critical;
             });
             const selectedCritical = criticalBoxes.filter(cb => cb.checked).length;
@@ -887,8 +957,9 @@
             const hasFtp = ftpConfig.host !== '' && ftpConfig.username !== '' && ftpConfig.password !== '';
             const hasSource = sourceConfig.mode === 'local'
                 || (sourceConfig.ssh.host !== '' && sourceConfig.ssh.username !== '' && sourceConfig.ssh.password !== '');
+            const manualSelectedCount = backupFiles.filter(file => file.selected).length;
             
-            if (selectedCount === 0 || !hasFtp || !hasSource) {
+            if (manualSelectedCount === 0 || !hasFtp || !hasSource) {
                 backupBtn.disabled = true;
                 backupBtn.classList.add('opacity-50', 'cursor-not-allowed');
             } else {
@@ -899,8 +970,7 @@
 
         // Create backup
         async function createBackup() {
-            const checkboxes = document.querySelectorAll('.file-checkbox:checked');
-            const selectedFiles = Array.from(checkboxes).map(cb => cb.dataset.path);
+            const selectedFiles = backupFiles.filter(file => file.selected).map(file => file.path);
             
             if (selectedFiles.length === 0) {
                 alert('Prosím vyberte súbory na zálohovanie');
@@ -945,7 +1015,13 @@
                 
                 const skippedCount = result.report?.skipped?.length || 0;
                 const includedCount = result.report?.included?.length || 0;
-                alert(`Záloha bola úspešne vytvorená.\nLokálna cesta: ${result.local_path || 'n/a'}\nFTP: ${result.ftp_status || 'n/a'}\nZahrnuté položky: ${includedCount}\nPreskočené položky: ${skippedCount}`);
+                const warnings = result.retention_warnings?.length
+                    ? `\nUpozornenia:\n- ${result.retention_warnings.join('\n- ')}`
+                    : '';
+                const ftpLine = result.ftp_status === 'success'
+                    ? 'FTP: success'
+                    : `FTP: failed (${result.ftp_message || 'dohrá sa pri ďalšej dostupnosti FTP'})`;
+                alert(`Záloha bola vytvorená.\nLokálna cesta: ${result.local_path || 'n/a'}\n${ftpLine}\nZahrnuté položky: ${includedCount}\nPreskočené položky: ${skippedCount}${warnings}`);
                 await loadConfig();
                 
             } catch (error) {
@@ -1523,7 +1599,8 @@
                     },
                     body: JSON.stringify({
                         ftp_config: getFtpConfigFromForm(),
-                        source_config: getSourceConfigFromForm()
+                        source_config: getSourceConfigFromForm(),
+                        max_backup_count: parseInt(document.getElementById('max-backup-count').value) || 10
                     })
                 });
 
@@ -1546,7 +1623,7 @@
 
         // Update backup button state when FTP config changes
         document.addEventListener('DOMContentLoaded', function() {
-            const configInputs = ['ftp-host', 'ftp-port', 'ftp-username', 'ftp-password', 'ftp-remote-dir', 'ssh-host', 'ssh-port', 'ssh-username', 'ssh-password'];
+            const configInputs = ['ftp-host', 'ftp-port', 'ftp-username', 'ftp-password', 'ftp-remote-dir', 'max-backup-count', 'ssh-host', 'ssh-port', 'ssh-username', 'ssh-password'];
             configInputs.forEach(id => {
                 document.getElementById(id).addEventListener('input', updateCounts);
                 document.getElementById(id).addEventListener('input', updateRestoreButton);

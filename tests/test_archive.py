@@ -115,13 +115,14 @@ class FakeSshClient:
 
 class FakeFtp:
     instances = []
+    files = {}
 
     def __init__(self, timeout=None):
         self.timeout = timeout
         self.cwd_calls = []
         self.stored = []
         self.deleted = []
-        self.files = {}
+        self.files = FakeFtp.files
         self.closed = False
         FakeFtp.instances.append(self)
 
@@ -168,9 +169,14 @@ class FakeFtp:
 def main():
     migrated = app_module.migrate_config({"backup_files": [{"path": "/etc/pve", "selected": False}]})
     migrated_by_path = {item["path"]: item for item in migrated["backup_files"]}
+    migrated_auto_by_path = {item["path"]: item for item in migrated["auto_backup_files"]}
+    assert migrated["config_version"] == app_module.CONFIG_VERSION
+    assert migrated["max_backup_count"] == 10
+    assert migrated_auto_by_path["/etc/pve"]["selected"] is False
     for path in ["/etc/passwd", "/etc/group", "/etc/shadow", "/etc/subuid", "/etc/subgid", "/etc/ssh"]:
         assert path in migrated_by_path
         assert migrated_by_path[path]["selected"] is True
+        assert migrated_auto_by_path[path]["selected"] is True
         assert migrated_by_path[path]["critical"] is True
     assert migrated_by_path["/etc/pve"]["selected"] is False
     for path in ["/etc/pve", "/etc/network", "/etc/resolv.conf", "/etc/passwd"]:
@@ -276,6 +282,15 @@ def main():
             response = client.post("/api/files/selection", json={"selected": True})
             assert response.status_code == 200
             assert all(item["selected"] for item in response.get_json()["backup_files"])
+            response = client.post("/api/auto-files/selection", json={"selected": False})
+            assert response.status_code == 200
+            assert all(not item["selected"] for item in response.get_json()["backup_files"])
+            assert all(item["selected"] for item in app_module.load_config()["backup_files"])
+            response = client.post("/api/auto-files/0/toggle")
+            assert response.status_code == 200
+            config = app_module.load_config()
+            assert config["auto_backup_files"][0]["selected"] is True
+            assert config["backup_files"][0]["selected"] is True
 
             response = client.post(
                 "/api/backup",
@@ -288,9 +303,12 @@ def main():
             assert response.status_code == 400
             assert "FTP konfigurácia" in response.get_json()["error"]
 
+            seen_selected_runs = []
+
             class FakeSource:
                 def create_archive(self, selected_files, backup_filename):
                     assert str(Path(app_module.BACKUP_STORAGE_DIR)) in backup_filename
+                    seen_selected_runs.append([item["path"] for item in selected_files])
                     with tarfile.open(backup_filename, "w:gz") as tar:
                         payload = b"info"
                         info = tarfile.TarInfo("backup-info/README-RESTORE.txt")
@@ -342,6 +360,23 @@ def main():
             assert seen_uploads and seen_uploads[0][0] == data["local_path"]
             assert seen_uploads[0][1]["remote_dir"] == "/pve-backups"
             assert Path(app_module.BACKUP_HISTORY_FILE).exists()
+            assert seen_selected_runs[-1] == ["/etc/pve"]
+
+            config = app_module.load_config()
+            config["ftp_config"] = {
+                "host": "ftp.example",
+                "port": 21,
+                "username": "backup",
+                "password": "secret",
+                "remote_dir": "/pve-backups",
+            }
+            for item in config["auto_backup_files"]:
+                item["selected"] = item["path"] == "/etc/network"
+            app_module.save_config(config)
+            response = client.post("/api/backup/auto", json={})
+            assert response.status_code == 200, response.get_data(as_text=True)
+            assert response.get_json()["ftp_status"] == "success"
+            assert seen_selected_runs[-1] == ["/etc/network"]
 
             backup_dir = Path(app_module.BACKUP_STORAGE_DIR)
             restore_archive = backup_dir / "restore.tar.gz"
@@ -506,6 +541,7 @@ def main():
     original_ftp = app_module.ftplib.FTP
     try:
         FakeFtp.instances = []
+        FakeFtp.files = {}
         app_module.ftplib.FTP = FakeFtp
 
         with tempfile.TemporaryDirectory(prefix="pve-ftp-test-", dir=str(ROOT)) as workdir:
@@ -531,6 +567,83 @@ def main():
             assert success, message
             assert FakeFtp.instances[-1].cwd_calls == ["/pve-backups"]
             assert FakeFtp.instances[-1].stored == [("STOR backup.tar.gz", b"archive")]
+
+        with tempfile.TemporaryDirectory(prefix="pve-retention-test-", dir=str(ROOT)) as workdir:
+            original_history_file = app_module.BACKUP_HISTORY_FILE
+            original_backup_dir = app_module.BACKUP_STORAGE_DIR
+            original_delete_from_ftp = app_module.delete_from_ftp
+            try:
+                app_module.BACKUP_HISTORY_FILE = str(Path(workdir) / "backup_history.json")
+                app_module.BACKUP_STORAGE_DIR = str(Path(workdir) / "backups")
+                backup_dir = Path(app_module.BACKUP_STORAGE_DIR)
+                backup_dir.mkdir()
+                old_archive = backup_dir / "old.tar.gz"
+                keep_archive = backup_dir / "keep.tar.gz"
+                old_archive.write_bytes(b"old")
+                keep_archive.write_bytes(b"keep")
+                FakeFtp.files[keep_archive.name] = b"keep"
+                app_module.save_backup_history([
+                    {
+                        "id": "old",
+                        "filename": old_archive.name,
+                        "timestamp": "2026-05-29T10:00:00",
+                        "local_path": str(old_archive),
+                        "ftp_status": "failed",
+                    },
+                    {
+                        "id": "keep",
+                        "filename": keep_archive.name,
+                        "timestamp": "2026-05-29T11:00:00",
+                        "local_path": str(keep_archive),
+                        "ftp_status": "success",
+                    },
+                ])
+
+                sync_results = app_module.sync_missing_ftp_backups(ftp_config)
+                assert sync_results == [{
+                    "id": "old",
+                    "filename": old_archive.name,
+                    "success": True,
+                    "message": "Súbor úspešne nahraný na FTP server",
+                }]
+                assert app_module.load_backup_history()[0]["ftp_status"] == "success"
+                assert old_archive.name in FakeFtp.files
+
+                retention = app_module.enforce_backup_retention({"max_backup_count": 1}, ftp_config)
+                assert retention["warnings"] == []
+                assert retention["deleted"][0]["id"] == "old"
+                assert not old_archive.exists()
+                assert keep_archive.exists()
+                assert old_archive.name not in FakeFtp.files
+                assert [entry["id"] for entry in app_module.load_backup_history()] == ["keep"]
+
+                old_archive.write_bytes(b"old")
+                app_module.save_backup_history([
+                    {
+                        "id": "old-warning",
+                        "filename": old_archive.name,
+                        "timestamp": "2026-05-29T10:00:00",
+                        "local_path": str(old_archive),
+                        "ftp_status": "success",
+                    },
+                    {
+                        "id": "keep",
+                        "filename": keep_archive.name,
+                        "timestamp": "2026-05-29T11:00:00",
+                        "local_path": str(keep_archive),
+                        "ftp_status": "success",
+                    },
+                ])
+                app_module.delete_from_ftp = lambda filename, config: (False, "FTP down")
+                retention = app_module.enforce_backup_retention({"max_backup_count": 1}, ftp_config)
+                assert retention["deleted"] == []
+                assert "FTP down" in retention["warnings"][0]
+                assert old_archive.exists()
+                assert len(app_module.load_backup_history()) == 2
+            finally:
+                app_module.delete_from_ftp = original_delete_from_ftp
+                app_module.BACKUP_HISTORY_FILE = original_history_file
+                app_module.BACKUP_STORAGE_DIR = original_backup_dir
 
         with tempfile.TemporaryDirectory(prefix="pve-delete-test-", dir=str(ROOT)) as workdir:
             original_config_file = app_module.CONFIG_FILE

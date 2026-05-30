@@ -43,10 +43,12 @@ Hlavné funkcie:
 - konfigurácia zdroja zálohy: `remote_ssh` (LXC číta Proxmox cez SSH) alebo `local` (appka beží priamo na hosta)
 - test FTP aj SSH pripojenia pred uložením alebo zálohou
 - kategorizovaný výber súborov a adresárov na zálohovanie (6 kategórií)
+- samostatný výber položiek pre manuálnu a automatickú zálohu (`backup_files` vs. `auto_backup_files`)
 - manuálne vytvorenie `.tar.gz` archívu (lokálne alebo streamom cez SSH)
 - generovanie `backup-info/` inventára a `README-RESTORE.txt`
 - upload zálohy na FTP
-- lokálna história záloh s FTP sync stavom
+- lokálna história záloh s FTP sync stavom; pri dočasnom FTP výpadku ostane archív lokálne a pri ďalšej dostupnosti FTP sa chýbajúce lokálne archívy dohrávajú automaticky
+- retencia záloh cez `max_backup_count` - spoločný limit pre lokálny archív aj FTP, najstaršie nadlimitné zálohy sa mažú z oboch úložísk
 - mazanie zálohy lokálne aj z FTP
 - **restore workflow**: preview obsahu archívu → výber ciest → bezpečný restore na Proxmox host cez SSH (whitelist, staging, pre-apply záloha)
 - týždenné alebo mesačné automatické zálohovanie
@@ -71,6 +73,9 @@ Pri úpravách preferuj spoľahlivosť a jasné chybové hlášky pred vizuálny
 - API odpovede vracaj ako JSON a používateľské akcie vo webovom rozhraní komunikuj jasnými stavmi.
 - Ak pridáš novú konfiguráciu, zahrň jej predvolenú hodnotu do `default_config()` aj `migrate_config()`.
 - Ak meníš štruktúru `backup_config.json`, zvýš `CONFIG_VERSION` a aktualizuj `migrate_config()`.
+- `backup_files` je ručný výber a `auto_backup_files` je samostatný výber pre automatické zálohy; nespájaj ich späť do jedného stavu.
+- `max_backup_count` je spoločná retencia pre lokálne archívy aj FTP. Pri zmene retenčnej logiky zachovaj best-effort FTP mazanie a varovania namiesto pádu úspešne vytvorenej lokálnej zálohy.
+- Pri FTP výpadku musí lokálne vytvorená záloha zostať v histórii s FTP stavom a neskorší backup má skúsiť chýbajúce lokálne archívy dohrať na FTP.
 - Ak pridáš nový runtime súbor, aktualizuj dokumentáciu a `.gitignore`, ak má zostať lokálny.
 - Slovenské texty v UI a hláškach drž konzistentné.
 - Legacy form-based routes (`/toggle_file`, `/create_backup`, `/save_ftp_config` atď.) sú zachované pre kompatibilitu; nové funkcie pridávaj cez `/api/*` endpointy.
@@ -125,10 +130,14 @@ Pri zmenách frontendu over, že hlavná stránka stále obsahuje názov apliká
 | `/api/files` | GET | Zoznam súborov na zálohovanie |
 | `/api/files/<idx>/toggle` | POST | Prepnutie výberu jedného súboru |
 | `/api/files/selection` | POST | Hromadný výber/odznačenie |
+| `/api/auto-files` | GET | Zoznam súborov pre automatické zálohovanie |
+| `/api/auto-files/<idx>/toggle` | POST | Prepnutie výberu jednej položky automatickej zálohy |
+| `/api/auto-files/selection` | POST | Hromadný výber/odznačenie automatickej zálohy |
 | `/api/settings` | POST | Uloženie FTP a source konfigurácie |
 | `/api/test-ftp` | POST | Test FTP pripojenia |
 | `/api/test-ssh` | POST | Test SSH pripojenia na Proxmox host |
 | `/api/backup` | POST | Spustenie zálohy |
+| `/api/backup/auto` | POST | Spustenie automatickej zálohy podľa `auto_backup_files` |
 | `/api/backups/<id>` | DELETE | Zmazanie zálohy (lokálne + FTP + história) |
 | `/api/restore/archives` | GET | Lokálne dostupné archívy na restore |
 | `/api/restore/preview/<id>` | GET | Preview obnoviteľných ciest v archíve |
@@ -173,6 +182,8 @@ journalctl -u proxmox-backup.service -f
 - Ak `rg` nie je dostupné, použi `find`, `grep` alebo bežné shell nástroje.
 - `app.py` má 2000+ riadkov — pred väčšou zmenou si prečítaj relevantnú sekciu, nie len prvých 100 riadkov.
 - Remote SSH záloha streamuje `tar` výstup cez paramiko do lokálneho súboru — timeout gunicornu 7200s je zámerný.
+- `auto_backup.sh` má volať `/api/backup/auto`, aby automatické zálohy používali samostatný výber `auto_backup_files`.
+- História má zachovať lokálne existujúce archívy aj pri chýbajúcom FTP súbore, inak by ich neskorší FTP dosync nevedel nájsť.
 - Restore má vlastný whitelist (`restore_whitelist_paths`), staging adresár a pre-apply zálohu na hostovi — neobchádzaj tieto kroky.
 - `CLAUDE.md` je alias/doplnok tohto súboru pre Claude-based agenty.
 - Dokument `AGENTS.md` je autoritatívny zdroj pokynov pre prácu v tomto repozitári.

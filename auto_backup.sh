@@ -8,7 +8,7 @@ APP_DIR="/opt/proxmox-backup"
 curl -fsS -X POST \
 	-H "Content-Type: application/json" \
 	-d '{}' \
-	http://127.0.0.1:5000/api/backup || {
+	http://127.0.0.1:5000/api/backup/auto || {
 	echo "API trigger zlyhal, skúšam priamo Python..."
 	if [ -x "${APP_DIR}/venv/bin/python" ]; then
 		"${APP_DIR}/venv/bin/python" - <<'PY'
