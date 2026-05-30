@@ -98,6 +98,10 @@ MIGRATION_PATH_ALIASES = {
     '/etc/network/interfaces': '/etc/network',
 }
 
+RETIRED_BACKUP_PATHS = {
+    '/etc/ssl/pve',
+}
+
 INFO_COMMANDS = [
     ('pveversion-v.txt', ['pveversion', '-v']),
     ('qm-list.txt', ['qm', 'list']),
@@ -354,16 +358,6 @@ DEFAULT_BACKUP_FILES = [
         'selected': True
     },
     {
-        'path': '/etc/ssl/pve',
-        'name': 'PVE SSL certifikáty',
-        'description': 'Certifikáty webového rozhrania a Proxmox služieb.',
-        'category': 'system_config',
-        'priority': 'recommended',
-        'tags': ['recommended', 'sensitive'],
-        'critical': False,
-        'selected': True
-    },
-    {
         'path': '/root',
         'name': 'Root adresár',
         'description': 'Skripty, SSH kľúče, poznámky a nastavenia administrátora.',
@@ -596,7 +590,12 @@ def migrate_config(config):
         used_paths.add(normalized_default_path)
 
     for item in existing_items:
-        if isinstance(item, dict) and normalize_config_path(item.get('path')) not in used_paths:
+        if not isinstance(item, dict):
+            continue
+        normalized_path = normalize_config_path(item.get('path'))
+        if normalized_path in RETIRED_BACKUP_PATHS:
+            continue
+        if normalized_path not in used_paths:
             migrated_items.append(migrate_backup_item(item))
 
     migrated = defaults
