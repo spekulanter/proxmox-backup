@@ -184,6 +184,61 @@ class FakeFtp:
         self.closed = True
 
 
+def create_test_auth_config(path, username="admin", password="VerySecret123"):
+    original_auth_file = app_module.AUTH_CONFIG_FILE
+    app_module.AUTH_CONFIG_FILE = str(path)
+    secret = app_module.generate_totp_secret()
+    auth_config = app_module.default_auth_config()
+    auth_config["admin"] = {
+        "username": username,
+        "password_hash": app_module.generate_password_hash(password),
+        "totp_secret": secret,
+        "recovery_codes": app_module.hash_recovery_codes(["AAAA-BBBB-CCCC"]),
+        "session_version": 1,
+        "failed_login_count": 0,
+        "created_at": app_module.now_iso(),
+        "updated_at": app_module.now_iso(),
+        "pushover": {
+            "app_token": "",
+            "user_key": "",
+            "device": "",
+            "notify_manual_backups": False,
+            "notify_auto_backups": False,
+            "notify_security": True,
+        },
+    }
+    app_module.save_auth_config(auth_config)
+    app_module.sync_flask_secret()
+    return original_auth_file, secret, password
+
+
+def make_authed_client(secret, username="admin", password="VerySecret123"):
+    client = app_module.app.test_client()
+    response = client.post(
+        "/api/auth/login",
+        json={
+            "username": username,
+            "password": password,
+            "totp_code": app_module.totp_token(secret),
+        },
+    )
+    assert response.status_code == 200, response.get_data(as_text=True)
+    csrf_token = response.get_json()["csrf_token"]
+    original_open = client.open
+
+    def open_with_csrf(*args, **kwargs):
+        method = str(kwargs.get("method", "GET")).upper()
+        path = args[0] if args and isinstance(args[0], str) else kwargs.get("path", "")
+        if method in {"POST", "PUT", "PATCH", "DELETE"} and not str(path).startswith("/api/auth/"):
+            headers = dict(kwargs.pop("headers", {}) or {})
+            headers.setdefault("X-CSRF-Token", csrf_token)
+            kwargs["headers"] = headers
+        return original_open(*args, **kwargs)
+
+    client.open = open_with_csrf
+    return client
+
+
 def main():
     migrated = app_module.migrate_config({"backup_files": [{"path": "/etc/pve", "selected": False}]})
     migrated_by_path = {item["path"]: item for item in migrated["backup_files"]}
@@ -199,6 +254,14 @@ def main():
     assert migrated_by_path["/etc/pve"]["selected"] is False
     for path in ["/etc/pve", "/etc/network", "/etc/resolv.conf", "/etc/passwd"]:
         assert "pve upgrade" in migrated_by_path[path]["tags"]
+
+    assert app_module.recovery_codes_remaining({
+        "recovery_codes": [
+            {"used": False},
+            {"used": True},
+            {"used": False},
+        ]
+    }) == 2
 
     with tempfile.TemporaryDirectory(prefix="pve-backup-test-", dir=str(ROOT)) as workdir:
         source_dir = Path(workdir) / "mock-config"
@@ -276,8 +339,139 @@ def main():
             names = tar.getnames()
         assert "backup-info/pvesm-config.txt" in names, names
 
+    with tempfile.TemporaryDirectory(prefix="pve-auth-test-", dir=str(ROOT)) as workdir:
+        original_config_file = app_module.CONFIG_FILE
+        original_auth_file = app_module.AUTH_CONFIG_FILE
+        original_pushover_poster = app_module.PUSHOVER_POSTER
+        try:
+            app_module.CONFIG_FILE = str(Path(workdir) / "backup_config.json")
+            app_module.AUTH_CONFIG_FILE = str(Path(workdir) / "auth_config.json")
+            app_module.save_config(app_module.default_config())
+            app_module.save_auth_config(app_module.default_auth_config())
+            app_module.sync_flask_secret()
+
+            client = app_module.app.test_client()
+            response = client.post("/api/files/selection", json={"selected": False})
+            assert response.status_code == 403
+
+            response = client.post(
+                "/api/auth/setup/start",
+                json={"username": "admin", "password": "VerySecret123"},
+            )
+            assert response.status_code == 200, response.get_data(as_text=True)
+            setup = response.get_json()
+            assert setup["qr_data_uri"].startswith("data:image/")
+
+            response = client.post("/api/auth/setup/complete", json={"totp_code": "000000"})
+            assert response.status_code == 400
+
+            response = client.post(
+                "/api/auth/setup/complete",
+                json={"totp_code": app_module.totp_token(setup["totp_secret"])},
+            )
+            assert response.status_code == 200, response.get_data(as_text=True)
+            recovery_code = response.get_json()["recovery_codes"][0]
+
+            response = client.post(
+                "/api/auth/setup/start",
+                json={"username": "second", "password": "VerySecret123"},
+            )
+            assert response.status_code == 409
+
+            response = client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "VerySecret123", "totp_code": "000000"},
+            )
+            assert response.status_code == 401
+
+            response = client.post(
+                "/api/auth/login",
+                json={
+                    "username": "admin",
+                    "password": "VerySecret123",
+                    "totp_code": app_module.totp_token(setup["totp_secret"]),
+                },
+            )
+            assert response.status_code == 200, response.get_data(as_text=True)
+            csrf = response.get_json()["csrf_token"]
+
+            response = client.post("/api/files/selection", json={"selected": False})
+            assert response.status_code == 403
+            response = client.post("/api/files/selection", json={"selected": False}, headers={"X-CSRF-Token": csrf})
+            assert response.status_code == 200
+
+            auth_config = app_module.load_auth_config()
+            response = app_module.app.test_client().post(
+                "/api/backup/auto",
+                json={},
+                headers={"Authorization": f"Bearer {auth_config['service_token']}"},
+            )
+            assert response.status_code == 400
+            assert response.get_json()["error"].startswith("FTP konfigurácia")
+
+            response = client.post(
+                "/api/account/totp/start",
+                json={"password": "VerySecret123", "totp_code": app_module.totp_token(setup["totp_secret"])},
+                headers={"X-CSRF-Token": csrf},
+            )
+            assert response.status_code == 200, response.get_data(as_text=True)
+            new_totp = response.get_json()["totp_secret"]
+            response = client.post(
+                "/api/account/totp/complete",
+                json={"totp_code": app_module.totp_token(new_totp)},
+                headers={"X-CSRF-Token": csrf},
+            )
+            assert response.status_code == 200, response.get_data(as_text=True)
+            new_recovery_code = response.get_json()["recovery_codes"][0]
+
+            sent_messages = []
+
+            def fake_pushover(_url, payload, timeout=10):
+                sent_messages.append(payload)
+                return 200, {"status": 1}
+
+            app_module.PUSHOVER_POSTER = fake_pushover
+            auth_config = app_module.load_auth_config()
+            auth_config["admin"]["pushover"] = {
+                "app_token": "app-token",
+                "user_key": "user-key",
+                "device": "",
+                "notify_manual_backups": False,
+                "notify_auto_backups": False,
+                "notify_security": True,
+            }
+            app_module.save_auth_config(auth_config)
+
+            recovery_client = app_module.app.test_client()
+            response = recovery_client.post(
+                "/api/auth/recovery/start",
+                json={"username": "admin", "recovery_code": new_recovery_code},
+            )
+            assert response.status_code == 200, response.get_data(as_text=True)
+            pushover_code = "".join(ch for ch in sent_messages[-1]["message"] if ch.isdigit())[-6:]
+            response = recovery_client.post(
+                "/api/auth/recovery/complete",
+                json={"pushover_code": pushover_code, "new_password": "AnotherSecret123"},
+            )
+            assert response.status_code == 200, response.get_data(as_text=True)
+            response = recovery_client.post(
+                "/api/auth/login",
+                json={
+                    "username": "admin",
+                    "password": "AnotherSecret123",
+                    "totp_code": app_module.totp_token(new_totp),
+                },
+            )
+            assert response.status_code == 200, response.get_data(as_text=True)
+        finally:
+            app_module.PUSHOVER_POSTER = original_pushover_poster
+            app_module.CONFIG_FILE = original_config_file
+            app_module.AUTH_CONFIG_FILE = original_auth_file
+            app_module.sync_flask_secret()
+
     with tempfile.TemporaryDirectory(prefix="pve-api-test-", dir=str(ROOT)) as workdir:
         original_config_file = app_module.CONFIG_FILE
+        original_auth_file = app_module.AUTH_CONFIG_FILE
         original_history_file = app_module.BACKUP_HISTORY_FILE
         original_backup_dir = app_module.BACKUP_STORAGE_DIR
         original_build_source = app_module.build_backup_source
@@ -286,6 +480,7 @@ def main():
 
         try:
             app_module.CONFIG_FILE = str(Path(workdir) / "backup_config.json")
+            _prev_auth, auth_secret, auth_password = create_test_auth_config(Path(workdir) / "auth_config.json")
             app_module.BACKUP_HISTORY_FILE = str(Path(workdir) / "backup_history.json")
             app_module.BACKUP_STORAGE_DIR = str(Path(workdir) / "backups")
 
@@ -293,7 +488,7 @@ def main():
             app_module.save_config(config)
             assert oct(os.stat(app_module.CONFIG_FILE).st_mode & 0o777) == "0o600"
 
-            client = app_module.app.test_client()
+            client = make_authed_client(auth_secret, password=auth_password)
             response = client.post("/api/files/selection", json={"selected": False})
             assert response.status_code == 200
             assert all(not item["selected"] for item in response.get_json()["backup_files"])
@@ -566,6 +761,8 @@ def main():
             assert any(command.startswith("rm -rf /tmp/pve-restore.TEST") for command in fake_restore_client.commands)
         finally:
             app_module.CONFIG_FILE = original_config_file
+            app_module.AUTH_CONFIG_FILE = original_auth_file
+            app_module.sync_flask_secret()
             app_module.BACKUP_HISTORY_FILE = original_history_file
             app_module.BACKUP_STORAGE_DIR = original_backup_dir
             app_module.build_backup_source = original_build_source
@@ -681,10 +878,12 @@ def main():
 
         with tempfile.TemporaryDirectory(prefix="pve-delete-test-", dir=str(ROOT)) as workdir:
             original_config_file = app_module.CONFIG_FILE
+            original_auth_file = app_module.AUTH_CONFIG_FILE
             original_history_file = app_module.BACKUP_HISTORY_FILE
             original_backup_dir = app_module.BACKUP_STORAGE_DIR
             try:
                 app_module.CONFIG_FILE = str(Path(workdir) / "backup_config.json")
+                _prev_auth, auth_secret, auth_password = create_test_auth_config(Path(workdir) / "auth_config.json")
                 app_module.BACKUP_HISTORY_FILE = str(Path(workdir) / "backup_history.json")
                 app_module.BACKUP_STORAGE_DIR = str(Path(workdir) / "backups")
                 backup_dir = Path(app_module.BACKUP_STORAGE_DIR)
@@ -705,7 +904,7 @@ def main():
                     },
                 ])
 
-                client = app_module.app.test_client()
+                client = make_authed_client(auth_secret, password=auth_password)
                 response = client.get("/api/config")
                 assert response.status_code == 200
                 visible_ids = {entry["id"] for entry in response.get_json()["backup_history"]}
@@ -727,15 +926,19 @@ def main():
                 assert FakeFtp.instances[-1].deleted == [archive.name]
             finally:
                 app_module.CONFIG_FILE = original_config_file
+                app_module.AUTH_CONFIG_FILE = original_auth_file
+                app_module.sync_flask_secret()
                 app_module.BACKUP_HISTORY_FILE = original_history_file
                 app_module.BACKUP_STORAGE_DIR = original_backup_dir
 
         with tempfile.TemporaryDirectory(prefix="pve-ftp-list-test-", dir=str(ROOT)) as workdir:
             original_config_file = app_module.CONFIG_FILE
+            original_auth_file = app_module.AUTH_CONFIG_FILE
             original_history_file = app_module.BACKUP_HISTORY_FILE
             original_backup_dir = app_module.BACKUP_STORAGE_DIR
             try:
                 app_module.CONFIG_FILE = str(Path(workdir) / "backup_config.json")
+                _prev_auth, auth_secret, auth_password = create_test_auth_config(Path(workdir) / "auth_config.json")
                 app_module.BACKUP_HISTORY_FILE = str(Path(workdir) / "backup_history.json")
                 app_module.BACKUP_STORAGE_DIR = str(Path(workdir) / "backups")
                 backup_dir = Path(app_module.BACKUP_STORAGE_DIR)
@@ -786,7 +989,7 @@ def main():
                     },
                 ])
 
-                client = app_module.app.test_client()
+                client = make_authed_client(auth_secret, password=auth_password)
                 response = client.get("/api/backups")
                 assert response.status_code == 200, response.get_data(as_text=True)
                 data = response.get_json()
@@ -825,6 +1028,8 @@ def main():
             finally:
                 FakeFtp.fail_connect = False
                 app_module.CONFIG_FILE = original_config_file
+                app_module.AUTH_CONFIG_FILE = original_auth_file
+                app_module.sync_flask_secret()
                 app_module.BACKUP_HISTORY_FILE = original_history_file
                 app_module.BACKUP_STORAGE_DIR = original_backup_dir
     finally:

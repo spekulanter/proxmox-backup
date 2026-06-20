@@ -13,6 +13,8 @@ Moderná webová aplikácia v Python Flask pre správu a automatizáciu záloh P
 - **🧭 Restore checklist** - Archív obsahuje `backup-info/README-RESTORE.txt` a diagnostické výstupy
 - **📊 História záloh** - Prehľad a správa vytvorených záloh
 - **🔧 Test pripojenia** - Overenie FTP nastavení pred zálohou
+- **🔐 Single-admin login + povinné 2FA** - Prvé otvorenie vynúti registráciu admina, ďalšie účty nie sú povolené
+- **📲 Pushover notifikácie** - Voliteľné notifikácie pre manuálne/automatické zálohy a bezpečnostné udalosti
 - **📱 Responzívny dizajn** - Moderné Tailwind rozhranie s tabmi
 
 ## 🚀 Rýchla inštalácia (LXC v Proxmoxe)
@@ -23,6 +25,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/spekulanter/proxmox-backup/m
 ```
 
 Po inštalácii je aplikácia dostupná na: **http://LXC_IP:5000**
+
+Pri prvom otvorení sa zobrazí registračná stránka. Admin účet sa vytvorí až po naskenovaní 2FA secretu do Google Authenticatora a overení 6-miestnym kódom. Recovery kódy sa zobrazia iba raz, preto si ich uložte mimo servera.
 
 ## 📦 Manuálna inštalácia
 
@@ -114,7 +118,16 @@ Každá úspešne vytvorená záloha sa uloží lokálne do `backups/` v LXC a n
 - **Denne, týždenne alebo mesačne** - podľa nastavenia v sekcii Automatická záloha
 - Vyžaduje systemd timer `proxmox-backup-auto.timer` (pridáva sa automaticky pri inštalácii/update)
 - Timer spúšťa `auto_backup.sh` na štvrťhodinách `:00/:15/:30/:45`; skript podľa `backup_config.json` rozhodne, či je automatická záloha zapnutá a či už nastal uložený deň/čas
-- `auto_backup.sh` volá JSON API `/api/backup/auto` zo saved configu, takže zlyhá viditeľne pri chýbajúcom SSH/FTP nastavení
+- `auto_backup.sh` volá JSON API `/api/backup/auto` zo saved configu a pri zapnutom logine používa servisný token z `auth_config.json`, takže nepotrebuje browser session
+
+### 🔐 Prihlásenie, 2FA a recovery
+
+- Aplikácia povoľuje iba jeden admin účet. Ak účet existuje, registračné endpointy ďalšieho používateľa odmietnu.
+- Login vyžaduje používateľské meno, heslo a TOTP kód z Google Authenticatora.
+- Prihlásenie používa dlhodobú session cookie viazanú na stabilný secret v `auth_config.json`; zmena hesla, reset 2FA alebo logout session zneplatní.
+- V správe účtu môžete zmeniť používateľské meno, heslo, resetovať 2FA, regenerovať recovery kódy a nastaviť Pushover.
+- Obnova zabudnutého hesla cez web vyžaduje recovery kód a Pushover overovací kód. Ak Pushover nie je nastavený, recovery cez web nie je dostupné.
+- Pushover používa App Key/Token a User Key z vášho Pushover účtu. Nastavenia umožňujú samostatne zapnúť notifikácie pre manuálne zálohy, automatické zálohy a bezpečnostné udalosti.
 
 ## 🛠️ Správa služby
 
@@ -137,11 +150,12 @@ journalctl -u proxmox-backup.service -f
 
 ## 🔒 Bezpečnosť
 
-- ✅ Zmente `secret_key` v `app.py` pre produkčné použitie
-- ✅ Zabezpečte prístup k aplikácii (firewall, VPN, reverse proxy)
+- ✅ Login a 2FA chránia webové UI, ale HTTP prenos nešifrujú. Pre produkciu použite VPN, firewall alebo reverse proxy s HTTPS.
+- ✅ Stabilný Flask secret, admin hash, TOTP secret, recovery kódy, servisný token a Pushover tokeny sú v `auth_config.json` s právami `0600`
 - ✅ Používajte silné FTP heslá a šifrovanie (FTPS/SFTP)
 - ✅ `backup_config.json` obsahuje FTP a SSH heslá; aplikácia ho ukladá s právami `0600`
 - ✅ Adresár `backups/` obsahuje citlivé archívy a má práva `0700`
+- ✅ `auth_config.json` sa nevkladá do git repozitára ani do backup archívu
 - ✅ Pravidelne kontrolujte vytvorené zálohy
 - ✅ Otestujte obnovu z záloh
 
@@ -154,6 +168,7 @@ journalctl -u proxmox-backup.service -f
 - `update.sh` - Update skript
 - `auto_backup.sh` - Skript pre automatické zálohy
 - `test.sh` - Test funkčnosti
+- `auth_config.json` - Login/2FA/Pushover runtime konfigurácia (vytvorí sa automaticky)
 - `backup_config.json` - Konfigurácia (vytvorí sa automaticky)
 - `backup_history.json` - História záloh (vytvorí sa automaticky)
 - `backups/` - Lokálne archívy v LXC (vytvorí sa automaticky)

@@ -32,6 +32,7 @@ Zalohovanie AUTO.FS na QNAP a WD/
 
 # App runtime data (local configs and backups)
 backup_config.json
+auth_config.json
 backup_history.json
 *.tar.gz
 *.log

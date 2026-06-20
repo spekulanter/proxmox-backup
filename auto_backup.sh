@@ -5,6 +5,7 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 CONFIG_FILE="${CONFIG_FILE:-${APP_DIR}/backup_config.json}"
 HISTORY_FILE="${HISTORY_FILE:-${APP_DIR}/backup_history.json}"
+AUTH_FILE="${AUTH_FILE:-${APP_DIR}/auth_config.json}"
 API_URL="${BACKUP_MANAGER_URL:-http://127.0.0.1:5000/api/backup/auto}"
 PYTHON_BIN="${APP_DIR}/venv/bin/python"
 
@@ -135,8 +136,27 @@ case "${decision}" in
 		;;
 esac
 
+auth_header=()
+if [ -f "${AUTH_FILE}" ]; then
+	service_token="$("${PYTHON_BIN}" - "${AUTH_FILE}" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        print((json.load(handle).get("service_token") or "").strip())
+except Exception:
+    print("")
+PY
+)"
+	if [ -n "${service_token}" ]; then
+		auth_header=(-H "Authorization: Bearer ${service_token}")
+	fi
+fi
+
 # Prefer local JSON API endpoint to trigger the backup from saved config
 curl -fsS -X POST \
+	"${auth_header[@]}" \
 	-H "Content-Type: application/json" \
 	-d '{}' \
 	"${API_URL}"

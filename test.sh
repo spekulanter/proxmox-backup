@@ -39,15 +39,13 @@ else
     echo "❌ Problém s template-om"
 fi
 
-# Test FTP test endpoint
-echo "4️⃣ Test FTP endpoint..."
-FTP_STATUS="$(curl -s -o /dev/null -w "%{http_code}" -X POST -H "Content-Type: application/json" \
-   -d '{"host":"test","username":"test","password":"test","port":21}' \
-   http://127.0.0.1:5000/test_ftp 2>/dev/null || true)"
-if [ "${FTP_STATUS}" = "200" ] || [ "${FTP_STATUS}" = "400" ]; then
-    echo "✅ FTP test endpoint funguje"
+# Test auth status endpoint
+echo "4️⃣ Test auth endpoint..."
+AUTH_STATUS="$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:5000/api/auth/status 2>/dev/null || true)"
+if [ "${AUTH_STATUS}" = "200" ]; then
+    echo "✅ Auth status endpoint funguje"
 else
-    echo "❌ FTP test endpoint nefunguje"
+    echo "❌ Auth status endpoint nefunguje"
 fi
 
 echo ""

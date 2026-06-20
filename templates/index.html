@@ -58,11 +58,109 @@
     </style>
 </head>
 <body class="min-h-screen bg-background font-sans antialiased">
-    <div class="min-h-screen bg-background p-4">
+    <div id="auth-shell" class="min-h-screen bg-background p-4 hidden">
+        <div class="mx-auto flex min-h-[calc(100vh-2rem)] max-w-xl items-center">
+            <div class="w-full rounded-xl border border-border bg-card p-6 shadow-sm">
+                <div class="mb-6 text-center">
+                    <h1 class="text-2xl font-bold text-foreground">Proxmox Backup Manager</h1>
+                    <p id="auth-subtitle" class="mt-2 text-sm text-muted-foreground">Prihlásenie správcu</p>
+                </div>
+
+                <div id="setup-panel" class="hidden space-y-4">
+                    <div id="setup-step-credentials" class="space-y-3">
+                        <div>
+                            <label for="setup-username" class="text-sm font-medium">Používateľské meno</label>
+                            <input type="text" id="setup-username" autocomplete="username" class="mt-1 flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                        </div>
+                        <div>
+                            <label for="setup-password" class="text-sm font-medium">Heslo</label>
+                            <input type="password" id="setup-password" autocomplete="new-password" class="mt-1 flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                        </div>
+                        <button type="button" onclick="startSetup()" class="inline-flex h-9 w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90">Pokračovať na 2FA</button>
+                    </div>
+                    <div id="setup-step-totp" class="hidden space-y-3">
+                        <div class="rounded-lg border border-border bg-muted/40 p-3 text-sm">
+                            <div class="font-medium">Naskenuj QR v Google Authenticator</div>
+                            <img id="setup-qr" alt="2FA QR kód" class="mx-auto mt-3 h-56 w-56 rounded-md border border-border bg-white p-2">
+                            <div class="mt-3 break-all text-xs text-muted-foreground">Secret: <span id="setup-secret" class="font-mono"></span></div>
+                        </div>
+                        <div>
+                            <label for="setup-totp-code" class="text-sm font-medium">6-miestny 2FA kód</label>
+                            <input type="text" id="setup-totp-code" inputmode="numeric" autocomplete="one-time-code" class="mt-1 flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                        </div>
+                        <button type="button" onclick="completeSetup()" class="inline-flex h-9 w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90">Vytvoriť admin účet</button>
+                    </div>
+                    <div id="setup-recovery-codes" class="hidden space-y-3">
+                        <div class="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                            Tieto recovery kódy sa zobrazia iba teraz. Ulož ich mimo servera.
+                        </div>
+                        <pre id="setup-recovery-list" class="max-h-56 overflow-auto rounded-md border border-border bg-muted p-3 text-sm"></pre>
+                        <button type="button" onclick="showLoginPanel()" class="inline-flex h-9 w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90">Prejsť na prihlásenie</button>
+                    </div>
+                </div>
+
+                <form id="login-panel" class="hidden space-y-4" onsubmit="event.preventDefault(); login();">
+                    <div>
+                        <label for="login-username" class="text-sm font-medium">Používateľské meno</label>
+                        <input type="text" id="login-username" autocomplete="username" class="mt-1 flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                    </div>
+                    <div>
+                        <label for="login-password" class="text-sm font-medium">Heslo</label>
+                        <input type="password" id="login-password" autocomplete="current-password" class="mt-1 flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                    </div>
+                    <div>
+                        <label for="login-totp-code" class="text-sm font-medium">2FA kód</label>
+                        <input type="text" id="login-totp-code" inputmode="numeric" autocomplete="one-time-code" class="mt-1 flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                    </div>
+                    <button type="submit" class="inline-flex h-9 w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90">Prihlásiť sa</button>
+                    <button type="button" onclick="toggleRecoveryPanel()" class="w-full text-sm text-primary hover:underline">Obnoviť heslo alebo 2FA</button>
+                    <div id="recovery-panel" class="hidden space-y-3 border-t border-border pt-4">
+                        <div class="grid gap-3 sm:grid-cols-2">
+                            <input type="text" id="recovery-username" placeholder="Používateľ" class="flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                            <input type="text" id="recovery-code" placeholder="Recovery kód" class="flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                        </div>
+                        <div class="grid gap-3 sm:grid-cols-2">
+                            <input type="password" id="recovery-new-password" placeholder="Nové heslo" class="flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                            <input type="text" id="recovery-pushover-code" placeholder="Pushover kód" class="flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                        </div>
+                        <div class="flex flex-col gap-2 sm:flex-row">
+                            <button type="button" onclick="startPasswordRecovery()" class="inline-flex h-9 flex-1 items-center justify-center rounded-md border border-input px-3 text-sm font-medium hover:bg-accent">Poslať Pushover kód</button>
+                            <button type="button" onclick="completePasswordRecovery()" class="inline-flex h-9 flex-1 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90">Nastaviť heslo</button>
+                        </div>
+                        <div class="space-y-3 border-t border-border pt-3">
+                            <div class="text-sm font-medium">Reset strateného 2FA</div>
+                            <input type="password" id="totp-recovery-password" placeholder="Aktuálne heslo" class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                            <div class="grid gap-3 sm:grid-cols-2">
+                                <input type="text" id="totp-recovery-pushover-code" placeholder="Pushover kód" class="flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                                <input type="text" id="totp-recovery-new-code" placeholder="Kód z nového 2FA" class="flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                            </div>
+                            <div id="totp-recovery-new" class="hidden rounded-md bg-muted/40 p-3 text-sm">
+                                <img id="totp-recovery-qr" alt="Nový 2FA QR" class="mx-auto h-44 w-44 rounded-md border border-border bg-white p-2">
+                                <div class="mt-2 break-all text-xs text-muted-foreground">Secret: <span id="totp-recovery-secret" class="font-mono"></span></div>
+                            </div>
+                            <div class="flex flex-col gap-2 sm:flex-row">
+                                <button type="button" onclick="startTotpRecovery()" class="inline-flex h-9 flex-1 items-center justify-center rounded-md border border-input px-3 text-sm font-medium hover:bg-accent">Poslať kód a zobraziť nové 2FA</button>
+                                <button type="button" onclick="completeTotpRecovery()" class="inline-flex h-9 flex-1 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90">Aktivovať nové 2FA</button>
+                            </div>
+                        </div>
+                    </div>
+                </form>
+
+                <div id="auth-status" class="mt-4 hidden rounded-md border px-3 py-2 text-sm"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="app-shell" class="min-h-screen bg-background p-4 hidden">
         <div class="max-w-6xl mx-auto space-y-6">
             <!-- Header -->
-            <div class="text-center space-y-2">
-                <h1 class="text-3xl font-bold text-foreground flex items-center justify-center gap-2">
+            <div class="relative text-center space-y-2">
+                <div class="flex items-center justify-end gap-2 sm:absolute sm:right-0 sm:top-0">
+                    <span id="logged-in-user" class="hidden text-sm text-muted-foreground sm:inline"></span>
+                    <button type="button" onclick="openAccountModal()" class="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent">Účet</button>
+                    <button type="button" onclick="logout()" class="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium hover:bg-accent">Odhlásiť</button>
+                </div>
+                <h1 class="text-3xl font-bold text-foreground flex items-center justify-center gap-2 pt-2 sm:pt-0">
                     <svg class="w-9 h-9 text-primary" fill="currentColor" viewBox="0 0 24 24">
                         <path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/>
                     </svg>
@@ -528,6 +626,72 @@
         </div>
     </div>
 
+    <div id="account-modal-overlay" class="fixed inset-0 z-[10002] hidden items-center justify-center bg-black/55 p-4">
+        <div class="max-h-[92vh] w-full max-w-3xl overflow-auto rounded-lg border border-border bg-card text-card-foreground shadow-xl">
+            <div class="flex items-center justify-between border-b border-border px-5 py-4">
+                <div>
+                    <h2 class="text-base font-semibold">Správa účtu</h2>
+                    <p id="account-summary" class="text-sm text-muted-foreground"></p>
+                </div>
+                <button type="button" onclick="closeAccountModal()" class="inline-flex h-9 items-center justify-center rounded-md border border-input px-3 text-sm hover:bg-accent">Zavrieť</button>
+            </div>
+            <div class="grid gap-4 p-5 md:grid-cols-2">
+                <div class="space-y-3 rounded-lg border border-border p-4">
+                    <h3 class="font-medium">Používateľské meno</h3>
+                    <input type="text" id="account-username" class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    <input type="password" id="account-username-password" placeholder="Aktuálne heslo" class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    <button type="button" onclick="changeUsername()" class="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground">Uložiť meno</button>
+                </div>
+                <div class="space-y-3 rounded-lg border border-border p-4">
+                    <h3 class="font-medium">Heslo</h3>
+                    <input type="password" id="account-current-password" placeholder="Aktuálne heslo" class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    <input type="password" id="account-new-password" placeholder="Nové heslo" class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    <input type="text" id="account-password-totp" placeholder="Aktuálny 2FA kód" class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    <button type="button" onclick="changePassword()" class="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground">Zmeniť heslo</button>
+                </div>
+                <div class="space-y-3 rounded-lg border border-border p-4">
+                    <h3 class="font-medium">2FA</h3>
+                    <input type="password" id="account-totp-password" placeholder="Aktuálne heslo" class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    <input type="text" id="account-current-totp" placeholder="Aktuálny 2FA kód" class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    <button type="button" onclick="startAccountTotpReset()" class="inline-flex h-9 items-center justify-center rounded-md border border-input px-4 text-sm font-medium hover:bg-accent">Vygenerovať nové 2FA</button>
+                    <div id="account-totp-new" class="hidden space-y-2 rounded-md bg-muted/40 p-3">
+                        <img id="account-totp-qr" alt="Nový 2FA QR" class="mx-auto h-44 w-44 rounded-md border border-border bg-white p-2">
+                        <div class="break-all text-xs text-muted-foreground">Secret: <span id="account-totp-secret" class="font-mono"></span></div>
+                        <input type="text" id="account-new-totp-code" placeholder="Kód z nového 2FA" class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                        <button type="button" onclick="completeAccountTotpReset()" class="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground">Aktivovať nové 2FA</button>
+                    </div>
+                </div>
+                <div class="space-y-3 rounded-lg border border-border p-4">
+                    <h3 class="font-medium">Recovery kódy</h3>
+                    <div id="account-recovery-count" class="text-sm text-muted-foreground"></div>
+                    <input type="password" id="account-recovery-password" placeholder="Aktuálne heslo" class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    <input type="text" id="account-recovery-totp" placeholder="2FA kód" class="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    <button type="button" onclick="regenerateRecoveryCodes()" class="inline-flex h-9 items-center justify-center rounded-md border border-input px-4 text-sm font-medium hover:bg-accent">Regenerovať kódy</button>
+                    <pre id="account-recovery-output" class="hidden max-h-40 overflow-auto rounded-md bg-muted p-3 text-sm"></pre>
+                </div>
+                <div class="space-y-3 rounded-lg border border-border p-4 md:col-span-2">
+                    <h3 class="font-medium">Pushover</h3>
+                    <div class="grid gap-3 md:grid-cols-3">
+                        <input type="password" id="pushover-app-token" placeholder="App Key / Token" class="flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                        <input type="password" id="pushover-user-key" placeholder="User Key" class="flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                        <input type="text" id="pushover-device" placeholder="Device (voliteľné)" class="flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                    </div>
+                    <div class="grid gap-2 text-sm md:grid-cols-3">
+                        <label class="flex items-center gap-2"><input type="checkbox" id="notify-manual"> Manuálne zálohy</label>
+                        <label class="flex items-center gap-2"><input type="checkbox" id="notify-auto"> Automatické zálohy</label>
+                        <label class="flex items-center gap-2"><input type="checkbox" id="notify-security"> Bezpečnostné udalosti</label>
+                    </div>
+                    <div class="flex gap-2">
+                        <button type="button" onclick="savePushoverSettings()" class="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground">Uložiť Pushover</button>
+                        <button type="button" onclick="testPushover()" class="inline-flex h-9 items-center justify-center rounded-md border border-input px-4 text-sm font-medium hover:bg-accent">Test</button>
+                    </div>
+                    <div id="pushover-current" class="hidden text-xs text-muted-foreground"></div>
+                </div>
+            </div>
+            <div id="account-status" class="hidden border-t border-border px-5 py-3 text-sm"></div>
+        </div>
+    </div>
+
     <!-- JavaScript -->
     <script>
         // Global state
@@ -541,6 +705,378 @@
         let restoreArchives = [];
         let restorePreviewItems = [];
         let confirmModalResolver = null;
+        let csrfToken = '';
+        let authStatus = {};
+
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = function(input, init = {}) {
+            const method = (init.method || 'GET').toUpperCase();
+            const url = typeof input === 'string' ? input : (input && input.url) || '';
+            if (csrfToken && !['GET', 'HEAD', 'OPTIONS'].includes(method) && url.startsWith('/')) {
+                const headers = new Headers(init.headers || {});
+                headers.set('X-CSRF-Token', csrfToken);
+                init = { ...init, headers };
+            }
+            return nativeFetch(input, init);
+        };
+
+        function showAuthStatus(message, type = 'info') {
+            const box = document.getElementById('auth-status');
+            if (!box) return;
+            if (!message) {
+                box.textContent = '';
+                box.className = 'mt-4 hidden rounded-md border px-3 py-2 text-sm';
+                return;
+            }
+            box.textContent = message;
+            box.className = 'mt-4 rounded-md border px-3 py-2 text-sm';
+            if (type === 'error') box.classList.add('border-red-200', 'bg-red-50', 'text-red-800');
+            else if (type === 'success') box.classList.add('border-green-200', 'bg-green-50', 'text-green-800');
+            else box.classList.add('border-border', 'bg-muted/40', 'text-muted-foreground');
+        }
+
+        function showAccountStatus(message, type = 'info') {
+            const box = document.getElementById('account-status');
+            if (!box) return;
+            box.textContent = message;
+            box.className = 'border-t border-border px-5 py-3 text-sm';
+            if (type === 'error') box.classList.add('bg-red-50', 'text-red-800');
+            else if (type === 'success') box.classList.add('bg-green-50', 'text-green-800');
+            else box.classList.add('bg-muted/40', 'text-muted-foreground');
+        }
+
+        function showSetupPanel() {
+            document.getElementById('auth-shell').classList.remove('hidden');
+            document.getElementById('app-shell').classList.add('hidden');
+            document.getElementById('setup-panel').classList.remove('hidden');
+            document.getElementById('login-panel').classList.add('hidden');
+            document.getElementById('auth-subtitle').textContent = 'Prvé nastavenie admin účtu';
+        }
+
+        function showLoginPanel() {
+            document.getElementById('auth-shell').classList.remove('hidden');
+            document.getElementById('app-shell').classList.add('hidden');
+            document.getElementById('setup-panel').classList.add('hidden');
+            document.getElementById('login-panel').classList.remove('hidden');
+            document.getElementById('auth-subtitle').textContent = 'Prihlásenie správcu';
+            showAuthStatus('', 'info');
+        }
+
+        async function initAuth() {
+            const response = await nativeFetch('/api/auth/status');
+            authStatus = await response.json();
+            csrfToken = authStatus.csrf_token || '';
+            if (authStatus.setup_required) {
+                showSetupPanel();
+                return false;
+            }
+            if (!authStatus.authenticated) {
+                showLoginPanel();
+                return false;
+            }
+            document.getElementById('auth-shell').classList.add('hidden');
+            document.getElementById('app-shell').classList.remove('hidden');
+            const loggedInUser = document.getElementById('logged-in-user');
+            if (loggedInUser && authStatus.username) {
+                loggedInUser.textContent = `Prihlásený: ${authStatus.username}`;
+                loggedInUser.classList.remove('hidden');
+            }
+            return true;
+        }
+
+        function formatRecoveryCodeCount(count) {
+            const normalized = Number.isFinite(Number(count)) ? Number(count) : 0;
+            return `Záložné kódy: ${normalized}`;
+        }
+
+        function updateRecoveryCodeCount(count) {
+            const accountCount = document.getElementById('account-recovery-count');
+            if (accountCount) {
+                accountCount.textContent = `${formatRecoveryCodeCount(count)} použiteľných`;
+            }
+        }
+
+        async function startSetup() {
+            try {
+                const response = await nativeFetch('/api/auth/setup/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: document.getElementById('setup-username').value,
+                        password: document.getElementById('setup-password').value
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok || !data.success) throw new Error(data.error || 'Registrácia zlyhala');
+                document.getElementById('setup-qr').src = data.qr_data_uri;
+                document.getElementById('setup-secret').textContent = data.totp_secret;
+                document.getElementById('setup-step-credentials').classList.add('hidden');
+                document.getElementById('setup-step-totp').classList.remove('hidden');
+                showAuthStatus('2FA secret je pripravený. Over ho kódom z aplikácie.', 'success');
+            } catch (error) {
+                showAuthStatus(error.message, 'error');
+            }
+        }
+
+        async function completeSetup() {
+            try {
+                const response = await nativeFetch('/api/auth/setup/complete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ totp_code: document.getElementById('setup-totp-code').value })
+                });
+                const data = await response.json();
+                if (!response.ok || !data.success) throw new Error(data.error || 'Dokončenie registrácie zlyhalo');
+                document.getElementById('setup-step-totp').classList.add('hidden');
+                document.getElementById('setup-recovery-list').textContent = (data.recovery_codes || []).join('\n');
+                document.getElementById('setup-recovery-codes').classList.remove('hidden');
+                showAuthStatus('Admin účet bol vytvorený. Po uložení recovery kódov sa prihlás.', 'success');
+            } catch (error) {
+                showAuthStatus(error.message, 'error');
+            }
+        }
+
+        async function login() {
+            try {
+                const response = await nativeFetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: document.getElementById('login-username').value,
+                        password: document.getElementById('login-password').value,
+                        totp_code: document.getElementById('login-totp-code').value
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok || !data.success) throw new Error(data.error || 'Prihlásenie zlyhalo');
+                csrfToken = data.csrf_token || '';
+                window.location.reload();
+            } catch (error) {
+                showAuthStatus(error.message, 'error');
+            }
+        }
+
+        async function logout() {
+            await nativeFetch('/api/auth/logout', { method: 'POST' });
+            csrfToken = '';
+            showLoginPanel();
+        }
+
+        function toggleRecoveryPanel() {
+            document.getElementById('recovery-panel').classList.toggle('hidden');
+        }
+
+        async function startPasswordRecovery() {
+            try {
+                const response = await nativeFetch('/api/auth/recovery/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: document.getElementById('recovery-username').value,
+                        recovery_code: document.getElementById('recovery-code').value
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok || !data.success) throw new Error(data.error || 'Recovery zlyhalo');
+                showAuthStatus('Pushover kód bol odoslaný.', 'success');
+            } catch (error) {
+                showAuthStatus(error.message, 'error');
+            }
+        }
+
+        async function completePasswordRecovery() {
+            try {
+                const response = await nativeFetch('/api/auth/recovery/complete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        pushover_code: document.getElementById('recovery-pushover-code').value,
+                        new_password: document.getElementById('recovery-new-password').value
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok || !data.success) throw new Error(data.error || 'Obnova hesla zlyhala');
+                showAuthStatus('Heslo bolo zmenené. Prihlás sa novým heslom.', 'success');
+            } catch (error) {
+                showAuthStatus(error.message, 'error');
+            }
+        }
+
+        async function startTotpRecovery() {
+            try {
+                const response = await nativeFetch('/api/auth/totp-recovery/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: document.getElementById('recovery-username').value,
+                        password: document.getElementById('totp-recovery-password').value,
+                        recovery_code: document.getElementById('recovery-code').value
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok || !data.success) throw new Error(data.error || 'Reset 2FA zlyhal');
+                document.getElementById('totp-recovery-qr').src = data.qr_data_uri;
+                document.getElementById('totp-recovery-secret').textContent = data.totp_secret;
+                document.getElementById('totp-recovery-new').classList.remove('hidden');
+                showAuthStatus('Pushover kód bol odoslaný a nové 2FA je pripravené.', 'success');
+            } catch (error) {
+                showAuthStatus(error.message, 'error');
+            }
+        }
+
+        async function completeTotpRecovery() {
+            try {
+                const response = await nativeFetch('/api/auth/totp-recovery/complete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        pushover_code: document.getElementById('totp-recovery-pushover-code').value,
+                        totp_code: document.getElementById('totp-recovery-new-code').value
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok || !data.success) throw new Error(data.error || 'Aktivácia nového 2FA zlyhala');
+                showAuthStatus(`2FA bolo resetované. Nové recovery kódy: ${(data.recovery_codes || []).join(', ')}`, 'success');
+            } catch (error) {
+                showAuthStatus(error.message, 'error');
+            }
+        }
+
+        async function openAccountModal() {
+            document.getElementById('account-modal-overlay').classList.remove('hidden');
+            document.getElementById('account-modal-overlay').classList.add('flex');
+            await loadAccount();
+        }
+
+        function closeAccountModal() {
+            document.getElementById('account-modal-overlay').classList.add('hidden');
+            document.getElementById('account-modal-overlay').classList.remove('flex');
+        }
+
+        async function loadAccount() {
+            const response = await fetch('/api/account');
+            const data = await response.json();
+            if (!response.ok || !data.success) {
+                showAccountStatus(data.error || 'Účet sa nepodarilo načítať', 'error');
+                return;
+            }
+            document.getElementById('account-summary').textContent = `Prihlásený používateľ: ${data.username}`;
+            document.getElementById('account-username').value = data.username;
+            updateRecoveryCodeCount(data.recovery_codes_remaining);
+            const pushover = data.pushover || {};
+            document.getElementById('notify-manual').checked = !!pushover.notify_manual_backups;
+            document.getElementById('notify-auto').checked = !!pushover.notify_auto_backups;
+            document.getElementById('notify-security').checked = !!pushover.notify_security;
+            document.getElementById('pushover-device').value = pushover.device || '';
+            setMaskedSecretInput('pushover-app-token', pushover.app_token_masked, 'App Key / Token');
+            setMaskedSecretInput('pushover-user-key', pushover.user_key_masked, 'User Key');
+            document.getElementById('pushover-current').textContent = '';
+        }
+
+        function setMaskedSecretInput(inputId, maskedValue, emptyPlaceholder) {
+            const input = document.getElementById(inputId);
+            if (!input) return;
+            if (maskedValue) {
+                input.value = maskedValue;
+                input.dataset.maskedValue = maskedValue;
+                input.placeholder = 'Uložené';
+            } else {
+                input.value = '';
+                delete input.dataset.maskedValue;
+                input.placeholder = emptyPlaceholder;
+            }
+        }
+
+        function getSecretInputValue(inputId) {
+            const input = document.getElementById(inputId);
+            if (!input) return '';
+            const value = input.value.trim();
+            return value && value === input.dataset.maskedValue ? '' : value;
+        }
+
+        async function postAccount(url, payload, successMessage) {
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json();
+                if (!response.ok || !data.success) throw new Error(data.error || 'Akcia zlyhala');
+                if (data.csrf_token) csrfToken = data.csrf_token;
+                showAccountStatus(successMessage, 'success');
+                return data;
+            } catch (error) {
+                showAccountStatus(error.message, 'error');
+                return null;
+            }
+        }
+
+        async function changeUsername() {
+            const data = await postAccount('/api/account/username', {
+                username: document.getElementById('account-username').value,
+                password: document.getElementById('account-username-password').value
+            }, 'Používateľské meno bolo uložené.');
+            if (data) await loadAccount();
+        }
+
+        async function changePassword() {
+            await postAccount('/api/account/password', {
+                current_password: document.getElementById('account-current-password').value,
+                new_password: document.getElementById('account-new-password').value,
+                totp_code: document.getElementById('account-password-totp').value
+            }, 'Heslo bolo zmenené.');
+        }
+
+        async function startAccountTotpReset() {
+            const data = await postAccount('/api/account/totp/start', {
+                password: document.getElementById('account-totp-password').value,
+                totp_code: document.getElementById('account-current-totp').value
+            }, 'Nové 2FA je pripravené.');
+            if (!data) return;
+            document.getElementById('account-totp-qr').src = data.qr_data_uri;
+            document.getElementById('account-totp-secret').textContent = data.totp_secret;
+            document.getElementById('account-totp-new').classList.remove('hidden');
+        }
+
+        async function completeAccountTotpReset() {
+            const data = await postAccount('/api/account/totp/complete', {
+                totp_code: document.getElementById('account-new-totp-code').value
+            }, '2FA bolo resetované. Ulož si nové recovery kódy.');
+            if (data && data.recovery_codes) {
+                document.getElementById('account-recovery-output').textContent = data.recovery_codes.join('\n');
+                document.getElementById('account-recovery-output').classList.remove('hidden');
+                updateRecoveryCodeCount(data.recovery_codes.length);
+            }
+        }
+
+        async function regenerateRecoveryCodes() {
+            const data = await postAccount('/api/account/recovery-codes', {
+                password: document.getElementById('account-recovery-password').value,
+                totp_code: document.getElementById('account-recovery-totp').value
+            }, 'Recovery kódy boli regenerované.');
+            if (data && data.recovery_codes) {
+                document.getElementById('account-recovery-output').textContent = data.recovery_codes.join('\n');
+                document.getElementById('account-recovery-output').classList.remove('hidden');
+                updateRecoveryCodeCount(data.recovery_codes.length);
+            }
+        }
+
+        async function savePushoverSettings() {
+            await postAccount('/api/account/pushover', {
+                app_token: getSecretInputValue('pushover-app-token'),
+                user_key: getSecretInputValue('pushover-user-key'),
+                device: document.getElementById('pushover-device').value,
+                notify_manual_backups: document.getElementById('notify-manual').checked,
+                notify_auto_backups: document.getElementById('notify-auto').checked,
+                notify_security: document.getElementById('notify-security').checked
+            }, 'Pushover nastavenia boli uložené.');
+            await loadAccount();
+        }
+
+        async function testPushover() {
+            await postAccount('/api/account/pushover/test', {}, 'Test notifikácia bola odoslaná.');
+        }
 
         function showToast(message, type = 'info', options = {}) {
             const container = document.getElementById('toast-container');
@@ -643,31 +1179,46 @@
                 document.getElementById('confirm-modal-confirm').addEventListener('click', () => closeConfirmModal(true));
             }
 
+            const authenticated = await initAuth();
+            if (!authenticated) {
+                return;
+            }
+
             await loadConfig();
-            await loadBackups();
-            await loadBackupFiles();
-            await loadRestoreArchives();
-            
-            // Auto backup toggle
+            initializeAutoBackupControls();
+            await Promise.all([
+                loadBackups(),
+                loadBackupFiles(),
+                loadRestoreArchives()
+            ]);
+        });
+
+        function initializeAutoBackupControls() {
             const autoBackupToggle = document.getElementById('auto-backup');
             const autoBackupSettings = document.getElementById('auto-backup-settings');
+            if (!autoBackupToggle || autoBackupToggle.dataset.initialized === '1') return;
+            autoBackupToggle.dataset.initialized = '1';
 
             // Populate hour select (00-23)
             const abHour = document.getElementById('ab-hour');
-            for (let h = 0; h < 24; h++) {
-                const o = document.createElement('option');
-                o.value = h;
-                o.textContent = String(h).padStart(2, '0');
-                abHour.appendChild(o);
+            if (!abHour.options.length) {
+                for (let h = 0; h < 24; h++) {
+                    const o = document.createElement('option');
+                    o.value = h;
+                    o.textContent = String(h).padStart(2, '0');
+                    abHour.appendChild(o);
+                }
             }
 
             // Populate day-of-month select (1-28)
             const abDayMonth = document.getElementById('ab-day-month');
-            for (let d = 1; d <= 28; d++) {
-                const o = document.createElement('option');
-                o.value = d - 1;
-                o.textContent = d + '. deň';
-                abDayMonth.appendChild(o);
+            if (!abDayMonth.options.length) {
+                for (let d = 1; d <= 28; d++) {
+                    const o = document.createElement('option');
+                    o.value = d - 1;
+                    o.textContent = d + '. deň';
+                    abDayMonth.appendChild(o);
+                }
             }
 
             // Restore saved values
@@ -700,7 +1251,7 @@
             // Frequency change
             const frequencySelect = document.getElementById('frequency');
             frequencySelect.addEventListener('change', onAutoBackupChange);
-        });
+        }
 
         function abUpdateDayVisibility() {
             const freq = document.getElementById('frequency').value;

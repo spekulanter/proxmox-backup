@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from flask import Flask, request, jsonify, redirect, url_for, flash, render_template, send_file
+from flask import Flask, request, jsonify, redirect, url_for, flash, render_template, send_file, session, g
 import os
 import json
 import tarfile
@@ -14,16 +14,33 @@ import shlex
 import posixpath
 from datetime import datetime
 import time
+import base64
+import hashlib
+import hmac
+import io
+import secrets
+import struct
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import timedelta
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.secret_key = 'proxmox-backup-secret-key-change-in-production'
+app.permanent_session_lifetime = timedelta(days=3650)
 
 # Konfiguračný súbor
 CONFIG_VERSION = 6
+AUTH_CONFIG_VERSION = 1
 DEFAULT_MAX_BACKUP_COUNT = 10
 CONFIG_FILE = 'backup_config.json'
+AUTH_CONFIG_FILE = 'auth_config.json'
 BACKUP_HISTORY_FILE = 'backup_history.json'
 BACKUP_STORAGE_DIR = os.environ.get('BACKUP_STORAGE_DIR', 'backups')
+APP_ISSUER = 'Proxmox Backup Manager'
+PUSHOVER_MESSAGE_URL = 'https://api.pushover.net/1/messages.json'
+PUSHOVER_VALIDATE_URL = 'https://api.pushover.net/1/users/validate.json'
 
 DEFAULT_SOURCE_CONFIG = {
     'mode': 'remote_ssh',
@@ -34,6 +51,286 @@ DEFAULT_SOURCE_CONFIG = {
         'password': '',
     }
 }
+
+def now_iso():
+    return datetime.now().isoformat(timespec='seconds')
+
+def default_auth_config():
+    """Predvolená autentifikačná konfigurácia bez vytvoreného admin účtu."""
+    return {
+        'auth_version': AUTH_CONFIG_VERSION,
+        'secret_key': secrets.token_urlsafe(48),
+        'service_token': secrets.token_urlsafe(48),
+        'admin': None,
+    }
+
+def migrate_auth_config(auth_config):
+    defaults = default_auth_config()
+    if not isinstance(auth_config, dict):
+        return defaults
+    migrated = defaults
+    migrated.update({key: value for key, value in auth_config.items() if key in migrated})
+    migrated['auth_version'] = AUTH_CONFIG_VERSION
+    if not migrated.get('secret_key'):
+        migrated['secret_key'] = secrets.token_urlsafe(48)
+    if not migrated.get('service_token'):
+        migrated['service_token'] = secrets.token_urlsafe(48)
+    admin = migrated.get('admin')
+    if isinstance(admin, dict):
+        admin.setdefault('session_version', 1)
+        admin.setdefault('failed_login_count', 0)
+        admin.setdefault('recovery_codes', [])
+        pushover = admin.get('pushover') if isinstance(admin.get('pushover'), dict) else {}
+        admin['pushover'] = {
+            'app_token': str(pushover.get('app_token', '')),
+            'user_key': str(pushover.get('user_key', '')),
+            'device': str(pushover.get('device', '')),
+            'notify_manual_backups': bool(pushover.get('notify_manual_backups', False)),
+            'notify_auto_backups': bool(pushover.get('notify_auto_backups', False)),
+            'notify_security': bool(pushover.get('notify_security', True)),
+        }
+        migrated['admin'] = admin
+    else:
+        migrated['admin'] = None
+    return migrated
+
+def save_auth_config(auth_config):
+    auth_config = migrate_auth_config(auth_config)
+    tmp_path = f"{AUTH_CONFIG_FILE}.tmp"
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        json.dump(auth_config, f, ensure_ascii=False, indent=2)
+    os.chmod(tmp_path, 0o600)
+    os.replace(tmp_path, AUTH_CONFIG_FILE)
+    os.chmod(AUTH_CONFIG_FILE, 0o600)
+
+def load_auth_config():
+    if os.path.exists(AUTH_CONFIG_FILE):
+        with open(AUTH_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            auth_config = migrate_auth_config(json.load(f))
+    else:
+        auth_config = default_auth_config()
+        save_auth_config(auth_config)
+    return auth_config
+
+def sync_flask_secret():
+    auth_config = load_auth_config()
+    app.secret_key = auth_config['secret_key']
+    return auth_config
+
+def password_is_strong_enough(password):
+    return isinstance(password, str) and len(password) >= 10
+
+def generate_totp_secret():
+    return base64.b32encode(secrets.token_bytes(20)).decode('ascii').rstrip('=')
+
+def normalize_totp_secret(secret):
+    return ''.join(str(secret or '').strip().replace(' ', '').split()).upper()
+
+def totp_token(secret, timestamp=None, interval=30, digits=6):
+    timestamp = int(time.time() if timestamp is None else timestamp)
+    counter = timestamp // interval
+    secret = normalize_totp_secret(secret)
+    padded_secret = secret + ('=' * ((8 - len(secret) % 8) % 8))
+    key = base64.b32decode(padded_secret, casefold=True)
+    digest = hmac.new(key, struct.pack('>Q', counter), hashlib.sha1).digest()
+    offset = digest[-1] & 0x0F
+    code = struct.unpack('>I', digest[offset:offset + 4])[0] & 0x7FFFFFFF
+    return str(code % (10 ** digits)).zfill(digits)
+
+def verify_totp(secret, code, window=1):
+    code = ''.join(ch for ch in str(code or '') if ch.isdigit())
+    if len(code) != 6:
+        return False
+    current = int(time.time())
+    return any(hmac.compare_digest(totp_token(secret, current + offset * 30), code) for offset in range(-window, window + 1))
+
+def build_otpauth_uri(username, secret):
+    label = urllib.parse.quote(f"{APP_ISSUER}:{username}")
+    query = urllib.parse.urlencode({
+        'secret': normalize_totp_secret(secret),
+        'issuer': APP_ISSUER,
+        'algorithm': 'SHA1',
+        'digits': '6',
+        'period': '30',
+    })
+    return f"otpauth://totp/{label}?{query}"
+
+def build_qr_data_uri(otpauth_uri):
+    try:
+        import qrcode
+        image = qrcode.make(otpauth_uri)
+        buffer = io.BytesIO()
+        image.save(buffer, format='PNG')
+        encoded = base64.b64encode(buffer.getvalue()).decode('ascii')
+        return f"data:image/png;base64,{encoded}"
+    except Exception:
+        escaped = (
+            otpauth_uri
+            .replace('&', '&amp;')
+            .replace('<', '&lt;')
+            .replace('>', '&gt;')
+            .replace('"', '&quot;')
+        )
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="320" viewBox="0 0 320 320">'
+            '<rect width="320" height="320" fill="white"/>'
+            '<text x="18" y="32" font-size="15" font-family="monospace" fill="#111">QR knižnica nie je nainštalovaná.</text>'
+            '<text x="18" y="58" font-size="12" font-family="monospace" fill="#111">Zadaj secret ručne v Authenticatori.</text>'
+            f'<foreignObject x="18" y="82" width="284" height="210"><div xmlns="http://www.w3.org/1999/xhtml" style="font:10px monospace;word-break:break-all;color:#111">{escaped}</div></foreignObject>'
+            '</svg>'
+        )
+        return 'data:image/svg+xml;base64,' + base64.b64encode(svg.encode('utf-8')).decode('ascii')
+
+def generate_recovery_codes(count=10):
+    return ['-'.join([secrets.token_hex(2).upper(), secrets.token_hex(2).upper(), secrets.token_hex(2).upper()]) for _ in range(count)]
+
+def hash_recovery_codes(codes):
+    return [{'hash': generate_password_hash(code), 'used': False, 'used_at': None} for code in codes]
+
+def recovery_codes_remaining(admin):
+    if not isinstance(admin, dict):
+        return 0
+    return sum(1 for item in admin.get('recovery_codes', []) if isinstance(item, dict) and not item.get('used'))
+
+def find_recovery_code(admin, code):
+    code = str(code or '').strip().upper()
+    for index, item in enumerate(admin.get('recovery_codes', [])):
+        if item.get('used'):
+            continue
+        if check_password_hash(item.get('hash', ''), code):
+            return index
+    return None
+
+def increment_session_version(admin):
+    admin['session_version'] = int(admin.get('session_version', 1)) + 1
+
+def session_is_authenticated(auth_config=None):
+    auth_config = auth_config or load_auth_config()
+    admin = auth_config.get('admin')
+    if not admin:
+        return False
+    return (
+        session.get('auth_user') == admin.get('username')
+        and int(session.get('auth_version', 0)) == int(admin.get('session_version', 1))
+    )
+
+def ensure_csrf_token():
+    if not session.get('csrf_token'):
+        session['csrf_token'] = secrets.token_urlsafe(32)
+    return session['csrf_token']
+
+def login_session(admin):
+    session.clear()
+    session.permanent = True
+    session['auth_user'] = admin['username']
+    session['auth_version'] = int(admin.get('session_version', 1))
+    return ensure_csrf_token()
+
+def clear_auth_session():
+    session.clear()
+
+def json_error(message, status_code=400):
+    return jsonify({'success': False, 'error': message}), status_code
+
+def masked_secret(value):
+    value = str(value or '')
+    if not value:
+        return ''
+    if len(value) <= 8:
+        return '••••'
+    return f"{value[:4]}...{value[-4:]}"
+
+def auth_public_endpoint(endpoint):
+    if endpoint in ('index', 'auth_status_api', 'auth_setup_start_api', 'auth_setup_complete_api',
+                    'auth_login_api', 'auth_logout_api', 'auth_recovery_start_api',
+                    'auth_recovery_complete_api', 'auth_totp_recovery_start_api',
+                    'auth_totp_recovery_complete_api'):
+        return True
+    return False
+
+def request_has_valid_service_token(auth_config):
+    header = request.headers.get('Authorization', '')
+    token = auth_config.get('service_token') or ''
+    return bool(token and header.startswith('Bearer ') and hmac.compare_digest(header.replace('Bearer ', '', 1), token))
+
+def csrf_required_for_request():
+    if request.method in ('POST', 'PUT', 'PATCH', 'DELETE'):
+        return True
+    return request.endpoint in ('toggle_file', 'delete_backup', 'toggle_auto_backup', 'set_backup_frequency')
+
+def csrf_token_valid():
+    expected = session.get('csrf_token') or ''
+    provided = request.headers.get('X-CSRF-Token') or request.form.get('csrf_token') or request.args.get('csrf_token') or ''
+    return bool(expected and provided and hmac.compare_digest(expected, provided))
+
+def pushover_configured(admin):
+    pushover = admin.get('pushover', {}) if isinstance(admin, dict) else {}
+    return bool(pushover.get('app_token') and pushover.get('user_key'))
+
+def default_pushover_post(url, payload, timeout=10):
+    encoded = urllib.parse.urlencode(payload).encode('utf-8')
+    req = urllib.request.Request(url, data=encoded, method='POST')
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        body = response.read().decode('utf-8')
+        return response.getcode(), json.loads(body or '{}')
+
+PUSHOVER_POSTER = default_pushover_post
+
+def send_pushover_message(admin, title, message, priority=0):
+    pushover = admin.get('pushover', {}) if isinstance(admin, dict) else {}
+    if not pushover_configured(admin):
+        raise RuntimeError('Pushover nie je nastavený')
+    payload = {
+        'token': pushover.get('app_token', ''),
+        'user': pushover.get('user_key', ''),
+        'message': message,
+        'title': title,
+        'priority': str(priority),
+    }
+    if pushover.get('device'):
+        payload['device'] = pushover['device']
+    try:
+        status_code, data = PUSHOVER_POSTER(PUSHOVER_MESSAGE_URL, payload)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f'Pushover odoslanie zlyhalo: {exc}') from exc
+    if status_code != 200 or int(data.get('status', 0)) != 1:
+        errors = ', '.join(data.get('errors', [])) if isinstance(data.get('errors'), list) else data.get('error', 'neznáma chyba')
+        raise RuntimeError(f'Pushover odoslanie zlyhalo: {errors}')
+    return data
+
+def validate_pushover_config(app_token, user_key, device=''):
+    payload = {'token': app_token, 'user': user_key}
+    if device:
+        payload['device'] = device
+    try:
+        status_code, data = PUSHOVER_POSTER(PUSHOVER_VALIDATE_URL, payload)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f'Pushover validácia zlyhala: {exc}') from exc
+    if status_code != 200 or int(data.get('status', 0)) != 1:
+        errors = ', '.join(data.get('errors', [])) if isinstance(data.get('errors'), list) else data.get('error', 'neplatný token alebo user key')
+        raise RuntimeError(f'Pushover validácia zlyhala: {errors}')
+    return data
+
+def notify_pushover(event_type, title, message, priority=0):
+    auth_config = load_auth_config()
+    admin = auth_config.get('admin') or {}
+    if not admin or not pushover_configured(admin):
+        return None
+    pushover = admin.get('pushover', {})
+    enabled = {
+        'manual_backup': pushover.get('notify_manual_backups', False),
+        'auto_backup': pushover.get('notify_auto_backups', False),
+        'security': pushover.get('notify_security', True),
+    }.get(event_type, False)
+    if not enabled:
+        return None
+    try:
+        send_pushover_message(admin, title, message, priority=priority)
+        return None
+    except Exception as exc:
+        return str(exc)
+
+sync_flask_secret()
 
 # Kategórie zobrazené v UI
 BACKUP_CATEGORIES = [
@@ -93,6 +390,9 @@ ARCHIVE_EXCLUDE_GLOBS = [
     '*.log',
     '/opt/proxmox-backup/.git',
     '/opt/proxmox-backup/.git/*',
+    '/opt/proxmox-backup/auth_config.json',
+    '/opt/auth_config.json',
+    '*/auth_config.json',
 ]
 
 MIGRATION_PATH_ALIASES = {
@@ -1545,6 +1845,22 @@ def run_backup_job(selected_paths, ftp_config, source_config, configured_files, 
         'size': get_file_size(local_path),
     }
 
+def notify_backup_result(result, backup_mode):
+    event_type = 'auto_backup' if backup_mode == 'auto' else 'manual_backup'
+    title = 'Automatická záloha Proxmoxu' if backup_mode == 'auto' else 'Manuálna záloha Proxmoxu'
+    filename = result.get('filename', 'backup')
+    if result.get('ftp_status') == 'success':
+        message = f"Záloha {filename} bola vytvorená a nahraná na FTP. Veľkosť: {result.get('size', 'n/a')}."
+        priority = 0
+    else:
+        message = f"Záloha {filename} ostala lokálne, FTP upload zlyhal: {result.get('ftp_message', 'neznáma chyba')}"
+        priority = 1
+    warning = notify_pushover(event_type, title, message, priority=priority)
+    if warning:
+        result.setdefault('retention_warnings', []).append(warning)
+        result['pushover_warning'] = warning
+    return result
+
 def restore_whitelist_items():
     """Cesty, ktoré v1 restore smie aplikovať späť na host."""
     items = []
@@ -2276,6 +2592,385 @@ def run_restore_job(backup_id, selected_paths, source_config):
     result['archive_filename'] = entry.get('filename') or os.path.basename(archive_path)
     return result
 
+@app.before_request
+def require_authentication():
+    """Vynúti single-admin login pre celé UI a API okrem setup/login/recovery toku."""
+    g.service_auth = False
+    auth_config = sync_flask_secret()
+    admin = auth_config.get('admin')
+
+    if request.endpoint is None or auth_public_endpoint(request.endpoint):
+        return None
+
+    if not admin:
+        if request.path.startswith('/api/'):
+            return json_error('Najprv je potrebné vytvoriť admin účet', 403)
+        return redirect(url_for('index'))
+
+    if request.endpoint == 'create_auto_backup_api' and request_has_valid_service_token(auth_config):
+        g.service_auth = True
+        return None
+
+    if not session_is_authenticated(auth_config):
+        if request.path.startswith('/api/'):
+            return json_error('Vyžaduje sa prihlásenie', 401)
+        return redirect(url_for('index'))
+
+    ensure_csrf_token()
+    if csrf_required_for_request() and not csrf_token_valid():
+        return json_error('Neplatný CSRF token', 403)
+    return None
+
+def current_admin_or_error():
+    auth_config = load_auth_config()
+    admin = auth_config.get('admin')
+    if not admin:
+        raise ValueError('Admin účet ešte neexistuje')
+    return auth_config, admin
+
+def auth_status_payload(auth_config=None):
+    auth_config = auth_config or load_auth_config()
+    admin = auth_config.get('admin')
+    authenticated = session_is_authenticated(auth_config)
+    return {
+        'success': True,
+        'setup_required': admin is None,
+        'authenticated': authenticated,
+        'csrf_token': ensure_csrf_token() if authenticated else '',
+        'username': admin.get('username', '') if admin else '',
+        'recovery_codes_remaining': recovery_codes_remaining(admin),
+        'pushover_configured': pushover_configured(admin) if admin else False,
+    }
+
+@app.route('/api/auth/status')
+def auth_status_api():
+    return jsonify(auth_status_payload())
+
+@app.route('/api/auth/setup/start', methods=['POST'])
+def auth_setup_start_api():
+    auth_config = load_auth_config()
+    if auth_config.get('admin'):
+        return json_error('Registrácia ďalšieho používateľa nie je povolená', 409)
+    data = request.get_json(silent=True) or {}
+    username = str(data.get('username', '')).strip()
+    password = str(data.get('password', ''))
+    if not username:
+        return json_error('Používateľské meno je povinné')
+    if not password_is_strong_enough(password):
+        return json_error('Heslo musí mať aspoň 10 znakov')
+    secret = generate_totp_secret()
+    session['pending_setup'] = {
+        'username': username,
+        'password_hash': generate_password_hash(password),
+        'totp_secret': secret,
+        'created_at': time.time(),
+    }
+    otpauth_uri = build_otpauth_uri(username, secret)
+    return jsonify({'success': True, 'totp_secret': secret, 'otpauth_uri': otpauth_uri, 'qr_data_uri': build_qr_data_uri(otpauth_uri)})
+
+@app.route('/api/auth/setup/complete', methods=['POST'])
+def auth_setup_complete_api():
+    auth_config = load_auth_config()
+    if auth_config.get('admin'):
+        return json_error('Registrácia ďalšieho používateľa nie je povolená', 409)
+    pending = session.get('pending_setup') or {}
+    if not pending or time.time() - float(pending.get('created_at', 0)) > 900:
+        return json_error('Registrácia expirovala, spusti nastavenie znova', 400)
+    data = request.get_json(silent=True) or {}
+    if not verify_totp(pending.get('totp_secret'), data.get('totp_code')):
+        return json_error('Neplatný 2FA kód', 400)
+    recovery_codes = generate_recovery_codes()
+    auth_config['admin'] = {
+        'username': pending['username'],
+        'password_hash': pending['password_hash'],
+        'totp_secret': normalize_totp_secret(pending['totp_secret']),
+        'recovery_codes': hash_recovery_codes(recovery_codes),
+        'session_version': 1,
+        'failed_login_count': 0,
+        'created_at': now_iso(),
+        'updated_at': now_iso(),
+        'pushover': {
+            'app_token': '',
+            'user_key': '',
+            'device': '',
+            'notify_manual_backups': False,
+            'notify_auto_backups': False,
+            'notify_security': True,
+        },
+    }
+    save_auth_config(auth_config)
+    session.clear()
+    return jsonify({'success': True, 'recovery_codes': recovery_codes})
+
+@app.route('/api/auth/login', methods=['POST'])
+def auth_login_api():
+    auth_config = load_auth_config()
+    admin = auth_config.get('admin')
+    if not admin:
+        return json_error('Admin účet ešte neexistuje', 403)
+    data = request.get_json(silent=True) or {}
+    username_ok = hmac.compare_digest(str(data.get('username', '')).strip(), admin.get('username', ''))
+    password_ok = check_password_hash(admin.get('password_hash', ''), str(data.get('password', '')))
+    totp_ok = verify_totp(admin.get('totp_secret'), data.get('totp_code'))
+    if not (username_ok and password_ok and totp_ok):
+        admin['failed_login_count'] = int(admin.get('failed_login_count', 0)) + 1
+        auth_config['admin'] = admin
+        save_auth_config(auth_config)
+        if admin['failed_login_count'] in (3, 5) or admin['failed_login_count'] % 10 == 0:
+            notify_pushover('security', 'Proxmox Backup Manager', f"Neúspešné prihlásenia: {admin['failed_login_count']}", priority=1)
+        return json_error('Neplatné prihlasovacie údaje alebo 2FA kód', 401)
+    admin['failed_login_count'] = 0
+    auth_config['admin'] = admin
+    save_auth_config(auth_config)
+    csrf = login_session(admin)
+    warning = notify_pushover('security', 'Proxmox Backup Manager', f"Úspešné prihlásenie používateľa {admin['username']}")
+    return jsonify({'success': True, 'csrf_token': csrf, 'username': admin['username'], 'pushover_warning': warning})
+
+@app.route('/api/auth/logout', methods=['POST'])
+def auth_logout_api():
+    clear_auth_session()
+    return jsonify({'success': True})
+
+def start_pushover_recovery(kind, username, recovery_code, require_password=None):
+    auth_config, admin = current_admin_or_error()
+    if not hmac.compare_digest(str(username or '').strip(), admin.get('username', '')):
+        raise ValueError('Neplatné recovery údaje')
+    if require_password is not None and not check_password_hash(admin.get('password_hash', ''), str(require_password)):
+        raise ValueError('Neplatné recovery údaje')
+    recovery_index = find_recovery_code(admin, recovery_code)
+    if recovery_index is None:
+        raise ValueError('Neplatný alebo už použitý recovery kód')
+    if not pushover_configured(admin):
+        raise RuntimeError('Pushover nie je nastavený, recovery cez web nie je dostupné')
+    pushover_code = str(secrets.randbelow(1000000)).zfill(6)
+    session[f'pending_{kind}'] = {
+        'kind': kind,
+        'code_hash': generate_password_hash(pushover_code),
+        'recovery_index': recovery_index,
+        'created_at': time.time(),
+    }
+    send_pushover_message(admin, 'Proxmox Backup Manager recovery', f"Overovací kód: {pushover_code}", priority=1)
+    return auth_config, admin
+
+def pending_recovery(kind):
+    pending = session.get(f'pending_{kind}') or {}
+    if not pending or time.time() - float(pending.get('created_at', 0)) > 600:
+        raise ValueError('Recovery kód expiroval, spusti obnovu znova')
+    return pending
+
+@app.route('/api/auth/recovery/start', methods=['POST'])
+def auth_recovery_start_api():
+    data = request.get_json(silent=True) or {}
+    try:
+        start_pushover_recovery('password_recovery', data.get('username'), data.get('recovery_code'))
+        return jsonify({'success': True, 'message': 'Pushover overovací kód bol odoslaný'})
+    except RuntimeError as exc:
+        return json_error(str(exc), 503)
+    except Exception:
+        return json_error('Neplatné recovery údaje', 400)
+
+@app.route('/api/auth/recovery/complete', methods=['POST'])
+def auth_recovery_complete_api():
+    data = request.get_json(silent=True) or {}
+    new_password = str(data.get('new_password', ''))
+    if not password_is_strong_enough(new_password):
+        return json_error('Nové heslo musí mať aspoň 10 znakov')
+    try:
+        pending = pending_recovery('password_recovery')
+        if not check_password_hash(pending.get('code_hash', ''), str(data.get('pushover_code', ''))):
+            return json_error('Neplatný Pushover kód', 400)
+        auth_config, admin = current_admin_or_error()
+        recovery_index = int(pending['recovery_index'])
+        admin['password_hash'] = generate_password_hash(new_password)
+        admin['recovery_codes'][recovery_index]['used'] = True
+        admin['recovery_codes'][recovery_index]['used_at'] = now_iso()
+        admin['updated_at'] = now_iso()
+        increment_session_version(admin)
+        auth_config['admin'] = admin
+        save_auth_config(auth_config)
+        session.clear()
+        warning = notify_pushover('security', 'Proxmox Backup Manager', 'Heslo bolo obnovené cez recovery')
+        return jsonify({'success': True, 'pushover_warning': warning})
+    except ValueError as exc:
+        return json_error(str(exc), 400)
+
+@app.route('/api/auth/totp-recovery/start', methods=['POST'])
+def auth_totp_recovery_start_api():
+    data = request.get_json(silent=True) or {}
+    try:
+        _auth_config, admin = start_pushover_recovery('totp_recovery', data.get('username'), data.get('recovery_code'), require_password=data.get('password'))
+        new_secret = generate_totp_secret()
+        pending = session.get('pending_totp_recovery') or {}
+        pending['totp_secret'] = new_secret
+        session['pending_totp_recovery'] = pending
+        otpauth_uri = build_otpauth_uri(admin.get('username', 'admin'), new_secret)
+        return jsonify({'success': True, 'message': 'Pushover overovací kód bol odoslaný', 'totp_secret': new_secret, 'otpauth_uri': otpauth_uri, 'qr_data_uri': build_qr_data_uri(otpauth_uri)})
+    except RuntimeError as exc:
+        return json_error(str(exc), 503)
+    except Exception:
+        return json_error('Neplatné recovery údaje', 400)
+
+@app.route('/api/auth/totp-recovery/complete', methods=['POST'])
+def auth_totp_recovery_complete_api():
+    data = request.get_json(silent=True) or {}
+    try:
+        pending = pending_recovery('totp_recovery')
+        if not check_password_hash(pending.get('code_hash', ''), str(data.get('pushover_code', ''))):
+            return json_error('Neplatný Pushover kód', 400)
+        if not verify_totp(pending.get('totp_secret'), data.get('totp_code')):
+            return json_error('Neplatný nový 2FA kód', 400)
+        auth_config, admin = current_admin_or_error()
+        recovery_codes = generate_recovery_codes()
+        admin['totp_secret'] = normalize_totp_secret(pending['totp_secret'])
+        admin['recovery_codes'] = hash_recovery_codes(recovery_codes)
+        admin['updated_at'] = now_iso()
+        increment_session_version(admin)
+        auth_config['admin'] = admin
+        save_auth_config(auth_config)
+        session.clear()
+        warning = notify_pushover('security', 'Proxmox Backup Manager', '2FA bolo obnovené cez recovery')
+        return jsonify({'success': True, 'recovery_codes': recovery_codes, 'pushover_warning': warning})
+    except ValueError as exc:
+        return json_error(str(exc), 400)
+
+@app.route('/api/account')
+def account_api():
+    _auth_config, admin = current_admin_or_error()
+    pushover = admin.get('pushover', {})
+    return jsonify({'success': True, 'username': admin.get('username', ''), 'recovery_codes_remaining': recovery_codes_remaining(admin), 'pushover': {
+        'configured': pushover_configured(admin),
+        'app_token_masked': masked_secret(pushover.get('app_token', '')),
+        'user_key_masked': masked_secret(pushover.get('user_key', '')),
+        'device': pushover.get('device', ''),
+        'notify_manual_backups': bool(pushover.get('notify_manual_backups', False)),
+        'notify_auto_backups': bool(pushover.get('notify_auto_backups', False)),
+        'notify_security': bool(pushover.get('notify_security', True)),
+    }})
+
+@app.route('/api/account/username', methods=['POST'])
+def account_username_api():
+    auth_config, admin = current_admin_or_error()
+    data = request.get_json(silent=True) or {}
+    username = str(data.get('username', '')).strip()
+    if not username:
+        return json_error('Používateľské meno je povinné')
+    if not check_password_hash(admin.get('password_hash', ''), str(data.get('password', ''))):
+        return json_error('Neplatné heslo', 401)
+    admin['username'] = username
+    admin['updated_at'] = now_iso()
+    increment_session_version(admin)
+    auth_config['admin'] = admin
+    save_auth_config(auth_config)
+    login_session(admin)
+    warning = notify_pushover('security', 'Proxmox Backup Manager', f"Používateľské meno bolo zmenené na {username}")
+    return jsonify({'success': True, 'username': username, 'csrf_token': session['csrf_token'], 'pushover_warning': warning})
+
+@app.route('/api/account/password', methods=['POST'])
+def account_password_api():
+    auth_config, admin = current_admin_or_error()
+    data = request.get_json(silent=True) or {}
+    if not check_password_hash(admin.get('password_hash', ''), str(data.get('current_password', ''))):
+        return json_error('Neplatné aktuálne heslo', 401)
+    if not verify_totp(admin.get('totp_secret'), data.get('totp_code')):
+        return json_error('Neplatný 2FA kód', 400)
+    new_password = str(data.get('new_password', ''))
+    if not password_is_strong_enough(new_password):
+        return json_error('Nové heslo musí mať aspoň 10 znakov')
+    admin['password_hash'] = generate_password_hash(new_password)
+    admin['updated_at'] = now_iso()
+    increment_session_version(admin)
+    auth_config['admin'] = admin
+    save_auth_config(auth_config)
+    login_session(admin)
+    warning = notify_pushover('security', 'Proxmox Backup Manager', 'Heslo bolo zmenené')
+    return jsonify({'success': True, 'csrf_token': session['csrf_token'], 'pushover_warning': warning})
+
+@app.route('/api/account/totp/start', methods=['POST'])
+def account_totp_start_api():
+    _auth_config, admin = current_admin_or_error()
+    data = request.get_json(silent=True) or {}
+    if not check_password_hash(admin.get('password_hash', ''), str(data.get('password', ''))):
+        return json_error('Neplatné heslo', 401)
+    if not verify_totp(admin.get('totp_secret'), data.get('totp_code')):
+        return json_error('Neplatný aktuálny 2FA kód', 400)
+    new_secret = generate_totp_secret()
+    session['pending_account_totp'] = {'totp_secret': new_secret, 'created_at': time.time()}
+    otpauth_uri = build_otpauth_uri(admin.get('username', 'admin'), new_secret)
+    return jsonify({'success': True, 'totp_secret': new_secret, 'otpauth_uri': otpauth_uri, 'qr_data_uri': build_qr_data_uri(otpauth_uri)})
+
+@app.route('/api/account/totp/complete', methods=['POST'])
+def account_totp_complete_api():
+    auth_config, admin = current_admin_or_error()
+    pending = session.get('pending_account_totp') or {}
+    if not pending or time.time() - float(pending.get('created_at', 0)) > 900:
+        return json_error('Reset 2FA expiroval, spusti ho znova')
+    data = request.get_json(silent=True) or {}
+    if not verify_totp(pending.get('totp_secret'), data.get('totp_code')):
+        return json_error('Neplatný nový 2FA kód', 400)
+    recovery_codes = generate_recovery_codes()
+    admin['totp_secret'] = normalize_totp_secret(pending['totp_secret'])
+    admin['recovery_codes'] = hash_recovery_codes(recovery_codes)
+    admin['updated_at'] = now_iso()
+    increment_session_version(admin)
+    auth_config['admin'] = admin
+    save_auth_config(auth_config)
+    session.pop('pending_account_totp', None)
+    login_session(admin)
+    warning = notify_pushover('security', 'Proxmox Backup Manager', '2FA bolo resetované v účte')
+    return jsonify({'success': True, 'recovery_codes': recovery_codes, 'csrf_token': session['csrf_token'], 'pushover_warning': warning})
+
+@app.route('/api/account/recovery-codes', methods=['POST'])
+def account_recovery_codes_api():
+    auth_config, admin = current_admin_or_error()
+    data = request.get_json(silent=True) or {}
+    if not check_password_hash(admin.get('password_hash', ''), str(data.get('password', ''))):
+        return json_error('Neplatné heslo', 401)
+    if not verify_totp(admin.get('totp_secret'), data.get('totp_code')):
+        return json_error('Neplatný 2FA kód', 400)
+    recovery_codes = generate_recovery_codes()
+    admin['recovery_codes'] = hash_recovery_codes(recovery_codes)
+    admin['updated_at'] = now_iso()
+    auth_config['admin'] = admin
+    save_auth_config(auth_config)
+    warning = notify_pushover('security', 'Proxmox Backup Manager', 'Recovery kódy boli regenerované')
+    return jsonify({'success': True, 'recovery_codes': recovery_codes, 'pushover_warning': warning})
+
+@app.route('/api/account/pushover', methods=['POST'])
+def account_pushover_api():
+    auth_config, admin = current_admin_or_error()
+    data = request.get_json(silent=True) or {}
+    pushover = admin.get('pushover', {})
+    app_token = str(data.get('app_token', '')).strip() or pushover.get('app_token', '')
+    user_key = str(data.get('user_key', '')).strip() or pushover.get('user_key', '')
+    device = str(data.get('device', '')).strip()
+    if app_token and user_key:
+        try:
+            validate_pushover_config(app_token, user_key, device)
+        except RuntimeError as exc:
+            return json_error(str(exc), 400)
+    admin['pushover'] = {
+        'app_token': app_token,
+        'user_key': user_key,
+        'device': device,
+        'notify_manual_backups': bool(data.get('notify_manual_backups', False)),
+        'notify_auto_backups': bool(data.get('notify_auto_backups', False)),
+        'notify_security': bool(data.get('notify_security', True)),
+    }
+    admin['updated_at'] = now_iso()
+    auth_config['admin'] = admin
+    save_auth_config(auth_config)
+    warning = notify_pushover('security', 'Proxmox Backup Manager', 'Pushover nastavenia boli uložené')
+    return jsonify({'success': True, 'pushover_warning': warning})
+
+@app.route('/api/account/pushover/test', methods=['POST'])
+def account_pushover_test_api():
+    _auth_config, admin = current_admin_or_error()
+    try:
+        send_pushover_message(admin, 'Proxmox Backup Manager', 'Test Pushover notifikácie pre Proxmox Backup Manager')
+        return jsonify({'success': True})
+    except RuntimeError as exc:
+        return json_error(str(exc), 400)
+
 @app.route('/')
 def index():
     """Hlavná stránka"""
@@ -2411,6 +3106,7 @@ def create_backup_api():
     
     try:
         result = run_backup_job(selected_files, ftp_config, source_config, config['backup_files'], config=config, backup_mode='manual')
+        result = notify_backup_result(result, 'manual')
         return jsonify(result)
     except ValueError as e:
         return jsonify({'success': False, 'error': str(e)}), 400
@@ -2431,6 +3127,7 @@ def create_auto_backup_api():
             config=config,
             backup_mode='auto',
         )
+        result = notify_backup_result(result, 'auto')
         return jsonify(result)
     except ValueError as e:
         return jsonify({'success': False, 'error': str(e)}), 400
@@ -2631,6 +3328,7 @@ def create_backup():
             config=config,
             backup_mode='manual',
         )
+        notify_backup_result(result, 'manual')
         if result['success']:
             if result.get('ftp_status') == 'success':
                 flash('Záloha úspešne vytvorená a nahraná na FTP server!', 'success')
