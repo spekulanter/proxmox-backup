@@ -30,6 +30,11 @@ env/
 # Local/reference notes with environment-specific IPs and docs
 Zalohovanie AUTO.FS na QNAP a WD/
 
+# Local agent instruction files
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+
 # App runtime data (local configs and backups)
 backup_config.json
 auth_config.json
