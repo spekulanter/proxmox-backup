@@ -167,6 +167,7 @@
                                     <div>
                                         <label for="frequency" class="flex items-center gap-2 text-sm leading-none font-medium">Frekvencia</label>
                                         <select id="frequency" onchange="onAutoBackupChange()" class="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] mt-1">
+                                            <option value="daily">Denne</option>
                                             <option value="weekly">Týždenne</option>
                                             <option value="monthly">Mesačne</option>
                                         </select>
@@ -508,6 +509,25 @@
         </div>
     </div>
 
+    <div id="toast-container" class="fixed inset-x-4 top-4 z-[10000] flex flex-col gap-3 sm:left-auto sm:right-4 sm:w-full sm:max-w-md pointer-events-none"></div>
+
+    <div id="confirm-modal-overlay" class="fixed inset-0 z-[10001] hidden items-center justify-center bg-black/55 p-4">
+        <div class="w-full max-w-md rounded-lg border border-border bg-card text-card-foreground shadow-xl">
+            <div class="space-y-2 border-b border-border px-5 py-4">
+                <h2 id="confirm-modal-title" class="text-base font-semibold">Potvrdenie akcie</h2>
+                <p id="confirm-modal-message" class="text-sm text-muted-foreground"></p>
+            </div>
+            <div class="flex flex-col-reverse gap-2 px-5 py-4 sm:flex-row sm:justify-end">
+                <button type="button" id="confirm-modal-cancel" class="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground">
+                    Zrušiť
+                </button>
+                <button type="button" id="confirm-modal-confirm" class="inline-flex h-9 items-center justify-center rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground shadow-xs transition-colors hover:bg-destructive/90">
+                    Zmazať
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- JavaScript -->
     <script>
         // Global state
@@ -520,9 +540,109 @@
         let backupFtpStatus = {};
         let restoreArchives = [];
         let restorePreviewItems = [];
+        let confirmModalResolver = null;
+
+        function showToast(message, type = 'info', options = {}) {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+
+            const normalizedType = ['success', 'error', 'warning', 'info'].includes(type) ? type : 'info';
+            const timeout = options.timeout ?? 10000;
+            const styles = {
+                success: {
+                    wrap: 'border-green-200 bg-green-50 text-green-900',
+                    icon: 'text-green-600',
+                    title: 'Úspech',
+                    path: 'M5 13l4 4L19 7'
+                },
+                error: {
+                    wrap: 'border-red-200 bg-red-50 text-red-900',
+                    icon: 'text-red-600',
+                    title: 'Chyba',
+                    path: 'M6 18L18 6M6 6l12 12'
+                },
+                warning: {
+                    wrap: 'border-amber-200 bg-amber-50 text-amber-900',
+                    icon: 'text-amber-600',
+                    title: 'Upozornenie',
+                    path: 'M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z'
+                },
+                info: {
+                    wrap: 'border-sky-200 bg-sky-50 text-sky-900',
+                    icon: 'text-sky-600',
+                    title: 'Informácia',
+                    path: 'M13 16h-1v-4h-1m1-4h.01'
+                }
+            };
+            const style = styles[normalizedType];
+            const toast = document.createElement('div');
+            toast.className = `pointer-events-auto flex gap-3 rounded-lg border px-4 py-3 text-sm shadow-lg transition-all duration-200 ${style.wrap}`;
+            toast.setAttribute('role', normalizedType === 'error' ? 'alert' : 'status');
+            toast.innerHTML = `
+                <svg class="mt-0.5 h-4 w-4 shrink-0 ${style.icon}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${style.path}"/>
+                </svg>
+                <div class="min-w-0 flex-1">
+                    <div class="font-medium">${escapeHtml(options.title || style.title)}</div>
+                    <div class="mt-1 whitespace-pre-line break-words text-current/90">${escapeHtml(message)}</div>
+                </div>
+                <button type="button" class="shrink-0 rounded p-1 text-current/70 transition-colors hover:bg-black/5 hover:text-current" aria-label="Zavrieť notifikáciu">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            `;
+
+            const close = () => {
+                toast.classList.add('opacity-0', 'translate-y-1');
+                setTimeout(() => toast.remove(), 200);
+            };
+            toast.querySelector('button').addEventListener('click', close);
+            container.appendChild(toast);
+            if (timeout > 0) {
+                setTimeout(close, timeout);
+            }
+        }
+
+        function showConfirmModal({ title = 'Potvrdenie akcie', message = '', confirmText = 'Potvrdiť', cancelText = 'Zrušiť' } = {}) {
+            const overlay = document.getElementById('confirm-modal-overlay');
+            if (!overlay) return Promise.resolve(false);
+
+            document.getElementById('confirm-modal-title').textContent = title;
+            document.getElementById('confirm-modal-message').textContent = message;
+            document.getElementById('confirm-modal-confirm').textContent = confirmText;
+            document.getElementById('confirm-modal-cancel').textContent = cancelText;
+            overlay.classList.remove('hidden');
+            overlay.classList.add('flex');
+
+            return new Promise(resolve => {
+                confirmModalResolver = resolve;
+            });
+        }
+
+        function closeConfirmModal(confirmed = false) {
+            const overlay = document.getElementById('confirm-modal-overlay');
+            if (overlay) {
+                overlay.classList.add('hidden');
+                overlay.classList.remove('flex');
+            }
+            if (confirmModalResolver) {
+                confirmModalResolver(confirmed);
+                confirmModalResolver = null;
+            }
+        }
         
         // Initialize app
         document.addEventListener('DOMContentLoaded', async function() {
+            const confirmOverlay = document.getElementById('confirm-modal-overlay');
+            if (confirmOverlay) {
+                confirmOverlay.addEventListener('click', function(e) {
+                    if (e.target === confirmOverlay) closeConfirmModal(false);
+                });
+                document.getElementById('confirm-modal-cancel').addEventListener('click', () => closeConfirmModal(false));
+                document.getElementById('confirm-modal-confirm').addEventListener('click', () => closeConfirmModal(true));
+            }
+
             await loadConfig();
             await loadBackups();
             await loadBackupFiles();
@@ -579,15 +699,7 @@
 
             // Frequency change
             const frequencySelect = document.getElementById('frequency');
-            const nextBackupSpan = document.getElementById('next-backup');
-
-            frequencySelect.addEventListener('change', function() {
-                if (this.value === 'weekly') {
-                    nextBackupSpan.textContent = 'Nedeľa 02:00';
-                } else {
-                    nextBackupSpan.textContent = '1. deň v mesiaci 02:00';
-                }
-            });
+            frequencySelect.addEventListener('change', onAutoBackupChange);
         });
 
         function abUpdateDayVisibility() {
@@ -603,7 +715,9 @@
             const t = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
             const days = ['Pondelok','Utorok','Streda','Štvrtok','Piatok','Sobota','Nedeľa'];
             let txt;
-            if (freq === 'weekly') {
+            if (freq === 'daily') {
+                txt = 'Denne ' + t;
+            } else if (freq === 'weekly') {
                 txt = days[parseInt(document.getElementById('ab-day-week').value)] + ' ' + t;
             } else {
                 txt = (parseInt(document.getElementById('ab-day-month').value) + 1) + '. deň v mesiaci ' + t;
@@ -619,9 +733,10 @@
 
         async function abSaveSettings() {
             const freq = document.getElementById('frequency').value;
-            const day = parseInt(freq === 'weekly'
-                ? document.getElementById('ab-day-week').value
-                : document.getElementById('ab-day-month').value);
+            let day = parseInt(document.getElementById('ab-day-week').value);
+            if (freq === 'monthly') {
+                day = parseInt(document.getElementById('ab-day-month').value);
+            }
             const payload = {
                 auto_backup_enabled: document.getElementById('auto-backup').checked,
                 auto_backup_frequency: freq,
@@ -835,7 +950,7 @@
                 updateCounts();
             } catch (error) {
                 console.error('Bulk file selection error:', error);
-                alert('Chyba pri hromadnom výbere: ' + error.message);
+                showToast('Chyba pri hromadnom výbere: ' + error.message, 'error');
             }
         }
 
@@ -999,7 +1114,7 @@
             const selectedFiles = backupFiles.filter(file => file.selected).map(file => file.path);
             
             if (selectedFiles.length === 0) {
-                alert('Prosím vyberte súbory na zálohovanie');
+                showToast('Prosím vyberte súbory na zálohovanie', 'warning');
                 return;
             }
             
@@ -1047,7 +1162,9 @@
                 const ftpLine = result.ftp_status === 'success'
                     ? 'FTP: success'
                     : `FTP: failed (${result.ftp_message || 'dohrá sa pri ďalšej dostupnosti FTP'})`;
-                alert(`Záloha bola vytvorená.\nLokálna cesta: ${result.local_path || 'n/a'}\n${ftpLine}\nZahrnuté položky: ${includedCount}\nPreskočené položky: ${skippedCount}${warnings}`);
+                showToast(`Záloha bola vytvorená.\nLokálna cesta: ${result.local_path || 'n/a'}\n${ftpLine}\nZahrnuté položky: ${includedCount}\nPreskočené položky: ${skippedCount}${warnings}`, result.ftp_status === 'success' ? 'success' : 'warning', {
+                    title: 'Záloha dokončená'
+                });
                 await loadConfig();
                 await loadBackups();
                 await loadRestoreArchives();
@@ -1058,7 +1175,7 @@
                 const message = interrupted
                     ? 'Spojenie s aplikáciou sa prerušilo počas zálohy. Pri veľkých ISO/šablónach to zvyčajne znamená timeout služby; po update/reštarte služby skús zálohu znova a skontroluj históriu.'
                     : error.message;
-                alert('Chyba pri vytváraní zálohy: ' + message);
+                showToast('Chyba pri vytváraní zálohy: ' + message, 'error');
             } finally {
                 backupBtn.textContent = 'Vytvoriť zálohu teraz';
                 backupBtn.disabled = false;
@@ -1162,16 +1279,22 @@
                 }
                 await loadBackups();
                 await loadRestoreArchives();
-                alert(result.cached ? 'Archív bol stiahnutý z FTP do lokálneho úložiska.' : 'Archív už bol dostupný lokálne.');
+                showToast(result.cached ? 'Archív bol stiahnutý z FTP do lokálneho úložiska.' : 'Archív už bol dostupný lokálne.', 'success');
             } catch (error) {
                 console.error('Cache backup error:', error);
-                alert('Chyba pri načítaní archívu: ' + error.message);
+                showToast('Chyba pri načítaní archívu: ' + error.message, 'error');
             }
         }
 
         async function deleteBackup(backupId) {
             if (!backupId) return;
-            if (!confirm('Zmazať túto zálohu lokálne, na FTP a odstrániť ju z histórie?')) {
+            const confirmed = await showConfirmModal({
+                title: 'Zmazať zálohu?',
+                message: 'Táto akcia zmaže zálohu lokálne, na FTP a odstráni ju z histórie.',
+                confirmText: 'Zmazať',
+                cancelText: 'Zrušiť'
+            });
+            if (!confirmed) {
                 return;
             }
 
@@ -1183,13 +1306,13 @@
                 if (!response.ok || !result.success) {
                     throw new Error(result.error || result.ftp_message || 'Zálohu sa nepodarilo zmazať');
                 }
-                alert(`Záloha zmazaná.\n${result.local_message || ''}\n${result.ftp_message || ''}`);
+                showToast(`Záloha zmazaná.\n${result.local_message || ''}\n${result.ftp_message || ''}`, 'success');
                 await loadConfig();
                 await loadBackups();
                 await loadRestoreArchives();
             } catch (error) {
                 console.error('Delete backup error:', error);
-                alert('Chyba pri mazaní zálohy: ' + error.message);
+                showToast('Chyba pri mazaní zálohy: ' + error.message, 'error');
                 await loadConfig();
                 await loadBackups();
             }
@@ -1457,6 +1580,7 @@
 
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') closeMemberModal();
+            if (e.key === 'Escape') closeConfirmModal(false);
         });
 
         async function toggleAllRestoreMembers(event) {
@@ -1723,7 +1847,7 @@
                 updateCounts();
             } catch (error) {
                 console.error('Save settings error:', error);
-                alert('Chyba pri ukladaní nastavení: ' + error.message);
+                showToast('Chyba pri ukladaní nastavení: ' + error.message, 'error');
             } finally {
                 btn.textContent = 'Uložiť nastavenia';
                 btn.disabled = false;

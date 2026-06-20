@@ -627,7 +627,8 @@ def migrate_config(config):
     migrated['auto_backup_files'] = migrated_auto_items
     migrated['max_backup_count'] = sanitize_max_backup_count(config.get('max_backup_count', defaults['max_backup_count']))
     migrated['auto_backup_enabled'] = bool(config.get('auto_backup_enabled', False))
-    migrated['auto_backup_frequency'] = config.get('auto_backup_frequency', 'monthly')
+    auto_backup_frequency = config.get('auto_backup_frequency', 'monthly')
+    migrated['auto_backup_frequency'] = auto_backup_frequency if auto_backup_frequency in ('daily', 'weekly', 'monthly') else 'monthly'
     migrated['auto_backup_day'] = int(config.get('auto_backup_day', 6))
     migrated['auto_backup_hour'] = int(config.get('auto_backup_hour', 2))
     migrated['auto_backup_minute'] = int(config.get('auto_backup_minute', 0))
@@ -2667,7 +2668,7 @@ def save_auto_backup_settings_api():
         config['auto_backup_enabled'] = bool(data['auto_backup_enabled'])
     if 'auto_backup_frequency' in data:
         freq = data['auto_backup_frequency']
-        if freq in ('weekly', 'monthly'):
+        if freq in ('daily', 'weekly', 'monthly'):
             config['auto_backup_frequency'] = freq
     if 'auto_backup_day' in data:
         try:
@@ -2704,7 +2705,7 @@ def toggle_auto_backup():
 @app.route('/set_backup_frequency/<frequency>')
 def set_backup_frequency(frequency):
     """Nastavenie frekvencie automatického zálohovania"""
-    if frequency in ['weekly', 'monthly']:
+    if frequency in ['daily', 'weekly', 'monthly']:
         config = load_config()
         config['auto_backup_frequency'] = frequency
         save_config(config)

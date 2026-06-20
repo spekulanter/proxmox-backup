@@ -311,6 +311,22 @@ def main():
             assert config["backup_files"][0]["selected"] is True
 
             response = client.post(
+                "/api/auto-backup-settings",
+                json={
+                    "auto_backup_enabled": True,
+                    "auto_backup_frequency": "daily",
+                    "auto_backup_hour": 14,
+                    "auto_backup_minute": 15,
+                },
+            )
+            assert response.status_code == 200
+            config = app_module.load_config()
+            assert config["auto_backup_enabled"] is True
+            assert config["auto_backup_frequency"] == "daily"
+            assert config["auto_backup_hour"] == 14
+            assert config["auto_backup_minute"] == 15
+
+            response = client.post(
                 "/api/backup",
                 json={
                     "files": ["/etc/pve"],

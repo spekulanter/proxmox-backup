@@ -4,6 +4,40 @@ set -euo pipefail
 SERVICE_NAME="proxmox-backup"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+AUTO_SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}-auto.service"
+AUTO_TIMER_FILE="/etc/systemd/system/${SERVICE_NAME}-auto.timer"
+
+install_auto_backup_timer() {
+	cat > "${AUTO_SERVICE_FILE}" <<EOF
+[Unit]
+Description=Run Proxmox Backup Manager automatic backup
+Wants=network-online.target ${SERVICE_NAME}.service
+After=network-online.target ${SERVICE_NAME}.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=${APP_DIR}
+Environment=APP_DIR=${APP_DIR}
+ExecStart=${APP_DIR}/auto_backup.sh
+EOF
+
+	cat > "${AUTO_TIMER_FILE}" <<EOF
+[Unit]
+Description=Schedule Proxmox Backup Manager automatic backup checks
+
+[Timer]
+OnBootSec=5min
+OnCalendar=*:0/15
+AccuracySec=1s
+Persistent=true
+Unit=${SERVICE_NAME}-auto.service
+
+[Install]
+WantedBy=timers.target
+EOF
+}
 
 echo "🔄 Aktualizujem Proxmox Backup Manager..."
 systemctl stop "${SERVICE_NAME}.service" || true
@@ -44,7 +78,9 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
+install_auto_backup_timer
 systemctl daemon-reload
 
 systemctl start "${SERVICE_NAME}.service"
+systemctl enable --now "${SERVICE_NAME}-auto.timer" || true
 echo "✅ Aplikácia bola úspešne aktualizovaná."

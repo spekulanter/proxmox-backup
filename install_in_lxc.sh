@@ -15,6 +15,45 @@ REPO_URL="https://github.com/spekulanter/proxmox-backup.git"
 APP_DIR="/opt/proxmox-backup"
 SERVICE_NAME="proxmox-backup"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+AUTO_SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}-auto.service"
+AUTO_TIMER_FILE="/etc/systemd/system/${SERVICE_NAME}-auto.timer"
+
+install_auto_backup_timer() {
+    msg_info "Vytváram systemd timer pre automatické zálohy..."
+    cat > "${AUTO_SERVICE_FILE}" <<EOF
+[Unit]
+Description=Run Proxmox Backup Manager automatic backup
+Wants=network-online.target ${SERVICE_NAME}.service
+After=network-online.target ${SERVICE_NAME}.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=${APP_DIR}
+Environment=APP_DIR=${APP_DIR}
+ExecStart=${APP_DIR}/auto_backup.sh
+EOF
+
+    cat > "${AUTO_TIMER_FILE}" <<EOF
+[Unit]
+Description=Schedule Proxmox Backup Manager automatic backup checks
+
+[Timer]
+OnBootSec=5min
+OnCalendar=*:0/15
+AccuracySec=1s
+Persistent=true
+Unit=${SERVICE_NAME}-auto.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable --now "${SERVICE_NAME}-auto.timer" &>/dev/null || true
+    msg_ok "Timer ${SERVICE_NAME}-auto.timer je pripravený."
+}
 
 # Helper: spusti update skript, ak existuje
 run_update_script() {
@@ -63,6 +102,8 @@ if ${is_installed}; then
     msg_info "Spúšťam službu ${SERVICE_NAME}..."
     systemctl start "${SERVICE_NAME}.service" &>/dev/null
     msg_ok "Služba spustená."
+
+    install_auto_backup_timer
 
     echo "✅ Aktualizácia dokončená!"
     echo "🌐 Aplikácia: http://$(hostname -I | awk '{print $1}'):5000"
@@ -141,6 +182,8 @@ msg_info "Aktivujem a spúšťam službu..."
 systemctl daemon-reload
 systemctl enable --now "${SERVICE_NAME}.service" &>/dev/null
 msg_ok "Služba ${SERVICE_NAME}.service je aktívna."
+
+install_auto_backup_timer
 
 echo "🎉 Inštalácia dokončená!"
 echo "🌐 Aplikácia: http://$(hostname -I | awk '{print $1}'):5000"

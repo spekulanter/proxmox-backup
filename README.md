@@ -111,10 +111,10 @@ Obnova je zámerne whitelistovaná na známe konfiguračné cesty a nepodporuje 
 Každá úspešne vytvorená záloha sa uloží lokálne do `backups/` v LXC a následne sa nahrá na FTP. Ak FTP upload zlyhá, lokálny archív ostane v LXC a história záloh označí FTP stav ako `failed`.
 
 ### 🔄 Automatické zálohovanie
-- **Týždenne** - Každú nedeľu o 02:00
-- **Mesačne** - 1. deň v mesiaci o 02:00
-- Vyžaduje systemd timer (pridáva sa automaticky)
-- `auto_backup.sh` spúšťa JSON API zálohu zo saved configu, takže zlyhá viditeľne pri chýbajúcom SSH/FTP nastavení
+- **Denne, týždenne alebo mesačne** - podľa nastavenia v sekcii Automatická záloha
+- Vyžaduje systemd timer `proxmox-backup-auto.timer` (pridáva sa automaticky pri inštalácii/update)
+- Timer spúšťa `auto_backup.sh` na štvrťhodinách `:00/:15/:30/:45`; skript podľa `backup_config.json` rozhodne, či je automatická záloha zapnutá a či už nastal uložený deň/čas
+- `auto_backup.sh` volá JSON API `/api/backup/auto` zo saved configu, takže zlyhá viditeľne pri chýbajúcom SSH/FTP nastavení
 
 ## 🛠️ Správa služby
 
