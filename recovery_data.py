@@ -994,6 +994,86 @@ grep -E 'hostpci|usb[0-9]' etc/pve/nodes/*/qemu-server/*.conf
         ],
     },
     {
+        'slug': 'hw-migration',
+        'title': 'Migrácia na nový HW (plánovaná)',
+        'summary': 'Starý server žije a chceš prejsť na nový: presun disku alebo presun hostí po jednom, bez kolízií a s cestou späť.',
+        'blocks': [
+            _p('Plánovaná migrácia nie je havária: starý server beží, môžeš urobiť čerstvé zálohy tesne pred prechodom a kým nie je nový host overený, starý ostáva ako cesta späť. Postup pre úplne mŕtvy server je v článku Obnova Proxmoxu na novom HW.'),
+            _h('Vyber spôsob'),
+            _ul(
+                'A) Presun systémového disku (NVMe/SSD) do nového stroja – jeden reboot, všetko ostane ako bolo. Rieši sa iba sieťová karta, boot, CPU a passthrough. Vhodné, ak nový HW má rovnaký typ slotu.',
+                'B) Nový Proxmox vedľa starého a presun hostí po jednom cez vzdump – minúty výpadku na hosťa, najbezpečnejšie a najpredvídateľnejšie.',
+                'Pokročilé: dočasný cluster + `qm migrate`/`pct migrate` (takmer bez výpadku, ale rozpustenie clustra je citlivé) alebo `qm remote-migrate` medzi samostatnými hostami (CLI preview, vyžaduje API token). Pri jednom domácom serveri ich neodporúčam.',
+            ),
+            _danger('Nikdy nenechaj bežať dva hosty s rovnakou IP, hostname alebo SSH identitou naraz a nikdy nespúšťaj toho istého hosťa (VM/LXC) na oboch serveroch – rovnaká MAC/IP, poškodenie dát, konflikt USB/Zigbee zariadení.'),
+            _warn('Vzdump joby a vlastné backup timery smú bežať iba na jednom hoste. Ak bežia na oboch, zapisujú do toho istého dump/ adresára na NAS a prune-backups si navzájom mažú zálohy.'),
+            _h('Spoločná príprava (A aj B)'),
+            _ol(
+                'Over Riziká obnovy v Prehľade – hostia bez vzdump zálohy musia mať zálohu pred migráciou (ručný `vzdump` funguje aj pre hostí, ktorí nie sú v žiadnom jobe).',
+                'Vytvor zálohu konfigurácie hosta v appke a stiahni si offline príručku aj najnovší archív na PC.',
+                'Poznač si pôvodné NIC a MAC (`ip -br link`), PCI/USB passthrough (`grep -E "hostpci|usb[0-9]" /etc/pve/nodes/*/qemu-server/*.conf`) a CPU (`lscpu`).',
+                'Rovnaká alebo novšia major verzia PVE na novom HW; pri prechode Intel ↔ AMD zmeň CPU typ VM z `host` na `x86-64-v2-AES`.',
+            ),
+            _code("""
+# čerstvá vzdump záloha všetkých hostí (alebo vyber VMID)
+vzdump --all --storage <backup-storage> --mode snapshot --compress zstd
+# hosť, ktorý nie je v žiadnom jobe
+vzdump 122 --storage <backup-storage> --mode stop --compress zstd
+"""),
+            _h('Spôsob A – presun systémového disku'),
+            _ol(
+                'Hostí s passthrough (USB/PCI) dočasne vypni z autostartu: `qm set <id> --onboot 0`.',
+                'Vypni starý server (`poweroff`), presuň disk do nového stroja a zapoj sieť.',
+                'Nabootuj. Ak UEFI nevidí boot záznam, vyber disk v boot menu firmvéru a potom `proxmox-boot-tool status` / `proxmox-boot-tool refresh` (systemd-boot/ZFS) alebo `grub-install` + `update-grub` (GRUB).',
+                'Na konzole oprav sieť: nový názov NIC v `bridge-ports` (pozri článok Obnova siete na inom HW), `ifreload -a`.',
+                'Pri zmene CPU vendora nainštaluj microcode (`apt install intel-microcode` alebo `amd64-microcode`) a uprav IOMMU parametre v /etc/default/grub alebo /etc/kernel/cmdline.',
+                'Prenastav passthrough (nové PCI adresy, USB ID), `update-initramfs -u -k all`, reboot, zapni autostart späť.',
+            ),
+            _code("""
+ip -br link
+nano /etc/network/interfaces        # bridge-ports <nový NIC>
+ifreload -a && ip -br addr && ping -c3 <gateway>
+lspci -nn; lsusb                    # nové ID zariadení pre passthrough
+update-initramfs -u -k all
+"""),
+            _tip('Disk zo starého stroja je zároveň záloha: ak nový HW nefunguje, vráť disk späť do starého servera.'),
+            _h('Spôsob B – nový host vedľa starého'),
+            _p('1) Nainštaluj nový Proxmox s DOČASNOU IP (napr. `.3`) a dočasným alebo novým hostname. Nastav sieť/VLAN a pripoj NAS (článok Obnova siete na inom HW a Obnova AutoFS).'),
+            _p('2) Prenes konfiguráciu selektívne – NIE celý config.db, kým starý host beží: definície storage zo storage.cfg, používateľov/ACL, autofs mapy, vlastné skripty. Vzdump joby a backup timery na novom hoste zatiaľ NEZAPÍNAJ. Firewall prenášaj ako posledný.'),
+            _p('3) Presúvaj hostí po jednom (najprv menej dôležité, infraštruktúru ako router, DNS a správcu hesiel naplánuj na čas s možnosťou výpadku):'),
+            _code("""
+# na STAROM hoste
+qm set <id> --onboot 0              # pct set <id> --onboot 0 pre LXC
+vzdump <id> --storage <backup-storage> --mode stop --compress zstd
+# hosť je teraz vypnutý – na starom ho už nespúšťaj
+
+# na NOVOM hoste
+qmrestore <dump>/vzdump-qemu-<id>-<čas>.vma.zst <id> --storage local-lvm
+pct restore <id> <dump>/vzdump-lxc-<id>-<čas>.tar.zst --storage local-lvm
+qm config <id> | grep -E 'net|hostpci|usb'   # bridge, VLAN tag, passthrough
+qm start <id>                                 # pct start <id>
+"""),
+            _p('Po každom hosťovi over funkčnosť (služba, sieť, zariadenia). Až potom pokračuj ďalším.'),
+            _h('Prepnutie (cutover) pri spôsobe B'),
+            _ol(
+                'Keď bežia všetci hostia na novom hoste, vypni starý server alebo ho odpoj zo siete.',
+                'Ak má nový host prevziať pôvodnú IP: uprav /etc/network/interfaces a /etc/hosts, `ifreload -a`, `pvecm updatecerts --force`, `systemctl restart pveproxy`. Zmena hostname – pozri Nový názov nodu v článku Obnova /etc/pve a config.db.',
+                'Zapni vzdump joby a backup timery na novom hoste (`systemctl enable --now <timer>`, Datacenter → Backup). Na starom musia ostať vypnuté.',
+                'Proxmox Backup Manager: Nastavenia → IP hosta a root heslo (ak sa zmenili) → Test SSH → Vytvoriť zálohu teraz → skontroluj READY a Riziká obnovy.',
+                'Klienti s uloženým SSH kľúčom hosta: `ssh-keygen -R <ip>`, alebo prenes pôvodné host keys (článok Obnova SSH) – iba ak starý host už nikdy nepobeží.',
+            ),
+            _h('Cesta späť'),
+            _p('Kým starý host nevymažeš, návrat je jednoduchý: vypni hosťa na novom serveri, na starom mu zapni autostart (`qm set <id> --onboot 1`) a spusti ho. Pri spôsobe A vráť disk do pôvodného stroja. Nikdy nespúšťaj ten istý hosť na oboch naraz.'),
+            _h('Vyradenie starého servera'),
+            _ol(
+                'Nechaj nový host bežať aspoň jeden cyklus záloh (týždeň) a over obnovu aspoň jedného hosťa z novej zálohy.',
+                'Na starom: vypni autostart všetkých hostí, vzdump joby aj backup timery, potom ho vypni.',
+                'Disky starého servera vymaž až keď si istý – obsahujú kópie dát a privátne kľúče (`blkdiscard` / bezpečné vymazanie).',
+                'Stiahni novú offline príručku – nový HW má iné NIC, UUID a PCI ID.',
+            ),
+        ],
+    },
+    {
         'slug': 'pve-config-db',
         'title': 'Obnova /etc/pve a config.db',
         'summary': 'Prečo /etc/pve nie je obyčajný adresár a ako bezpečne obnoviť PVE konfiguráciu.',

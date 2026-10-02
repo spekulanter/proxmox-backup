@@ -451,6 +451,9 @@ def test_wiki_additions():
     assert 'backup-manager-recovery' in slugs
     pve_text = json.dumps(app_module.find_wiki_article('pve-config-db'), ensure_ascii=False)
     assert 'jobs.cfg' in pve_text and 'NODE=' in pve_text and 'PRED obnovou' in pve_text
+    migration = json.dumps(app_module.find_wiki_article('hw-migration'), ensure_ascii=False)
+    for expected in ('Presun systémového disku', 'nový host vedľa starého', 'onboot 0', 'Cesta späť', 'Vyradenie starého servera', 'iba na jednom hoste'):
+        assert expected in migration, expected
     app_text = json.dumps(app_module.find_wiki_article('backup-manager-recovery'), ensure_ascii=False)
     assert 'install_in_lxc.sh' in app_text and 'pct restore' in app_text and 'auth_config.json' in app_text
 
