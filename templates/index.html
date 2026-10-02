@@ -127,6 +127,42 @@
         .dark .bg-emerald-50 { background-color: hsl(160 30% 13%); }
         .dark .text-emerald-800 { color: hsl(160 60% 65%); }
         .dark .border-emerald-200 { border-color: hsl(160 30% 25%); }
+
+        /* Disaster recovery: restore kategórie (🟢 required, 🟠 review, 🔵 selective, ⚪ reference, ▫️ optional) */
+        .dr-badge { display: inline-flex; align-items: center; gap: 0.35rem; max-width: 100%; border-radius: 0.375rem; border-width: 1px; border-style: solid; padding: 0.125rem 0.5rem; font-size: 11px; font-weight: 700; line-height: 1.35; letter-spacing: 0.01em; white-space: nowrap; }
+        .dr-badge::before { content: ''; width: 0.5rem; height: 0.5rem; border-radius: 9999px; flex-shrink: 0; background: var(--dr-dot); box-shadow: 0 0 0 1px var(--dr-dot-ring, transparent); }
+        .dr-badge.dr-alt { font-weight: 600; opacity: 0.92; }
+        .dr-required { --dr-dot: #16a34a; background: #dcfce7; color: #14532d; border-color: #86efac; }
+        .dr-review { --dr-dot: #ea580c; background: #ffedd5; color: #7c2d12; border-color: #fdba74; }
+        .dr-selective { --dr-dot: #2563eb; background: #dbeafe; color: #1e3a8a; border-color: #93c5fd; }
+        .dr-reference { --dr-dot: #ffffff; --dr-dot-ring: #64748b; background: #f1f5f9; color: #334155; border-color: #cbd5e1; }
+        .dr-optional { --dr-dot: #cbd5e1; background: transparent; color: #475569; border-color: #cbd5e1; border-style: dashed; }
+        .dark .dr-required { --dr-dot: #4ade80; background: hsl(142 40% 15%); color: hsl(142 70% 74%); border-color: hsl(142 35% 30%); }
+        .dark .dr-review { --dr-dot: #fb923c; background: hsl(25 45% 16%); color: hsl(30 90% 74%); border-color: hsl(25 40% 32%); }
+        .dark .dr-selective { --dr-dot: #60a5fa; background: hsl(217 40% 17%); color: hsl(213 90% 78%); border-color: hsl(217 35% 34%); }
+        .dark .dr-reference { --dr-dot: #f1f5f9; --dr-dot-ring: #94a3b8; background: hsl(220 10% 19%); color: hsl(220 10% 84%); border-color: hsl(220 10% 34%); }
+        .dark .dr-optional { --dr-dot: hsl(220 10% 45%); color: hsl(220 10% 68%); border-color: hsl(220 10% 34%); }
+        .dr-flag { display: inline-flex; align-items: center; border-radius: 0.375rem; border: 1px solid; padding: 0.125rem 0.45rem; font-size: 10.5px; font-weight: 700; line-height: 1.35; white-space: nowrap; }
+        .dr-flag-danger { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
+        .dr-flag-warn { background: #fef3c7; color: #78350f; border-color: #fcd34d; }
+        .dr-flag-muted { background: transparent; color: hsl(var(--muted-foreground)); border-color: hsl(var(--border)); }
+        .dark .dr-flag-danger { background: hsl(0 35% 17%); color: hsl(0 80% 78%); border-color: hsl(0 30% 34%); }
+        .dark .dr-flag-warn { background: hsl(38 35% 16%); color: hsl(43 90% 72%); border-color: hsl(38 35% 32%); }
+        .readiness-READY { background: #dcfce7; color: #14532d; border-color: #86efac; }
+        .readiness-WARNING { background: #fef3c7; color: #78350f; border-color: #fcd34d; }
+        .readiness-INCOMPLETE { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
+        .dark .readiness-READY { background: hsl(142 40% 15%); color: hsl(142 70% 74%); border-color: hsl(142 35% 30%); }
+        .dark .readiness-WARNING { background: hsl(38 35% 16%); color: hsl(43 90% 72%); border-color: hsl(38 35% 32%); }
+        .dark .readiness-INCOMPLETE { background: hsl(0 35% 17%); color: hsl(0 80% 78%); border-color: hsl(0 30% 34%); }
+        .filter-chip { display: inline-flex; align-items: center; gap: 0.3rem; min-height: 2rem; border-radius: 9999px; border: 1px solid hsl(var(--border)); background: hsl(var(--background)); padding: 0.25rem 0.75rem; font-size: 12.5px; font-weight: 500; color: hsl(var(--foreground)); transition: background-color 0.15s ease; }
+        .filter-chip:hover { background: hsl(var(--accent)); }
+        .filter-chip[aria-pressed="true"] { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); border-color: hsl(var(--primary)); }
+        .wiki-body p, .wiki-body li { line-height: 1.6; overflow-wrap: anywhere; }
+        .wiki-body code, .dr-text code { border-radius: 0.25rem; background: hsl(var(--muted)); padding: 0.05rem 0.3rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; overflow-wrap: anywhere; }
+        .dr-pre { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; border-radius: 0.375rem; border: 1px solid hsl(var(--border)); background: hsl(var(--muted)); padding: 0.6rem 0.75rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; }
+        .step-check { width: 1.35rem; height: 1.35rem; flex-shrink: 0; accent-color: hsl(var(--primary)); }
+        #item-detail-overlay .detail-panel { max-height: calc(100vh - 1rem); }
+        @media (min-width: 640px) { #item-detail-overlay .detail-panel { max-height: 92vh; } }
     </style>
     <script>(function(){var t=localStorage.getItem('theme');if(t==='dark'||(!t&&matchMedia('(prefers-color-scheme:dark)').matches))document.documentElement.classList.add('dark');})()</script>
 </head>
@@ -255,16 +291,19 @@
             <!-- Tabs -->
             <div class="flex flex-col gap-6">
                 <div class="bg-muted text-muted-foreground inline-flex h-auto w-fit flex-wrap items-center justify-center rounded-xl p-1 mx-auto gap-2 border border-border shadow-sm">
-                    <button onclick="showTab('backup')" id="tab-backup" class="data-[state=active]:bg-background dark:data-[state=active]:text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:outline-ring inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:shadow-md [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 bg-background text-foreground shadow-md border-border min-w-[120px]">
+                    <button onclick="showTab('backup')" id="tab-backup" class="data-[state=active]:bg-background dark:data-[state=active]:text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:outline-ring inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-4 sm:px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:shadow-md [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 bg-background text-foreground shadow-md border-border min-w-[120px]">
                         Zálohovanie
                     </button>
-                    <button onclick="showTab('restore')" id="tab-restore" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
+                    <button onclick="showTab('restore')" id="tab-restore" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-4 sm:px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
                         Obnova
                     </button>
-                    <button onclick="showTab('history')" id="tab-history" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
+                    <button onclick="showTab('recovery')" id="tab-recovery" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-4 sm:px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
+                        Obnova na novom HW
+                    </button>
+                    <button onclick="showTab('history')" id="tab-history" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-4 sm:px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
                         História
                     </button>
-                    <button onclick="showTab('settings')" id="tab-settings" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
+                    <button onclick="showTab('settings')" id="tab-settings" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-4 sm:px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
                         Nastavenia
                     </button>
                 </div>
@@ -293,6 +332,10 @@
                                     <div class="flex justify-between text-sm">
                                         <span>Kritické súbory:</span>
                                         <span class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 border-transparent bg-destructive text-destructive-foreground hover:bg-destructive/80" id="critical-count">0 z 0</span>
+                                    </div>
+                                    <div class="flex flex-wrap items-center justify-between gap-2 text-sm">
+                                        <span>Pripravenosť na obnovu (nový HW):</span>
+                                        <button type="button" onclick="showTab('recovery')" id="readiness-mini" class="inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold border-border text-muted-foreground" title="Otvoriť Obnova na novom HW">Načítavam…</button>
                                     </div>
                                 </div>
 
@@ -435,6 +478,17 @@
                                         Zrušiť výber
                                     </button>
                                 </div>
+                            </div>
+                            <div class="mb-4 space-y-2">
+                                <div class="flex flex-wrap items-center justify-between gap-2">
+                                    <span class="text-xs font-medium uppercase tracking-wide text-muted-foreground">Filter</span>
+                                    <button type="button" onclick="setFileFilter('newhw')" class="inline-flex items-center gap-1.5 rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium shadow-xs hover:bg-accent">
+                                        <span class="dr-badge dr-required" aria-hidden="true">NEW HW</span>
+                                        Relevantné pre obnovu na novom HW
+                                    </button>
+                                </div>
+                                <div id="file-filter-chips" class="flex flex-wrap gap-2" role="group" aria-label="Filter položiek zálohy"></div>
+                                <p id="file-filter-summary" class="text-xs text-muted-foreground"></p>
                             </div>
                             <div class="space-y-3" id="backup-files-list">
                                 <!-- Files will be loaded here -->
@@ -625,6 +679,31 @@
                                 Archív môže obsahovať heslá, tokeny a SSH kľúče. Pred aplikovaním sa existujúce cieľové súbory na hoste skopírujú do rollback adresára v <span class="font-mono">/root</span>.
                             </div>
 
+                            <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                                Obnova na <strong>nový alebo iný hardvér</strong>? Nepoužívaj „obnov všetko“. Iné NIC, UUID diskov, PCI ID a verzie znamenajú, že časť konfigurácie treba najprv porovnať.
+                                <button type="button" onclick="showTab('recovery')" class="ml-1 font-semibold underline underline-offset-2">Postup obnovy na novom HW</button>
+                            </div>
+
+                            <fieldset class="space-y-2">
+                                <legend class="text-sm font-medium">Režim obnovy</legend>
+                                <div class="grid gap-2 md:grid-cols-2">
+                                    <label class="flex cursor-pointer items-start gap-3 rounded-lg border p-3 has-[:checked]:border-primary has-[:checked]:bg-muted/50">
+                                        <input type="radio" name="restore-mode" value="stage" class="mt-1 h-4 w-4 shrink-0" checked onchange="updateRestoreButton()">
+                                        <span class="min-w-0 space-y-0.5">
+                                            <span class="block text-sm font-medium">Iba pripraviť na kontrolu <span class="text-xs font-normal text-muted-foreground">(odporúčané pre nový HW)</span></span>
+                                            <span class="block text-xs text-muted-foreground">Rozbalí vybrané cesty do <span class="font-mono break-all">/root/proxmox-backup-restore-review-&lt;čas&gt;/</span>. Živý systém sa nezmení.</span>
+                                        </span>
+                                    </label>
+                                    <label class="flex cursor-pointer items-start gap-3 rounded-lg border p-3 has-[:checked]:border-primary has-[:checked]:bg-muted/50">
+                                        <input type="radio" name="restore-mode" value="apply" class="mt-1 h-4 w-4 shrink-0" onchange="updateRestoreButton()">
+                                        <span class="min-w-0 space-y-0.5">
+                                            <span class="block text-sm font-medium">Aplikovať na host <span class="text-xs font-normal text-muted-foreground">(rovnaký HW)</span></span>
+                                            <span class="block text-xs text-muted-foreground">Prepíše cieľové cesty (s pre-apply zálohou). ADVANCED a REFERENCE položky sa aj tak iba pripravia.</span>
+                                        </span>
+                                    </label>
+                                </div>
+                            </fieldset>
+
                             <div>
                                 <div>
                                     <label for="restore-archive-select" class="flex items-center gap-2 text-sm leading-none font-medium">Lokálny archív</label>
@@ -638,6 +717,17 @@
                                 <div class="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
                                     Vyber archív a obnoviteľné cesty sa načítajú automaticky.
                                 </div>
+                            </div>
+
+                            <div id="restore-plan-summary" class="hidden rounded-lg border border-border px-4 py-3 text-sm"></div>
+
+                            <div id="restore-ack-box" class="hidden space-y-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                                <div class="font-medium">Tieto položky sa majú pred priamym aplikovaním skontrolovať:</div>
+                                <ul id="restore-ack-list" class="space-y-1"></ul>
+                                <label class="flex items-start gap-2 pt-1">
+                                    <input type="checkbox" id="restore-ack" class="mt-0.5 h-4 w-4 shrink-0" onchange="updateRestoreButton()">
+                                    <span>Obsah týchto položiek som porovnal s cieľovým hostom a rozumiem rizikám (iné NIC, UUID, verzie). Chcem ich aplikovať.</span>
+                                </label>
                             </div>
 
                             <div class="grid gap-4 md:grid-cols-[1fr_auto]">
@@ -654,6 +744,54 @@
 
                             <div id="restore-status" class="text-sm text-muted-foreground hidden"></div>
                             <div id="restore-result" class="hidden rounded-lg border border-border px-4 py-3 text-sm"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab Content: Obnova na novom HW (Disaster Recovery) -->
+                <div id="content-recovery" class="space-y-6 hidden">
+                    <div class="bg-card text-card-foreground flex flex-col gap-5 rounded-xl border py-6 shadow-sm">
+                        <div class="grid auto-rows-min items-start gap-1.5 px-4 sm:px-6">
+                            <div class="leading-none font-semibold flex items-center gap-2">
+                                <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+                                </svg>
+                                Obnova na novom HW
+                            </div>
+                            <div class="text-muted-foreground text-sm">
+                                Pôvodný server zomrel? Tu je, čo potrebuješ, čo najprv skontrolovať, čo obnoviť selektívne a čo je iba referencia.
+                            </div>
+                        </div>
+                        <div class="px-4 sm:px-6">
+                            <div id="recovery-subnav" class="flex flex-wrap gap-2" role="group" aria-label="Sekcie obnovy">
+                                <button type="button" class="filter-chip" data-rsec="overview" onclick="showRecoverySection('overview')">Prehľad</button>
+                                <button type="button" class="filter-chip" data-rsec="checklist" onclick="showRecoverySection('checklist')">Postup obnovy</button>
+                                <button type="button" class="filter-chip" data-rsec="items" onclick="showRecoverySection('items')">Položky</button>
+                                <button type="button" class="filter-chip" data-rsec="snapshot" onclick="showRecoverySection('snapshot')">Snapshot hosta</button>
+                                <button type="button" class="filter-chip" data-rsec="wiki" onclick="showRecoverySection('wiki')">Wiki</button>
+                            </div>
+                        </div>
+                        <div class="px-4 sm:px-6 min-w-0">
+                            <div id="rsec-overview" class="recovery-section space-y-5"></div>
+                            <div id="rsec-checklist" class="recovery-section hidden space-y-4"></div>
+                            <div id="rsec-items" class="recovery-section hidden space-y-5"></div>
+                            <div id="rsec-snapshot" class="recovery-section hidden space-y-4">
+                                <div class="rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm">
+                                    <span class="dr-badge dr-reference">REFERENCE ONLY</span>
+                                    <p class="mt-2 text-muted-foreground">Diagnostika pôvodného hosta z <span class="font-mono">backup-info/</span> v archíve: NIC, IP, disky, UUID, storage, PCI. Nikdy sa automaticky neobnovuje – odpovedá na otázku „ako vyzeral server pred haváriou?“. Konfiguračné súbory ani tajomstvá sa tu nezobrazujú.</p>
+                                </div>
+                                <div class="flex flex-col gap-2 sm:flex-row sm:items-end">
+                                    <div class="min-w-0 flex-1">
+                                        <label for="snapshot-archive-select" class="text-sm font-medium">Archív</label>
+                                        <select id="snapshot-archive-select" class="mt-1 flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs outline-none md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                                            <option value="">Načítavam archívy...</option>
+                                        </select>
+                                    </div>
+                                    <button type="button" onclick="loadHostSnapshot()" id="snapshot-load-btn" class="inline-flex h-9 shrink-0 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90">Zobraziť snapshot</button>
+                                </div>
+                                <div id="snapshot-result" class="space-y-2"></div>
+                            </div>
+                            <div id="rsec-wiki" class="recovery-section hidden space-y-4"></div>
                         </div>
                     </div>
                 </div>
@@ -704,6 +842,19 @@
                     Zmazať
                 </button>
             </div>
+        </div>
+    </div>
+
+    <div id="item-detail-overlay" class="fixed inset-0 z-[10001] hidden items-end justify-center bg-black/55 p-2 sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-labelledby="item-detail-title">
+        <div class="detail-panel flex w-full max-w-3xl flex-col overflow-hidden rounded-lg border border-border bg-card text-card-foreground shadow-xl">
+            <div class="flex items-start justify-between gap-3 border-b border-border px-4 py-3 sm:px-5">
+                <div class="min-w-0">
+                    <h2 id="item-detail-title" class="text-base font-semibold break-words"></h2>
+                    <p id="item-detail-path" class="font-mono text-xs text-muted-foreground break-all"></p>
+                </div>
+                <button type="button" onclick="closeItemDetail()" class="inline-flex h-9 shrink-0 items-center justify-center rounded-md border border-input px-3 text-sm hover:bg-accent">Zavrieť</button>
+            </div>
+            <div id="item-detail-body" class="dr-text min-w-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 text-sm sm:px-5"></div>
         </div>
     </div>
 
@@ -788,6 +939,39 @@
         let confirmModalResolver = null;
         let csrfToken = '';
         let authStatus = {};
+        let restoreCategories = [];
+        let recoveryOverview = null;
+        let recoverySection = 'overview';
+        let currentWikiSlug = '';
+        let activeFileFilter = 'all';
+        let recoveryRefreshTimer = null;
+        let restoreAckKey = '';
+        const CHECKLIST_STORAGE_KEY = 'pbm-recovery-checklist-v1';
+        const RESTORE_CATEGORY_CLASSES = {
+            required: 'dr-required',
+            review: 'dr-review',
+            selective: 'dr-selective',
+            reference: 'dr-reference',
+            optional: 'dr-optional'
+        };
+        const hasTag = (file, tag) => (file.tags || []).some(item => String(item).toLowerCase() === tag);
+        const hasRestoreCategory = (file, category) => Boolean(file.recovery)
+            && (file.recovery.restore_category === category || file.recovery.restore_category_alt === category);
+        const hasTopic = (file, topic) => (file.recovery?.topics || []).includes(topic);
+        const FILE_FILTERS = [
+            { id: 'all', label: 'Všetko', test: () => true },
+            { id: 'critical', label: 'Critical', test: file => file.priority === 'critical' || Boolean(file.critical) },
+            { id: 'recommended', label: 'Recommended', test: file => file.priority === 'recommended' },
+            { id: 'optional', label: 'Optional', test: file => file.priority === 'optional' },
+            { id: 'dr-required', label: 'New HW – Required', dr: 'required', test: file => hasRestoreCategory(file, 'required') },
+            { id: 'dr-review', label: 'New HW – Review', dr: 'review', test: file => hasRestoreCategory(file, 'review') },
+            { id: 'dr-selective', label: 'New HW – Selective', dr: 'selective', test: file => hasRestoreCategory(file, 'selective') },
+            { id: 'dr-reference', label: 'Reference only', dr: 'reference', test: file => hasRestoreCategory(file, 'reference') },
+            { id: 'sensitive', label: 'Sensitive', test: file => hasTag(file, 'sensitive') || ['sensitive', 'secret'].includes(file.recovery?.sensitivity) },
+            { id: 'network', label: 'Network', test: file => hasTag(file, 'network') || hasTopic(file, 'network') },
+            { id: 'storage', label: 'Storage', test: file => hasTag(file, 'storage') || hasTopic(file, 'storage') },
+            { id: 'newhw', label: 'Relevantné pre nový HW', hidden: true, test: file => Boolean(file.recovery) && file.recovery.restore_category !== 'optional' }
+        ];
 
         function toggleTheme() {
             const isDark = document.documentElement.classList.toggle('dark');
@@ -1264,6 +1448,10 @@
                 document.getElementById('confirm-modal-cancel').addEventListener('click', () => closeConfirmModal(false));
                 document.getElementById('confirm-modal-confirm').addEventListener('click', () => closeConfirmModal(true));
             }
+            const itemDetailOverlay = document.getElementById('item-detail-overlay');
+            itemDetailOverlay?.addEventListener('click', function(e) {
+                if (e.target === itemDetailOverlay) closeItemDetail();
+            });
 
             const authenticated = await initAuth();
             if (!authenticated) {
@@ -1275,8 +1463,11 @@
             await Promise.all([
                 loadBackups(),
                 loadBackupFiles(),
-                loadRestoreArchives()
+                loadRestoreArchives(),
+                loadRecoveryOverview()
             ]);
+            handleRecoveryHash();
+            window.addEventListener('hashchange', handleRecoveryHash);
         });
 
         function initializeAutoBackupControls() {
@@ -1405,6 +1596,7 @@
                 const data = await response.json();
                 appConfig = data.config;
                 backupCategories = data.backup_categories || data.config.backup_categories || [];
+                restoreCategories = data.restore_categories || restoreCategories;
                 
                 // Populate FTP settings
                 document.getElementById('ftp-host').value = appConfig.ftp_config?.host || '';
@@ -1461,6 +1653,11 @@
             }
             if (tabName === 'history') {
                 loadBackups();
+            }
+            if (tabName === 'recovery') {
+                loadRecoveryOverview();
+                loadRestoreArchives();
+                showRecoverySection(recoverySection);
             }
             
             // Add active state to selected tab
@@ -1561,6 +1758,8 @@
                     const result = await response.json();
                     getActiveBackupFiles()[index].selected = result.selected;
                     updateCounts();
+                    renderFileFilterChips();
+                    scheduleRecoveryRefresh();
                 } else {
                     console.error('Error toggling file selection');
                 }
@@ -1585,6 +1784,7 @@
                 setActiveBackupFiles(result.backup_files || getActiveBackupFiles().map(file => ({ ...file, selected })));
                 renderBackupFiles();
                 updateCounts();
+                scheduleRecoveryRefresh();
             } catch (error) {
                 console.error('Bulk file selection error:', error);
                 showToast('Chyba pri hromadnom výbere: ' + error.message, 'error');
@@ -1596,15 +1796,20 @@
             const container = document.getElementById('backup-files-list');
             container.innerHTML = '';
             const activeFiles = getActiveBackupFiles();
+            const filter = FILE_FILTERS.find(item => item.id === activeFileFilter) || FILE_FILTERS[0];
+            renderFileFilterChips();
 
             const categories = backupCategories.length
                 ? backupCategories
                 : [{ id: 'system_config', name: 'Súbory', description: 'Vybrané položky zálohy' }];
 
+            let visibleCount = 0;
             categories.forEach(category => {
                 const filesInCategory = activeFiles
                     .map((file, index) => ({ file, index }))
-                    .filter(entry => (entry.file.category || 'system_config') === category.id);
+                    .filter(entry => (entry.file.category || 'system_config') === category.id)
+                    .filter(entry => filter.test(entry.file));
+                visibleCount += filesInCategory.length;
 
                 if (filesInCategory.length === 0) {
                     return;
@@ -1625,16 +1830,20 @@
                 
                 fileDiv.innerHTML = `
                     <label class="relative inline-flex items-center cursor-pointer">
-                        <input type="checkbox" data-path="${file.path}" data-index="${index}" ${file.selected ? 'checked' : ''} onchange="toggleFileSelection(${index})" class="sr-only peer file-checkbox">
+                        <input type="checkbox" data-path="${escapeHtml(file.path)}" data-index="${index}" ${file.selected ? 'checked' : ''} onchange="toggleFileSelection(${index})" class="sr-only peer file-checkbox" aria-label="${escapeHtml(file.name)}">
                         <div class="peer focus-visible:border-ring focus-visible:ring-ring/50 border-primary aria-checked:bg-primary aria-checked:text-primary-foreground peer-focus-visible:outline-none peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2 peer-disabled:cursor-not-allowed peer-disabled:opacity-50 aria-checked:border-primary h-4 w-4 shrink-0 rounded-sm border border-border bg-background shadow peer-checked:bg-primary peer-checked:border-primary">
                             <svg class="w-3 h-3 text-primary-foreground opacity-0 peer-checked:opacity-100" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                             </svg>
                         </div>
                     </label>
-                    <div class="flex-1 space-y-1">
-                        <div class="flex items-center gap-2">
-                            <span class="font-medium text-sm">${escapeHtml(file.name)}</span>
+                    <div class="min-w-0 flex-1 space-y-1.5">
+                        <div class="flex items-start justify-between gap-2">
+                            <span class="min-w-0 break-words font-medium text-sm">${escapeHtml(file.name)}</span>
+                            <button type="button" data-path="${escapeHtml(file.path)}" onclick="openItemDetail(this.dataset.path)" class="inline-flex shrink-0 items-center rounded-md border border-input bg-background px-2 py-0.5 text-xs font-medium hover:bg-accent" title="Prečo sa zálohuje a ako obnoviť">Detail</button>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-1.5">
+                            ${renderDrBadges(file.recovery, { compact: true })}
                             ${renderTags(file)}
                         </div>
                         <p class="text-sm text-muted-foreground">${escapeHtml(file.description || '')}</p>
@@ -1647,6 +1856,36 @@
 
                 container.appendChild(section);
             });
+
+            if (!visibleCount) {
+                container.innerHTML = `
+                    <div class="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
+                        Žiadna položka nezodpovedá filtru „${escapeHtml(filter.label)}“.
+                    </div>
+                `;
+            }
+            const summary = document.getElementById('file-filter-summary');
+            if (summary) {
+                summary.textContent = filter.id === 'all'
+                    ? `Zobrazené všetky položky (${activeFiles.length}).`
+                    : `Filter „${filter.label}“: ${visibleCount} z ${activeFiles.length} položiek. Výber a hromadné tlačidlá platia pre všetky položky, nielen zobrazené.`;
+            }
+        }
+
+        function renderFileFilterChips() {
+            const container = document.getElementById('file-filter-chips');
+            if (!container) return;
+            const activeFiles = getActiveBackupFiles();
+            container.innerHTML = FILE_FILTERS.filter(filter => !filter.hidden).map(filter => {
+                const count = activeFiles.filter(file => filter.test(file)).length;
+                const dot = filter.dr ? `<span class="dr-badge ${RESTORE_CATEGORY_CLASSES[filter.dr]} !px-1 !py-0" aria-hidden="true"></span>` : '';
+                return `<button type="button" class="filter-chip" aria-pressed="${filter.id === activeFileFilter}" onclick="setFileFilter('${filter.id}')">${dot}${escapeHtml(filter.label)} <span class="opacity-70">${count}</span></button>`;
+            }).join('');
+        }
+
+        function setFileFilter(filterId) {
+            activeFileFilter = FILE_FILTERS.some(filter => filter.id === filterId) ? filterId : 'all';
+            renderBackupFiles();
         }
 
         function escapeHtml(value) {
@@ -1688,18 +1927,13 @@
 
         // Update counts
         function updateCounts() {
-            const checkboxes = document.querySelectorAll('.file-checkbox');
-            const selectedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
-            const totalCount = checkboxes.length;
+            // Počty z dát, nie z DOM – filter skrýva časť kariet.
             const activeFiles = getActiveBackupFiles();
-            
-            const criticalBoxes = Array.from(checkboxes).filter(cb => {
-                const path = cb.dataset.path;
-                const file = activeFiles.find(f => f.path === path);
-                return file && file.critical;
-            });
-            const selectedCritical = criticalBoxes.filter(cb => cb.checked).length;
-            const totalCritical = criticalBoxes.length;
+            const selectedCount = activeFiles.filter(file => file.selected).length;
+            const totalCount = activeFiles.length;
+            const criticalFiles = activeFiles.filter(file => file.critical);
+            const selectedCritical = criticalFiles.filter(file => file.selected).length;
+            const totalCritical = criticalFiles.length;
             
             document.getElementById('files-count').textContent = `${selectedCount} z ${totalCount}`;
             document.getElementById('critical-count').textContent = `${selectedCritical} z ${totalCritical}`;
@@ -1805,6 +2039,7 @@
                 await loadConfig();
                 await loadBackups();
                 await loadRestoreArchives();
+                await loadRecoveryOverview();
                 
             } catch (error) {
                 console.error('Backup error:', error);
@@ -1984,6 +2219,7 @@
             if (!select) return;
             const currentValue = select.value;
 
+            renderSnapshotArchives();
             if (!restoreArchives.length) {
                 select.innerHTML = '<option value="">Žiadny archív nie je dostupný</option>';
                 restorePreviewItems = [];
@@ -2077,23 +2313,36 @@
                 const itemsInCategory = restorePreviewItems.filter(item => (item.category || 'system_config') === category.id);
                 if (!itemsInCategory.length) return '';
 
-                const rows = itemsInCategory.map(item => `
+                const rows = itemsInCategory.map(item => {
+                    const recovery = item.recovery || {};
+                    const policyNote = recovery.direct_restore_allowed === false
+                        ? `<p class="text-xs font-medium text-amber-800">Aplikácia túto položku nikdy priamo neprepíše – v oboch režimoch sa iba pripraví na kontrolu.</p>`
+                        : recovery.requires_review
+                            ? `<p class="text-xs text-amber-800">Pred priamym aplikovaním vyžaduje kontrolu a potvrdenie.</p>`
+                            : '';
+                    return `
                     <label class="flex items-start gap-3 rounded-lg border p-3">
-                        <input type="checkbox" class="restore-checkbox mt-1 h-4 w-4" data-path="${escapeHtml(item.path)}" checked onchange="updateRestoreButton()">
-                        <div class="flex-1 space-y-1">
-                            <div class="flex flex-wrap items-center gap-2">
-                                <span class="font-medium text-sm">${escapeHtml(item.name || item.path)}</span>
+                        <input type="checkbox" class="restore-checkbox mt-1 h-4 w-4 shrink-0" data-path="${escapeHtml(item.path)}" onchange="updateRestoreButton()">
+                        <div class="min-w-0 flex-1 space-y-1.5">
+                            <div class="flex items-start justify-between gap-2">
+                                <span class="min-w-0 break-words font-medium text-sm">${escapeHtml(item.name || item.path)}</span>
+                                <button type="button" data-path="${escapeHtml(item.path)}" onclick="event.preventDefault(); event.stopPropagation(); openItemDetail(this.dataset.path)" class="inline-flex shrink-0 items-center rounded-md border border-input bg-background px-2 py-0.5 text-xs font-medium hover:bg-accent">Detail</button>
+                            </div>
+                            <div class="flex flex-wrap items-center gap-1.5">
+                                ${renderDrBadges(recovery)}
                                 ${renderTags(item)}
                                 <button type="button" data-path="${escapeHtml(item.path)}" onclick="toggleRestoreMembers(event, this.dataset.path)" class="rounded-md bg-secondary px-2 py-0.5 text-[11px] font-semibold hover:bg-accent">
                                     ${item.member_count || 0} položiek
                                 </button>
                             </div>
                             <p class="text-sm text-muted-foreground">${escapeHtml(item.description || '')}</p>
+                            ${policyNote}
                             <p class="text-xs text-muted-foreground font-mono break-all">${escapeHtml(item.path)}</p>
                             <div class="restore-member-list hidden pt-2" data-path="${escapeHtml(item.path)}"></div>
                         </div>
                     </label>
-                `).join('');
+                `;
+                }).join('');
 
                 return `
                     <div class="space-y-3">
@@ -2115,14 +2364,12 @@
                         <button type="button" onclick="toggleAllRestoreMembers(event)" class="inline-flex items-center justify-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium shadow-xs hover:bg-accent">
                             Zobraziť celý obsah (${restorePreviewItems.reduce((sum, item) => sum + (Number(item.member_count) || 0), 0)})
                         </button>
-                        <button type="button" onclick="setAllRestoreSelection(true)" class="inline-flex items-center justify-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium shadow-xs hover:bg-accent">
-                            Vybrať všetko
-                        </button>
                         <button type="button" onclick="setAllRestoreSelection(false)" class="inline-flex items-center justify-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium shadow-xs hover:bg-accent">
                             Zrušiť výber
                         </button>
                     </div>
                 </div>
+                <p class="text-xs text-muted-foreground">Nič nie je predvolene vybrané. Vyber iba položky, ktoré naozaj chceš obnoviť – hromadné „obnov všetko“ zámerne neexistuje.</p>
                 <div id="restore-all-member-list" class="hidden"></div>
                 ${sections}
             `;
@@ -2218,6 +2465,7 @@
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape') closeMemberModal();
             if (e.key === 'Escape') closeConfirmModal(false);
+            if (e.key === 'Escape') closeItemDetail();
         });
 
         async function toggleAllRestoreMembers(event) {
@@ -2306,15 +2554,19 @@
             if (selectedCount) {
                 selectedCount.textContent = String(getSelectedRestorePaths().length);
             }
+            const plan = getRestorePlan();
+            renderRestorePlan(plan);
+            const ackOk = !plan.needsAck.length || document.getElementById('restore-ack')?.checked === true;
 
-            btn.disabled = !(hasSsh && archiveSelected && confirmed && hasPaths);
+            btn.disabled = !(hasSsh && archiveSelected && confirmed && hasPaths && ackOk);
             btn.classList.toggle('opacity-50', btn.disabled);
             btn.classList.toggle('cursor-not-allowed', btn.disabled);
         }
 
         async function runRestore() {
             const archiveId = document.getElementById('restore-archive-select').value;
-            const paths = getSelectedRestorePaths();
+            const plan = getRestorePlan();
+            const ackChecked = document.getElementById('restore-ack')?.checked === true;
             const resultBox = document.getElementById('restore-result');
             const status = document.getElementById('restore-status');
             const btn = document.getElementById('restore-btn');
@@ -2338,7 +2590,9 @@
                     },
                     body: JSON.stringify({
                         backup_id: archiveId,
-                        paths,
+                        paths: plan.apply,
+                        stage_paths: plan.stage,
+                        acknowledged_paths: ackChecked ? plan.needsAck : [],
                         source_config: getSourceConfigFromForm(),
                         confirm: document.getElementById('restore-confirm').value
                     })
@@ -2349,15 +2603,17 @@
                 }
 
                 const applied = result.applied || [];
+                const staged = result.staged || [];
                 const skipped = result.skipped || [];
                 resultBox.className = 'rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-900';
                 resultBox.innerHTML = `
                     <div class="font-medium">Obnova dokončená na ${escapeHtml(result.remote_host || 'remote host')}</div>
                     <div class="mt-1">Použitý archív: <span class="font-mono break-all">${escapeHtml(result.archive_filename || 'n/a')}</span></div>
                     <div class="mt-1">Zdroj archívu: ${escapeHtml(result.archive_source?.label || 'Lokálna kópia')}</div>
-                    <div class="mt-1">Rollback adresár: <span class="font-mono break-all">${escapeHtml(result.backup_dir || 'n/a')}</span></div>
-                    <div class="mt-2">Aplikované: ${applied.length} | Preskočené: ${skipped.length}</div>
-                    <div class="mt-2 text-xs">Skontroluj služby ručne. Aplikácia nerobí automatický reload ani restart Proxmox služieb.</div>
+                    ${result.backup_dir ? `<div class="mt-1">Rollback adresár: <span class="font-mono break-all">${escapeHtml(result.backup_dir)}</span></div>` : ''}
+                    ${result.review_dir ? `<div class="mt-1">Pripravené na kontrolu v: <span class="font-mono break-all">${escapeHtml(result.review_dir)}</span> (README-REVIEW.txt)</div>` : ''}
+                    <div class="mt-2">Aplikované: ${applied.length} | Iba pripravené: ${staged.length} | Preskočené: ${skipped.length}</div>
+                    <div class="mt-2 text-xs">Skontroluj služby ručne. Aplikácia nerobí automatický reload ani restart Proxmox služieb.${result.review_dir ? ' Review adresár po dokončení zmaž – môže obsahovať citlivé súbory.' : ''}</div>
                 `;
                 resultBox.classList.remove('hidden');
                 status.textContent = 'Restore dokončený';
@@ -2370,6 +2626,642 @@
             } finally {
                 btn.textContent = 'Spustiť obnovu';
                 updateRestoreButton();
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // Disaster recovery / Obnova na novom HW
+        // ---------------------------------------------------------------
+
+        function restoreCategoryMeta(categoryId) {
+            return restoreCategories.find(category => category.id === categoryId)
+                || { id: categoryId, label: categoryId, badge: String(categoryId || '').toUpperCase(), description: '' };
+        }
+
+        function formatInline(text) {
+            return escapeHtml(text).replace(/`([^`]+)`/g, '<code>$1</code>');
+        }
+
+        function formatDateTime(value) {
+            if (!value) return 'n/a';
+            const date = new Date(value);
+            return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('sk-SK', { dateStyle: 'short', timeStyle: 'short' });
+        }
+
+        function renderDrBadges(recovery, { compact = false } = {}) {
+            if (!recovery) return '';
+            const main = restoreCategoryMeta(recovery.restore_category);
+            let html = `<span class="dr-badge ${RESTORE_CATEGORY_CLASSES[main.id] || ''}" title="${escapeHtml(main.label)}">${escapeHtml(main.badge)}</span>`;
+            if (recovery.restore_category_alt) {
+                const alt = restoreCategoryMeta(recovery.restore_category_alt);
+                html += `<span class="dr-badge dr-alt ${RESTORE_CATEGORY_CLASSES[alt.id] || ''}" title="Alternatívne: ${escapeHtml(alt.label)}">${escapeHtml(alt.badge)}</span>`;
+            }
+            if (recovery.advanced_restore) {
+                html += '<span class="dr-flag dr-flag-danger" title="Obnova iba kontrolovaným ručným postupom">ADVANCED RESTORE</span>';
+            }
+            if (!compact) {
+                if (recovery.direct_restore_allowed === false && !recovery.advanced_restore) {
+                    html += '<span class="dr-flag dr-flag-warn" title="Aplikácia ju nikdy priamo neprepíše">NEPREPISOVAŤ PRIAMO</span>';
+                }
+                if (recovery.hardware_dependent) {
+                    html += '<span class="dr-flag dr-flag-warn" title="Závisí od hardvéru">HW-ZÁVISLÉ</span>';
+                }
+                if (recovery.sensitivity === 'secret') {
+                    html += '<span class="dr-flag dr-flag-danger" title="Obsahuje tajomstvá">SECRET</span>';
+                }
+            }
+            return html;
+        }
+
+        function backupStatusClass(status) {
+            if (status === 'ok') return 'readiness-READY';
+            if (status === 'missing') return 'readiness-INCOMPLETE';
+            return 'readiness-WARNING';
+        }
+
+        function scheduleRecoveryRefresh() {
+            clearTimeout(recoveryRefreshTimer);
+            recoveryRefreshTimer = setTimeout(loadRecoveryOverview, 600);
+        }
+
+        async function loadRecoveryOverview() {
+            try {
+                const response = await fetch('/api/recovery/overview');
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !data.success) {
+                    throw new Error(data.error || 'Prehľad obnovy sa nepodarilo načítať');
+                }
+                recoveryOverview = data;
+                if (Array.isArray(data.categories) && data.categories.length) {
+                    restoreCategories = data.categories;
+                }
+                renderReadinessMini();
+                renderRecoveryOverview();
+                renderRecoveryItems();
+                renderRecoveryChecklist();
+                if (!currentWikiSlug) renderWikiIndex();
+            } catch (error) {
+                console.error('Recovery overview error:', error);
+                const mini = document.getElementById('readiness-mini');
+                if (mini) mini.textContent = 'nedostupné';
+                const container = document.getElementById('rsec-overview');
+                if (container) {
+                    container.innerHTML = `<div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">${escapeHtml(error.message)}</div>`;
+                }
+            }
+        }
+
+        function renderReadinessMini() {
+            const mini = document.getElementById('readiness-mini');
+            const readiness = recoveryOverview?.readiness;
+            if (!mini || !readiness) return;
+            mini.className = `inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold readiness-${readiness.status}`;
+            mini.textContent = `${readiness.status} · REQUIRED ${readiness.required_ok}/${readiness.required_total}`;
+            mini.title = readiness.label;
+        }
+
+        function showRecoverySection(section) {
+            const allowed = ['overview', 'checklist', 'items', 'snapshot', 'wiki'];
+            recoverySection = allowed.includes(section) ? section : 'overview';
+            document.querySelectorAll('.recovery-section').forEach(el => {
+                el.classList.toggle('hidden', el.id !== `rsec-${recoverySection}`);
+            });
+            document.querySelectorAll('#recovery-subnav [data-rsec]').forEach(btn => {
+                btn.setAttribute('aria-pressed', String(btn.dataset.rsec === recoverySection));
+            });
+            if (recoverySection === 'wiki' && !currentWikiSlug) {
+                renderWikiIndex();
+            }
+            if (recoverySection !== 'wiki' && location.hash.startsWith('#wiki')) {
+                history.replaceState(null, '', location.pathname + location.search);
+            }
+        }
+
+        function renderRecoveryOverview() {
+            const container = document.getElementById('rsec-overview');
+            if (!container || !recoveryOverview) return;
+            const readiness = recoveryOverview.readiness;
+            const latest = readiness.latest_backup;
+            const issues = (readiness.issues || []).map(issue => `
+                <li class="flex items-start gap-2">
+                    <span class="mt-0.5 shrink-0 font-bold">${issue.level === 'error' ? '✕' : '!'}</span>
+                    <span class="min-w-0"><span class="font-medium">${escapeHtml(issue.name)}</span> <span class="font-mono text-xs break-all">${escapeHtml(issue.path)}</span> – ${escapeHtml(issue.message)}</span>
+                </li>
+            `).join('');
+            const categoryCards = (recoveryOverview.categories || []).map(category => `
+                <button type="button" onclick="showRecoverySection('items'); document.getElementById('rgroup-${escapeHtml(category.id)}')?.scrollIntoView({ behavior: 'smooth', block: 'start' })" class="flex min-w-0 flex-col items-start gap-1.5 rounded-lg border p-3 text-left hover:bg-accent/50">
+                    <span class="dr-badge ${RESTORE_CATEGORY_CLASSES[category.id] || ''}">${escapeHtml(category.badge)}</span>
+                    <span class="text-sm font-medium">${escapeHtml(category.label)}</span>
+                    <span class="text-sm"><span class="font-semibold">${category.backed_up}/${category.total}</span> <span class="text-muted-foreground">aktuálne zálohované</span></span>
+                    <span class="text-xs text-muted-foreground">${escapeHtml(category.description)}</span>
+                </button>
+            `).join('');
+
+            container.innerHTML = `
+                <div class="rounded-xl border p-4 readiness-${readiness.status}">
+                    <div class="flex flex-wrap items-start justify-between gap-3">
+                        <div class="min-w-0">
+                            <div class="text-xs font-semibold uppercase tracking-wide">New HW recovery readiness</div>
+                            <div class="text-2xl font-bold leading-tight">${escapeHtml(readiness.status)}</div>
+                            <div class="text-sm">${escapeHtml(readiness.label)}</div>
+                        </div>
+                        <div class="text-sm sm:text-right">
+                            <div><span class="font-semibold">REQUIRED ${readiness.required_ok}/${readiness.required_total}</span> aktuálne mimo hosta</div>
+                            <div class="text-xs">Posledná záloha: ${latest ? `${escapeHtml(formatDateTime(latest.timestamp))} · FTP ${escapeHtml(latest.ftp_status || 'n/a')}` : 'žiadna'}</div>
+                        </div>
+                    </div>
+                    ${issues ? `<ul class="mt-3 space-y-1 text-sm">${issues}</ul>` : ''}
+                    <details class="mt-3 text-sm">
+                        <summary class="cursor-pointer font-medium">Ako sa stav počíta</summary>
+                        <ul class="mt-2 list-disc space-y-1 pl-5">${(readiness.rules || []).map(rule => `<li>${escapeHtml(rule)}</li>`).join('')}</ul>
+                    </details>
+                </div>
+
+                <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">${categoryCards}</div>
+
+                <div class="grid gap-3 md:grid-cols-2">
+                    <div class="space-y-2 rounded-lg border p-4 text-sm">
+                        <div class="font-semibold">Čo aplikácia obnovuje a čo nie</div>
+                        <ul class="list-disc space-y-1 pl-5 text-muted-foreground">
+                            <li>Nič sa neobnovuje samo – vyberáš konkrétne cesty a potvrdzuješ textom OBNOVIT.</li>
+                            <li>Režim „Iba pripraviť na kontrolu“ rozbalí súbory do <code>/root</code> bez zásahu do systému.</li>
+                            <li>/etc/pve, config.db, passwd, group, shadow a /etc/apt sa nikdy priamo neprepisujú.</li>
+                            <li>REVIEW / SELECTIVE / REFERENCE položky vyžadujú pred aplikovaním potvrdenie kontroly.</li>
+                        </ul>
+                    </div>
+                    <div class="space-y-2 rounded-lg border p-4 text-sm">
+                        <div class="font-semibold">Pôvodný server zomrel?</div>
+                        <p class="text-muted-foreground">Choď krok po kroku: čistá inštalácia → minimálna sieť → prístup k NAS → porovnanie HW → PVE konfigurácia → selektívne veci → VM/LXC → kontrola.</p>
+                        <div class="flex flex-wrap gap-2 pt-1">
+                            <button type="button" onclick="showRecoverySection('checklist')" class="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90">Začať postup obnovy</button>
+                            <button type="button" onclick="openWikiArticle('new-hardware')" class="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 text-sm font-medium hover:bg-accent">Wiki: obnova na novom HW</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderRecoveryItems() {
+            const container = document.getElementById('rsec-items');
+            if (!container || !recoveryOverview) return;
+            const items = recoveryOverview.items || [];
+            container.innerHTML = (recoveryOverview.categories || []).map(category => {
+                const inCategory = items.filter(item => item.recovery?.restore_category === category.id);
+                if (!inCategory.length) return '';
+                const cards = inCategory.map(item => {
+                    const status = item.backup_status || {};
+                    const notSelected = !item.selected_manual && !item.selected_auto
+                        ? '<span class="dr-flag dr-flag-muted">nevybrané pre zálohu</span>'
+                        : '';
+                    return `
+                        <div class="flex min-w-0 flex-col gap-1.5 rounded-lg border p-3">
+                            <div class="flex items-start justify-between gap-2">
+                                <span class="min-w-0 break-words text-sm font-medium">${escapeHtml(item.name)}</span>
+                                <button type="button" data-path="${escapeHtml(item.path)}" onclick="openItemDetail(this.dataset.path)" class="inline-flex shrink-0 items-center rounded-md border border-input bg-background px-2 py-0.5 text-xs font-medium hover:bg-accent">Detail</button>
+                            </div>
+                            <p class="font-mono text-xs text-muted-foreground break-all">${escapeHtml(item.path)}</p>
+                            <div class="flex flex-wrap items-center gap-1.5">
+                                ${renderDrBadges(item.recovery)}
+                                <span class="dr-flag ${backupStatusClass(status.status)}" title="${escapeHtml(status.label || '')}">${escapeHtml(status.status === 'ok' ? 'zálohované' : status.status === 'local_only' ? 'iba lokálne' : status.status === 'stale' ? 'stará záloha' : 'nezálohované')}</span>
+                                ${notSelected}
+                            </div>
+                            <p class="text-xs text-muted-foreground">${formatInline(item.recovery?.why_backup || item.description || '')}</p>
+                        </div>
+                    `;
+                }).join('');
+                return `
+                    <section id="rgroup-${escapeHtml(category.id)}" class="scroll-mt-4 space-y-3">
+                        <div class="space-y-1">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <span class="dr-badge ${RESTORE_CATEGORY_CLASSES[category.id] || ''}">${escapeHtml(category.badge)}</span>
+                                <h3 class="text-sm font-semibold">${escapeHtml(category.label)}</h3>
+                                <span class="text-xs text-muted-foreground">${category.backed_up}/${category.total} aktuálne zálohované</span>
+                            </div>
+                            <p class="text-xs text-muted-foreground">${escapeHtml(category.description)}</p>
+                        </div>
+                        <div class="grid gap-3 md:grid-cols-2">${cards}</div>
+                    </section>
+                `;
+            }).join('') + `
+                <div class="rounded-lg border border-dashed p-3 text-sm">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <span class="dr-badge dr-reference">REFERENCE ONLY</span>
+                        <span class="font-medium">Host recovery metadata (backup-info/)</span>
+                    </div>
+                    <p class="mt-1 text-xs text-muted-foreground">Automaticky v každom archíve: pveversion, NIC, IP, disky, UUID, storage, PCI. Nikdy sa neobnovuje.</p>
+                    <button type="button" onclick="showRecoverySection('snapshot')" class="mt-2 inline-flex items-center rounded-md border border-input bg-background px-2 py-0.5 text-xs font-medium hover:bg-accent">Zobraziť snapshot</button>
+                </div>
+            `;
+        }
+
+        function loadChecklistState() {
+            try {
+                return JSON.parse(localStorage.getItem(CHECKLIST_STORAGE_KEY) || '{}') || {};
+            } catch (error) {
+                return {};
+            }
+        }
+
+        function saveChecklistState(state) {
+            try {
+                localStorage.setItem(CHECKLIST_STORAGE_KEY, JSON.stringify(state));
+            } catch (error) {
+                // localStorage môže byť zablokovaný; postup potom platí iba pre aktuálnu stránku.
+            }
+        }
+
+        function toggleChecklistStep(stepId, checked) {
+            const state = loadChecklistState();
+            if (checked) state[stepId] = true; else delete state[stepId];
+            saveChecklistState(state);
+            renderRecoveryChecklist();
+        }
+
+        async function resetChecklist() {
+            const confirmed = await showConfirmModal({
+                title: 'Resetovať postup obnovy',
+                message: 'Odznačia sa všetky kroky checklistu v tomto prehliadači.',
+                confirmText: 'Resetovať'
+            });
+            if (!confirmed) return;
+            saveChecklistState({});
+            renderRecoveryChecklist();
+        }
+
+        function renderRecoveryChecklist() {
+            const container = document.getElementById('rsec-checklist');
+            if (!container || !recoveryOverview) return;
+            const steps = recoveryOverview.checklist || [];
+            const state = loadChecklistState();
+            const done = steps.filter(step => state[step.id]).length;
+            const percent = steps.length ? Math.round((done / steps.length) * 100) : 0;
+            const items = recoveryOverview.items || [];
+
+            const stepCards = steps.map(step => {
+                const checked = Boolean(state[step.id]);
+                const related = items.filter(item => item.recovery?.restore_order === step.step);
+                const relatedHtml = related.length ? `
+                    <div class="space-y-1.5">
+                        <div class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Položky zálohy v tomto kroku</div>
+                        <div class="flex flex-wrap gap-1.5">${related.map(item => `
+                            <button type="button" data-path="${escapeHtml(item.path)}" onclick="openItemDetail(this.dataset.path)" class="inline-flex max-w-full items-center gap-1.5 rounded-md border border-input bg-background px-2 py-1 text-left text-xs hover:bg-accent">
+                                <span class="dr-badge ${RESTORE_CATEGORY_CLASSES[item.recovery.restore_category] || ''} !px-1 !py-0" aria-hidden="true"></span>
+                                <span class="min-w-0 break-all font-mono">${escapeHtml(item.path)}</span>
+                            </button>
+                        `).join('')}</div>
+                    </div>
+                ` : '';
+                return `
+                    <div class="rounded-lg border p-3 sm:p-4 ${checked ? 'bg-muted/40' : ''}">
+                        <div class="flex items-start gap-3">
+                            <input type="checkbox" class="step-check mt-0.5" id="step-check-${step.step}" ${checked ? 'checked' : ''} onchange="toggleChecklistStep('${escapeHtml(step.id)}', this.checked)">
+                            <div class="min-w-0 flex-1 space-y-2">
+                                <label for="step-check-${step.step}" class="block cursor-pointer">
+                                    <span class="block text-xs font-semibold uppercase tracking-wide text-muted-foreground">Krok ${step.step}</span>
+                                    <span class="block font-medium ${checked ? 'line-through opacity-70' : ''}">${escapeHtml(step.title)}</span>
+                                </label>
+                                <p class="text-sm text-muted-foreground">${formatInline(step.goal)}</p>
+                                ${step.danger ? `<div class="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">${formatInline(step.danger)}</div>` : ''}
+                                <details>
+                                    <summary class="cursor-pointer select-none py-1 text-sm font-medium">Úlohy a príkazy</summary>
+                                    <div class="mt-2 space-y-3">
+                                        <ul class="list-disc space-y-1 pl-5 text-sm">${(step.tasks || []).map(task => `<li>${formatInline(task)}</li>`).join('')}</ul>
+                                        ${(step.commands || []).length ? `<pre class="dr-pre">${escapeHtml(step.commands.join('\n'))}</pre>` : ''}
+                                        ${relatedHtml}
+                                        ${step.wiki_slug ? `<button type="button" onclick="openWikiArticle('${escapeHtml(step.wiki_slug)}')" class="inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent">Wiki k tomuto kroku</button>` : ''}
+                                    </div>
+                                </details>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            container.innerHTML = `
+                <div class="space-y-2">
+                    <div class="flex flex-wrap items-center justify-between gap-2 text-sm">
+                        <span><span class="font-semibold">${done} z ${steps.length}</span> krokov hotových</span>
+                        <button type="button" onclick="resetChecklist()" class="inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent">Resetovať postup</button>
+                    </div>
+                    <div class="relative h-2 w-full overflow-hidden rounded-full bg-secondary" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}">
+                        <div class="h-full bg-primary transition-all" style="width:${percent}%"></div>
+                    </div>
+                    <p class="text-xs text-muted-foreground">Postup sa ukladá iba v tomto prehliadači. Odporúčanie: počas obnovy maj aplikáciu otvorenú na mobile a pracuj na konzole servera.</p>
+                </div>
+                ${stepCards}
+            `;
+        }
+
+        function findItemForDetail(path) {
+            const pools = [recoveryOverview?.items || [], backupFiles, autoBackupFiles, restorePreviewItems];
+            for (const pool of pools) {
+                const found = pool.find(item => item.path === path && item.recovery);
+                if (found) return found;
+            }
+            return null;
+        }
+
+        function renderDetailList(items) {
+            if (!items || !items.length) return '<p class="text-muted-foreground">—</p>';
+            return `<ul class="list-disc space-y-1 pl-5">${items.map(item => `<li>${formatInline(item)}</li>`).join('')}</ul>`;
+        }
+
+        function openItemDetail(path) {
+            const item = findItemForDetail(path);
+            if (!item) {
+                showToast('Detail položky sa nepodarilo načítať', 'error');
+                return;
+            }
+            const recovery = item.recovery;
+            const category = restoreCategoryMeta(recovery.restore_category);
+            const altCategory = recovery.restore_category_alt ? restoreCategoryMeta(recovery.restore_category_alt) : null;
+            const status = item.backup_status;
+            const wiki = (recoveryOverview?.wiki || []).find(article => article.slug === recovery.wiki_slug);
+
+            let directText;
+            if (recovery.wildcard) {
+                directText = 'Wildcard položka – aplikácia ju neobnovuje, obnov ju ručne z rozbaleného archívu.';
+            } else if (!recovery.direct_restore_allowed) {
+                directText = 'Nie. Aplikácia ju nikdy priamo neprepíše – vie ju iba pripraviť do review adresára v /root. Samotnú obnovu urob ručne podľa Wiki.';
+            } else if (recovery.requires_review) {
+                directText = 'Áno, ale až po kontrole. Pri priamom aplikovaní musíš výslovne potvrdiť, že si obsah porovnal. Na novom HW preferuj „Iba pripraviť na kontrolu“.';
+            } else {
+                directText = 'Áno. Aplikácia pred prepisom uloží pôvodný stav do pre-apply adresára v /root.';
+            }
+
+            const warnings = [...(recovery.warnings || [])];
+            if (recovery.sensitivity === 'secret') {
+                warnings.push('SECURITY: obsah tejto položky sa vo web UI nikdy nezobrazuje – iba cesta a metadáta.');
+            }
+
+            document.getElementById('item-detail-title').textContent = item.name || item.path;
+            document.getElementById('item-detail-path').textContent = item.path;
+            document.getElementById('item-detail-body').innerHTML = `
+                <div class="flex flex-wrap items-center gap-1.5">${renderDrBadges(recovery)}${renderTags(item)}</div>
+                <div class="rounded-lg border p-3">
+                    <div class="font-medium">${escapeHtml(category.label)}${altCategory ? ` <span class="font-normal text-muted-foreground">/ ${escapeHtml(altCategory.label)}</span>` : ''}</div>
+                    <p class="mt-1 text-muted-foreground">${escapeHtml(category.description)}</p>
+                    <p class="mt-1 text-xs text-muted-foreground">Krok obnovy: ${escapeHtml(recovery.restore_order ?? '—')} · ${recovery.required_for_new_hardware ? 'potrebné pre nový HW' : 'nie je nevyhnutné pre nový HW'}${recovery.classified ? '' : ' · neklasifikovaná vlastná položka'}</p>
+                </div>
+                ${status ? `<div class="rounded-lg border px-3 py-2 ${backupStatusClass(status.status)}">
+                    <div class="font-medium">${escapeHtml(status.label)}</div>
+                    <div class="text-xs">Posledná záloha: ${escapeHtml(formatDateTime(status.last_backup))} · mimo hosta: ${escapeHtml(formatDateTime(status.last_offsite_backup))}</div>
+                </div>` : ''}
+                <div><h3 class="mb-1 font-semibold">Prečo sa zálohuje</h3><p>${formatInline(recovery.why_backup)}</p></div>
+                <div><h3 class="mb-1 font-semibold">Čo obsahuje</h3>${renderDetailList(recovery.contains)}</div>
+                <div><h3 class="mb-1 font-semibold">Kedy je potrebná</h3><p>${formatInline(recovery.when_needed)}</p></div>
+                <div><h3 class="mb-1 font-semibold">Dá sa obnoviť priamo?</h3><p>${escapeHtml(directText)}</p></div>
+                ${warnings.length ? `<div class="rounded-lg border border-red-200 bg-red-50 p-3 text-red-800"><h3 class="mb-1 font-semibold">Riziká a upozornenia</h3>${renderDetailList(warnings)}</div>` : ''}
+                <div class="grid gap-3 md:grid-cols-2">
+                    <div class="rounded-lg border p-3"><h3 class="mb-1 font-semibold">Obnova na rovnakom HW</h3><p>${formatInline(recovery.restore_same_hardware)}</p></div>
+                    <div class="rounded-lg border p-3 ${recovery.hardware_dependent ? 'border-amber-200 bg-amber-50 text-amber-900' : ''}"><h3 class="mb-1 font-semibold">Obnova na inom HW</h3><p>${formatInline(recovery.restore_new_hardware)}</p></div>
+                </div>
+                <div class="grid gap-3 md:grid-cols-2">
+                    <div><h3 class="mb-1 font-semibold">Pred obnovou skontrolovať</h3>${renderDetailList(recovery.before_restore)}</div>
+                    <div><h3 class="mb-1 font-semibold">Po obnove skontrolovať</h3>${renderDetailList(recovery.after_restore)}</div>
+                </div>
+                ${recovery.wiki_slug ? `<button type="button" onclick="openWikiArticle('${escapeHtml(recovery.wiki_slug)}')" class="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90">Wiki: ${escapeHtml(wiki?.title || recovery.wiki_slug)}</button>` : ''}
+            `;
+            const overlay = document.getElementById('item-detail-overlay');
+            overlay.classList.remove('hidden');
+            overlay.classList.add('flex');
+            document.body.style.overflow = 'hidden';
+            document.getElementById('item-detail-body').scrollTop = 0;
+        }
+
+        function closeItemDetail() {
+            const overlay = document.getElementById('item-detail-overlay');
+            if (!overlay || overlay.classList.contains('hidden')) return;
+            overlay.classList.add('hidden');
+            overlay.classList.remove('flex');
+            document.body.style.overflow = '';
+        }
+
+        function renderWikiIndex() {
+            const container = document.getElementById('rsec-wiki');
+            if (!container) return;
+            currentWikiSlug = '';
+            const articles = recoveryOverview?.wiki || [];
+            container.innerHTML = `
+                <p class="text-sm text-muted-foreground">Praktické postupy pre obnovu Proxmox hosta. Príkazy sú príklady – IP adresy, názvy NIC a storage uprav podľa svojho prostredia.</p>
+                <div class="grid gap-3 sm:grid-cols-2">${articles.map((article, index) => `
+                    <button type="button" onclick="openWikiArticle('${escapeHtml(article.slug)}')" class="flex min-w-0 flex-col items-start gap-1 rounded-lg border p-3 text-left hover:bg-accent/50">
+                        <span class="text-xs font-semibold text-muted-foreground">${index + 1}.</span>
+                        <span class="text-sm font-medium">${escapeHtml(article.title)}</span>
+                        <span class="text-xs text-muted-foreground">${escapeHtml(article.summary)}</span>
+                    </button>
+                `).join('')}</div>
+            `;
+        }
+
+        function renderWikiBlocks(blocks) {
+            return (blocks || []).map(block => {
+                switch (block.type) {
+                    case 'h':
+                        return `<h3 class="pt-2 text-base font-semibold">${formatInline(block.text)}</h3>`;
+                    case 'p':
+                        return `<p class="text-sm">${formatInline(block.text)}</p>`;
+                    case 'ul':
+                        return `<ul class="list-disc space-y-1 pl-5 text-sm">${block.items.map(item => `<li>${formatInline(item)}</li>`).join('')}</ul>`;
+                    case 'ol':
+                        return `<ol class="list-decimal space-y-1 pl-5 text-sm">${block.items.map(item => `<li>${formatInline(item)}</li>`).join('')}</ol>`;
+                    case 'code':
+                        return `<pre class="dr-pre">${escapeHtml(block.text)}</pre>`;
+                    case 'warn':
+                        return `<div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"><span class="font-semibold">Pozor:</span> ${formatInline(block.text)}</div>`;
+                    case 'danger':
+                        return `<div class="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"><span class="font-semibold">Nebezpečné:</span> ${formatInline(block.text)}</div>`;
+                    case 'tip':
+                        return `<div class="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900"><span class="font-semibold">Tip:</span> ${formatInline(block.text)}</div>`;
+                    default:
+                        return '';
+                }
+            }).join('');
+        }
+
+        async function openWikiArticle(slug) {
+            closeItemDetail();
+            const recoveryContent = document.getElementById('content-recovery');
+            if (recoveryContent?.classList.contains('hidden')) {
+                showTab('recovery');
+            }
+            currentWikiSlug = slug;
+            showRecoverySection('wiki');
+            const container = document.getElementById('rsec-wiki');
+            container.innerHTML = '<div class="text-sm text-muted-foreground">Načítavam článok…</div>';
+            history.replaceState(null, '', `#wiki/${encodeURIComponent(slug)}`);
+            try {
+                const response = await fetch(`/api/recovery/wiki/${encodeURIComponent(slug)}`);
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !data.success) {
+                    throw new Error(data.error || 'Článok sa nepodarilo načítať');
+                }
+                const article = data.article;
+                const related = data.related_items || [];
+                container.innerHTML = `
+                    <button type="button" onclick="currentWikiSlug=''; history.replaceState(null, '', '#wiki'); renderWikiIndex()" class="inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent">← Všetky články</button>
+                    <article class="wiki-body space-y-3">
+                        <h2 class="text-lg font-semibold leading-snug">${escapeHtml(article.title)}</h2>
+                        <p class="text-sm text-muted-foreground">${escapeHtml(article.summary)}</p>
+                        ${renderWikiBlocks(article.blocks)}
+                    </article>
+                    ${related.length ? `
+                        <div class="space-y-1.5 border-t pt-3">
+                            <div class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Súvisiace položky zálohy</div>
+                            <div class="flex flex-wrap gap-1.5">${related.map(item => `
+                                <button type="button" data-path="${escapeHtml(item.path)}" onclick="openItemDetail(this.dataset.path)" class="inline-flex max-w-full items-center rounded-md border border-input bg-background px-2 py-1 text-left text-xs hover:bg-accent"><span class="min-w-0 break-all font-mono">${escapeHtml(item.path)}</span></button>
+                            `).join('')}</div>
+                        </div>
+                    ` : ''}
+                `;
+                document.getElementById('content-recovery')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } catch (error) {
+                container.innerHTML = `<div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">${escapeHtml(error.message)}</div>`;
+            }
+        }
+
+        function handleRecoveryHash() {
+            const hash = location.hash || '';
+            if (!hash.startsWith('#wiki')) return;
+            const slug = decodeURIComponent(hash.replace(/^#wiki\/?/, ''));
+            if (document.getElementById('content-recovery')?.classList.contains('hidden')) {
+                showTab('recovery');
+            }
+            if (slug) {
+                if (slug !== currentWikiSlug) openWikiArticle(slug);
+            } else {
+                currentWikiSlug = '';
+                showRecoverySection('wiki');
+            }
+        }
+
+        function renderSnapshotArchives() {
+            const select = document.getElementById('snapshot-archive-select');
+            if (!select) return;
+            const current = select.value;
+            if (!restoreArchives.length) {
+                select.innerHTML = '<option value="">Žiadny archív nie je dostupný</option>';
+                return;
+            }
+            select.innerHTML = restoreArchives.map(archive => {
+                const where = (archive.storage_locations || []).includes('local') ? 'lokálne' : 'FTP';
+                const label = `${archive.timestamp ? formatDateTime(archive.timestamp) : 'bez dátumu'} · ${archive.source_host || 'host'} · ${where}`;
+                return `<option value="${escapeHtml(archive.id)}">${escapeHtml(label)}</option>`;
+            }).join('');
+            if (current && restoreArchives.some(archive => String(archive.id) === String(current))) {
+                select.value = current;
+            }
+        }
+
+        async function loadHostSnapshot() {
+            const select = document.getElementById('snapshot-archive-select');
+            const result = document.getElementById('snapshot-result');
+            const btn = document.getElementById('snapshot-load-btn');
+            if (!select?.value) {
+                showToast('Vyber archív', 'warning');
+                return;
+            }
+            btn.disabled = true;
+            result.innerHTML = '<div class="text-sm text-muted-foreground">Načítavam snapshot (FTP archív sa najprv stiahne)…</div>';
+            try {
+                const response = await fetch(`/api/recovery/snapshot/${encodeURIComponent(select.value)}`);
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !data.success) {
+                    throw new Error(data.error || 'Snapshot sa nepodarilo načítať');
+                }
+                const openByDefault = new Set(['hostname.txt', 'pveversion-v.txt', 'ip-br-link.txt', 'lsblk-f.txt', 'pvesm-status.txt']);
+                const availableCount = data.files.filter(file => file.available).length;
+                result.innerHTML = `
+                    <p class="text-xs text-muted-foreground">Archív: <span class="font-mono break-all">${escapeHtml(data.archive.filename)}</span> · ${availableCount}/${data.files.length} výstupov</p>
+                    ${availableCount ? '' : '<div class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">Tento archív neobsahuje DR snapshot (pravdepodobne starší archív). Nová záloha ho už bude mať.</div>'}
+                    ${data.files.map(file => {
+                        let statusText = 'OK';
+                        let body;
+                        if (!file.available) {
+                            statusText = 'chýba';
+                            body = '<p class="text-xs text-muted-foreground">Výstup nie je v archíve (starší archív).</p>';
+                        } else if (file.error) {
+                            statusText = 'nedostupné';
+                            body = `<p class="text-xs text-muted-foreground">Príkaz na hoste nebol dostupný: <span class="font-mono break-all">${escapeHtml(file.error)}</span></p>`;
+                        } else {
+                            if (file.exit_code) statusText = `exit ${file.exit_code}`;
+                            body = `
+                                <pre class="dr-pre max-h-80 overflow-y-auto">${escapeHtml(file.stdout || '(prázdny výstup)')}</pre>
+                                ${file.stderr ? `<pre class="dr-pre mt-2 max-h-40 overflow-y-auto text-muted-foreground">${escapeHtml(file.stderr)}</pre>` : ''}
+                                ${file.truncated ? '<p class="mt-1 text-xs text-amber-800">Výstup je skrátený.</p>' : ''}
+                            `;
+                        }
+                        return `
+                            <details class="rounded-lg border px-3 py-2" ${file.available && !file.error && openByDefault.has(file.file) ? 'open' : ''}>
+                                <summary class="flex cursor-pointer flex-wrap items-center justify-between gap-2 py-1 text-sm">
+                                    <span class="min-w-0 font-medium">${escapeHtml(file.label)}</span>
+                                    <span class="text-xs text-muted-foreground">${escapeHtml(statusText)}</span>
+                                </summary>
+                                <div class="mt-2">
+                                    ${file.command ? `<p class="mb-1 font-mono text-xs text-muted-foreground break-all">$ ${escapeHtml(file.command)}</p>` : ''}
+                                    ${body}
+                                </div>
+                            </details>
+                        `;
+                    }).join('')}
+                `;
+                if (data.cached) {
+                    await loadBackups();
+                    await loadRestoreArchives();
+                }
+            } catch (error) {
+                result.innerHTML = `<div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">${escapeHtml(error.message)}</div>`;
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        function getRestoreMode() {
+            return document.querySelector('input[name="restore-mode"]:checked')?.value === 'apply' ? 'apply' : 'stage';
+        }
+
+        function getRestorePlan() {
+            const mode = getRestoreMode();
+            const selected = getSelectedRestorePaths();
+            const itemFor = path => restorePreviewItems.find(item => item.path === path) || {};
+            if (mode === 'stage') {
+                return { mode, apply: [], stage: selected, needsAck: [] };
+            }
+            const apply = selected.filter(path => itemFor(path).recovery?.direct_restore_allowed !== false);
+            const stage = selected.filter(path => !apply.includes(path));
+            const needsAck = apply.filter(path => itemFor(path).recovery?.requires_review);
+            return { mode, apply, stage, needsAck };
+        }
+
+        function renderRestorePlan(plan) {
+            const summary = document.getElementById('restore-plan-summary');
+            const ackBox = document.getElementById('restore-ack-box');
+            const ackList = document.getElementById('restore-ack-list');
+            const ackInput = document.getElementById('restore-ack');
+            if (!summary || !ackBox) return;
+
+            const total = plan.apply.length + plan.stage.length;
+            summary.classList.toggle('hidden', total === 0);
+            if (total) {
+                const describe = paths => paths.map(path => `<span class="font-mono text-xs break-all">${escapeHtml(path)}</span>`).join(', ');
+                summary.innerHTML = `
+                    <div class="font-medium">Plán obnovy</div>
+                    ${plan.apply.length ? `<div class="mt-1">Aplikuje sa na host (${plan.apply.length}): ${describe(plan.apply)}</div>` : ''}
+                    ${plan.stage.length ? `<div class="mt-1">Iba pripraví na kontrolu (${plan.stage.length}): ${describe(plan.stage)}</div>` : ''}
+                `;
+            }
+
+            const key = plan.needsAck.join('|');
+            if (key !== restoreAckKey && ackInput) {
+                ackInput.checked = false;
+                restoreAckKey = key;
+            }
+            ackBox.classList.toggle('hidden', plan.needsAck.length === 0);
+            if (ackList) {
+                ackList.innerHTML = plan.needsAck.map(path => {
+                    const item = restorePreviewItems.find(entry => entry.path === path) || { path };
+                    return `<li class="flex flex-wrap items-center gap-1.5">${renderDrBadges(item.recovery, { compact: true })}<span class="font-mono text-xs break-all">${escapeHtml(path)}</span></li>`;
+                }).join('');
             }
         }
 

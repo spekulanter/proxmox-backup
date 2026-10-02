@@ -12,6 +12,7 @@ import fnmatch
 import subprocess
 import shlex
 import posixpath
+import re
 from datetime import datetime
 import time
 import base64
@@ -25,6 +26,20 @@ import urllib.parse
 import urllib.request
 from datetime import timedelta
 from werkzeug.security import generate_password_hash, check_password_hash
+
+from recovery_data import (
+    FALLBACK_RECOVERY_PROFILE,
+    HOST_SNAPSHOT_FILE_NAMES,
+    HOST_SNAPSHOT_FILES,
+    RECOVERY_CHECKLIST,
+    RECOVERY_PROFILES,
+    RESTORE_CATEGORIES,
+    RESTORE_CATEGORY_IDS,
+    RESTORE_POLICIES,
+    REVIEW_CATEGORY_IDS,
+    SENSITIVITY_LEVELS,
+    WIKI_ARTICLES,
+)
 
 app = Flask(__name__)
 app.secret_key = 'proxmox-backup-secret-key-change-in-production'
@@ -403,22 +418,37 @@ RETIRED_BACKUP_PATHS = {
     '/etc/ssl/pve',
 }
 
+# Diagnostika hosta do backup-info/. Časť z nich tvorí DR metadata snapshot (REFERENCE ONLY,
+# HOST_SNAPSHOT_FILES v recovery_data.py). Chýbajúci príkaz zapíše chybu, záloha nezlyhá.
 INFO_COMMANDS = [
     ('pveversion-v.txt', ['pveversion', '-v']),
+    ('hostname.txt', ['hostname']),
+    ('uname-a.txt', ['uname', '-a']),
+    ('lscpu.txt', ['lscpu']),
     ('qm-list.txt', ['qm', 'list']),
     ('pct-list.txt', ['pct', 'list']),
     ('pvesm-status.txt', ['pvesm', 'status']),
     ('pvesm-config.txt', ['pvesm', 'config']),
     ('pve-backup-jobs.json', ['pvesh', 'get', '/cluster/backup', '--output-format', 'json']),
     ('network-interfaces.txt', ['cat', '/etc/network/interfaces']),
+    ('ip-br-link.txt', ['ip', '-br', 'link']),
+    ('ip-br-addr.txt', ['ip', '-br', 'addr']),
     ('ip-addr.txt', ['ip', 'addr']),
     ('ip-route.txt', ['ip', 'route']),
     ('bridge-link.txt', ['bridge', 'link']),
     ('lsblk-f.txt', ['lsblk', '-f']),
     ('blkid.txt', ['blkid']),
+    ('disk-by-id.txt', ['ls', '-l', '/dev/disk/by-id']),
     ('df-h.txt', ['df', '-h']),
     ('mount.txt', ['mount']),
     ('findmnt.txt', ['findmnt']),
+    ('pvs.txt', ['pvs']),
+    ('vgs.txt', ['vgs']),
+    ('lvs.txt', ['lvs']),
+    ('zpool-status.txt', ['zpool', 'status']),
+    ('zfs-list.txt', ['zfs', 'list']),
+    ('lspci-nn.txt', ['lspci', '-nn']),
+    ('systemctl-failed.txt', ['systemctl', '--failed', '--no-pager']),
     ('systemctl-unit-files.txt', ['systemctl', 'list-unit-files']),
     ('systemctl-timers.txt', ['systemctl', 'list-timers']),
     ('crontab-root.txt', ['crontab', '-l']),
@@ -864,6 +894,7 @@ def migrate_backup_item(item):
     default_by_path = {normalize_config_path(default['path']): default for default in DEFAULT_BACKUP_FILES}
     migrated = default_by_path.get(normalized_path, {}).copy()
     migrated.update(item)
+    migrated.pop('recovery', None)
     if migrated:
         migrated['path'] = normalized_path
     migrated.setdefault('name', path or 'Neznáma položka')
@@ -946,6 +977,343 @@ def save_config(config):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, ensure_ascii=False, indent=2)
     os.chmod(CONFIG_FILE, 0o600)
+
+# ---------------------------------------------------------------------------
+# Disaster recovery metadáta (dáta v recovery_data.py, do configu sa neukladajú)
+# ---------------------------------------------------------------------------
+
+RECOVERY_MANIFEST_FILENAME = 'recovery-manifest.json'
+# Záloha REQUIRED položky je "aktuálna", ak je mladšia ako tento limit (mesačná auto záloha + rezerva).
+RECOVERY_MAX_AGE_DAYS = 35
+HOST_SNAPSHOT_MAX_BYTES = 64 * 1024
+RESTORE_CATEGORY_BY_ID = {category['id']: category for category in RESTORE_CATEGORIES}
+RECOVERY_STATUS_LABELS = {
+    'ok': 'Aktuálna záloha aj mimo hosta (FTP)',
+    'local_only': 'Aktuálna záloha je iba lokálne v LXC, nie na FTP',
+    'stale': f'Posledná záloha je staršia ako {RECOVERY_MAX_AGE_DAYS} dní',
+    'missing': 'Nie je v žiadnej dostupnej zálohe',
+}
+READINESS_LABELS = {
+    'READY': 'Pripravené na obnovu',
+    'WARNING': 'Obnova možná, ale s rizikom',
+    'INCOMPLETE': 'Neúplné – chýbajú REQUIRED dáta',
+}
+
+def recovery_profile_for_path(path):
+    """DR profil položky; neznáma vlastná položka dostane bezpečný REVIEW FIRST fallback."""
+    normalized = normalize_config_path(path) or ''
+    source = RECOVERY_PROFILES.get(normalized)
+    profile = json.loads(json.dumps(source if source is not None else FALLBACK_RECOVERY_PROFILE))
+    category = profile.get('restore_category')
+    if category not in RESTORE_CATEGORY_IDS:
+        category = 'review'
+    alt = profile.get('restore_category_alt')
+    if alt not in RESTORE_CATEGORY_IDS or alt == category:
+        alt = None
+    profile['restore_category'] = category
+    profile['restore_category_alt'] = alt
+    profile['badge'] = RESTORE_CATEGORY_BY_ID[category]['badge']
+    profile['required_for_new_hardware'] = category == 'required'
+    profile['requires_review'] = category in REVIEW_CATEGORY_IDS or alt in REVIEW_CATEGORY_IDS
+    if profile.get('restore_policy') not in RESTORE_POLICIES:
+        profile['restore_policy'] = 'direct'
+    profile['direct_restore_allowed'] = profile['restore_policy'] != 'stage_only'
+    profile['wildcard'] = glob.has_magic(normalized)
+    profile['classified'] = source is not None
+    return profile
+
+def with_recovery_metadata(item):
+    """Kópia backup položky s pripojeným `recovery` profilom (iba pre API odpoveď)."""
+    decorated = dict(item)
+    decorated['recovery'] = recovery_profile_for_path(item.get('path'))
+    return decorated
+
+def items_with_recovery_metadata(items):
+    return [with_recovery_metadata(item) for item in (items or []) if isinstance(item, dict)]
+
+def build_recovery_manifest(selected_files):
+    """JSON manifest klasifikácie obnovy pribalený do backup-info/ (čitateľný aj bez aplikácie)."""
+    items = []
+    for item in selected_files:
+        profile = recovery_profile_for_path(item.get('path'))
+        items.append({
+            'path': item.get('path'),
+            'name': item.get('name', item.get('path')),
+            'restore_category': profile['restore_category'],
+            'restore_category_alt': profile['restore_category_alt'],
+            'badge': profile['badge'],
+            'required_for_new_hardware': profile['required_for_new_hardware'],
+            'restore_order': profile.get('restore_order'),
+            'restore_policy': profile['restore_policy'],
+            'advanced_restore': bool(profile.get('advanced_restore')),
+            'hardware_dependent': bool(profile.get('hardware_dependent')),
+            'sensitivity': profile.get('sensitivity'),
+            'wiki_slug': profile.get('wiki_slug'),
+            'restore_new_hardware': profile.get('restore_new_hardware'),
+            'warnings': profile.get('warnings', []),
+        })
+    return json.dumps({
+        'format': 1,
+        'generated_at': datetime.now().isoformat(timespec='seconds'),
+        'description': 'Klasifikácia obnovy na novom HW. Nič z toho sa neobnovuje automaticky.',
+        'categories': [
+            {'id': category['id'], 'label': category['label'], 'badge': category['badge']}
+            for category in RESTORE_CATEGORIES
+        ],
+        'items': items,
+    }, ensure_ascii=False, indent=2) + '\n'
+
+def build_recovery_readme_section(selected_files):
+    """Sekcia README-RESTORE.txt so zoskupením vybraných ciest podľa restore kategórie."""
+    profiled = [(item, recovery_profile_for_path(item.get('path'))) for item in selected_files]
+    lines = [
+        '## Klasifikácia obnovy na novom HW',
+        '',
+        'Tagy critical/recommended hovoria, ako dôležité je položku zálohovať. Restore kategória',
+        'hovorí, ako bezpečné je ju obnoviť na nový/iný hardvér. Detail: recovery-manifest.json.',
+        '',
+    ]
+    for category in RESTORE_CATEGORIES:
+        entries = [(item, profile) for item, profile in profiled if profile['restore_category'] == category['id']]
+        if not entries:
+            continue
+        lines.append(f"### {category['icon']} {category['badge']} – {category['label']}")
+        for item, profile in entries:
+            flags = []
+            if profile.get('advanced_restore'):
+                flags.append('ADVANCED RESTORE')
+            if profile['restore_policy'] == 'stage_only':
+                flags.append('nikdy neprepisovať priamo')
+            if profile.get('hardware_dependent'):
+                flags.append('HW-závislé')
+            if profile.get('sensitivity') == 'secret':
+                flags.append('SECRET')
+            suffix = f" [{', '.join(flags)}]" if flags else ''
+            lines.append(f"- {item.get('path')}{suffix}: {profile.get('restore_new_hardware', '')}")
+        lines.append('')
+    return '\n'.join(lines)
+
+def parse_backup_timestamp(entry):
+    """Čas zálohy z history entry (ISO timestamp alebo starší formát dátumu)."""
+    value = entry.get('timestamp')
+    if value:
+        try:
+            parsed = datetime.fromisoformat(str(value))
+            return parsed.astimezone().replace(tzinfo=None) if parsed.tzinfo else parsed
+        except ValueError:
+            pass
+    value = entry.get('date')
+    if value:
+        try:
+            return datetime.strptime(str(value), '%d.%m.%Y %H:%M')
+        except ValueError:
+            pass
+    return None
+
+def backup_entry_contains_path(entry, path):
+    """True, ak bola cesta vybraná v zálohe a nebola v nej preskočená (missing/excluded/error)."""
+    if path not in (entry.get('files') or []):
+        return False
+    skipped = {item.get('path') for item in (entry.get('skipped') or []) if isinstance(item, dict)}
+    return path not in skipped
+
+def recovery_item_backup_status(path, history, now=None, max_age_days=RECOVERY_MAX_AGE_DAYS):
+    """Deterministický stav zálohy jednej položky: ok / local_only / stale / missing."""
+    now = now or datetime.now()
+    limit = now - timedelta(days=max_age_days)
+    covering = []
+    for entry in history:
+        timestamp = parse_backup_timestamp(entry)
+        if timestamp and backup_entry_contains_path(entry, path):
+            covering.append((timestamp, entry))
+    covering.sort(key=lambda pair: pair[0], reverse=True)
+
+    if not covering:
+        status = 'missing'
+        latest = offsite = None
+    else:
+        latest = covering[0]
+        offsite = next((pair for pair in covering if pair[1].get('ftp_status') == 'success'), None)
+        if latest[0] < limit:
+            status = 'stale'
+        elif not offsite or offsite[0] < limit:
+            status = 'local_only'
+        else:
+            status = 'ok'
+
+    return {
+        'status': status,
+        'label': RECOVERY_STATUS_LABELS[status],
+        'last_backup': latest[0].isoformat(timespec='seconds') if latest else None,
+        'last_backup_filename': latest[1].get('filename') if latest else None,
+        'last_offsite_backup': offsite[0].isoformat(timespec='seconds') if offsite else None,
+    }
+
+def build_recovery_overview(config=None, history=None, now=None):
+    """Prehľad pripravenosti na obnovu; READY/WARNING/INCOMPLETE iba z REQUIRED položiek."""
+    config = config or load_config()
+    if history is None:
+        history = visible_backup_history(config, persist_pruned=False)
+    now = now or datetime.now()
+    manual_selected = {item.get('path') for item in config.get('backup_files', []) if item.get('selected')}
+    auto_selected = {item.get('path') for item in config.get('auto_backup_files', []) if item.get('selected')}
+    auto_enabled = bool(config.get('auto_backup_enabled'))
+
+    items = []
+    for item in config.get('backup_files', []):
+        decorated = with_recovery_metadata(item)
+        decorated['backup_status'] = recovery_item_backup_status(item.get('path'), history, now)
+        decorated['selected_manual'] = item.get('path') in manual_selected
+        decorated['selected_auto'] = item.get('path') in auto_selected
+        items.append(decorated)
+
+    category_order = {category_id: index for index, category_id in enumerate(RESTORE_CATEGORY_IDS)}
+    items.sort(key=lambda entry: (
+        category_order[entry['recovery']['restore_category']],
+        entry['recovery'].get('restore_order') or 99,
+        entry.get('name', ''),
+    ))
+
+    categories = []
+    for category in RESTORE_CATEGORIES:
+        in_category = [entry for entry in items if entry['recovery']['restore_category'] == category['id']]
+        counts = {
+            status: sum(1 for entry in in_category if entry['backup_status']['status'] == status)
+            for status in RECOVERY_STATUS_LABELS
+        }
+        categories.append({**category, 'total': len(in_category), 'backed_up': counts['ok'], 'counts': counts})
+
+    required = [entry for entry in items if entry['recovery']['required_for_new_hardware']]
+    issues = []
+    for entry in required:
+        status = entry['backup_status']['status']
+        if status != 'ok':
+            issues.append({
+                'path': entry['path'],
+                'name': entry.get('name', entry['path']),
+                'level': 'error' if status == 'missing' else 'warning',
+                'message': entry['backup_status']['label'],
+            })
+        if not entry['selected_manual'] and not entry['selected_auto']:
+            issues.append({
+                'path': entry['path'],
+                'name': entry.get('name', entry['path']),
+                'level': 'warning',
+                'message': 'Nie je vybraná v ručnej ani automatickej zálohe – ďalšie zálohy ju nebudú obsahovať',
+            })
+        elif auto_enabled and not entry['selected_auto']:
+            issues.append({
+                'path': entry['path'],
+                'name': entry.get('name', entry['path']),
+                'level': 'warning',
+                'message': 'Automatická záloha ju nezahŕňa',
+            })
+
+    if not required or not history or any(issue['level'] == 'error' for issue in issues):
+        readiness_status = 'INCOMPLETE'
+    elif issues:
+        readiness_status = 'WARNING'
+    else:
+        readiness_status = 'READY'
+
+    latest_entry = max(history, key=lambda entry: parse_backup_timestamp(entry) or datetime.min, default=None)
+    latest_backup = None
+    if latest_entry:
+        latest_timestamp = parse_backup_timestamp(latest_entry)
+        latest_backup = {
+            'id': latest_entry.get('id'),
+            'filename': latest_entry.get('filename'),
+            'timestamp': latest_timestamp.isoformat(timespec='seconds') if latest_timestamp else None,
+            'ftp_status': latest_entry.get('ftp_status'),
+            'backup_mode': latest_entry.get('backup_mode'),
+        }
+
+    return {
+        'success': True,
+        'generated_at': now.isoformat(timespec='seconds'),
+        'readiness': {
+            'status': readiness_status,
+            'label': READINESS_LABELS[readiness_status],
+            'required_total': len(required),
+            'required_ok': sum(1 for entry in required if entry['backup_status']['status'] == 'ok'),
+            'max_age_days': RECOVERY_MAX_AGE_DAYS,
+            'issues': issues,
+            'latest_backup': latest_backup,
+            'rules': [
+                f'Hodnotia sa iba položky NEW HW REQUIRED ({len(required)}).',
+                f'Položka je OK, ak je v zálohe mladšej ako {RECOVERY_MAX_AGE_DAYS} dní, nebola v nej preskočená a táto záloha je aj na FTP (mimo hosta).',
+                'INCOMPLETE: niektorá REQUIRED položka nie je v žiadnej dostupnej zálohe.',
+                'WARNING: všetko je zálohované, ale niečo je staršie ako limit, iba lokálne alebo nie je vybrané pre ďalšie zálohy.',
+                'READY: všetky REQUIRED položky majú aktuálnu zálohu mimo hosta a sú vybrané pre ďalšie zálohy.',
+            ],
+        },
+        'categories': categories,
+        'items': items,
+        'auto_backup_enabled': auto_enabled,
+        'restore_policies': RESTORE_POLICIES,
+        'sensitivity_levels': SENSITIVITY_LEVELS,
+        'snapshot_files': [{'file': name, 'label': label} for name, label in HOST_SNAPSHOT_FILES],
+        'wiki': wiki_index(),
+        'checklist': RECOVERY_CHECKLIST,
+    }
+
+def wiki_index():
+    return [
+        {'slug': article['slug'], 'title': article['title'], 'summary': article['summary']}
+        for article in WIKI_ARTICLES
+    ]
+
+def find_wiki_article(slug):
+    return next((article for article in WIKI_ARTICLES if article['slug'] == slug), None)
+
+def parse_info_command_output(text):
+    """Rozdelí výstup run_info_command na príkaz, exit code, stdout a stderr."""
+    lines = text.split('\n')
+    result = {'command': '', 'exit_code': None, 'stdout': '', 'stderr': '', 'error': ''}
+    if lines and lines[0].startswith('$ '):
+        result['command'] = lines[0][2:]
+    match = re.search(r'^exit_code=(-?\d+)$', text, re.MULTILINE)
+    if match:
+        result['exit_code'] = int(match.group(1))
+    if '--- stdout ---\n' in text:
+        after = text.split('--- stdout ---\n', 1)[1]
+        stdout, _sep, stderr = after.partition('\n--- stderr ---\n')
+        result['stdout'] = stdout.rstrip('\n')
+        result['stderr'] = stderr.rstrip('\n')
+    else:
+        result['error'] = '\n'.join(lines[1:]).strip()
+    return result
+
+def read_host_snapshot(archive_path):
+    """Načíta iba whitelisted DR snapshot súbory z backup-info/ (žiadne konfiguračné súbory)."""
+    found = {}
+    with tarfile.open(archive_path, 'r:gz') as tar:
+        for member in tar.getmembers():
+            validate_tar_member(member)
+            if not member.isfile() or not member.name.startswith('backup-info/'):
+                continue
+            filename = member.name[len('backup-info/'):]
+            if filename in HOST_SNAPSHOT_FILE_NAMES:
+                found[filename] = member
+
+        files = []
+        for filename, label in HOST_SNAPSHOT_FILES:
+            member = found.get(filename)
+            if not member:
+                files.append({'file': filename, 'label': label, 'available': False})
+                continue
+            handle = tar.extractfile(member)
+            data = handle.read(HOST_SNAPSHOT_MAX_BYTES + 1) if handle else b''
+            truncated = len(data) > HOST_SNAPSHOT_MAX_BYTES
+            parsed = parse_info_command_output(data[:HOST_SNAPSHOT_MAX_BYTES].decode('utf-8', errors='replace'))
+            files.append({
+                'file': filename,
+                'label': label,
+                'available': True,
+                'truncated': truncated,
+                **parsed,
+            })
+    return files
 
 def load_backup_history():
     """Načítanie histórie záloh"""
@@ -1068,6 +1436,7 @@ Pred každým prepisom najprv rozbaľ archív do dočasného adresára a skontro
 
 {selected_paths}
 
+{build_recovery_readme_section(selected_files)}
 ## Keď zomrel celý server
 
 1. Nainštaluj čistý Proxmox VE, ideálne rovnakú alebo kompatibilnú major verziu ako pôvodný host.
@@ -1160,6 +1529,8 @@ def generate_backup_info(info_dir, selected_files):
     readme_path = os.path.join(info_dir, 'README-RESTORE.txt')
     write_text_file(readme_path, build_restore_readme(selected_files))
     generated.append('README-RESTORE.txt')
+    write_text_file(os.path.join(info_dir, RECOVERY_MANIFEST_FILENAME), build_recovery_manifest(selected_files))
+    generated.append(RECOVERY_MANIFEST_FILENAME)
 
     for filename, command in INFO_COMMANDS:
         output_path = os.path.join(info_dir, filename)
@@ -1342,6 +1713,12 @@ class RemoteSshBackupSource:
             build_restore_readme(selected_files),
         )
         generated.append('README-RESTORE.txt')
+        self.write_remote_file(
+            client,
+            posixpath.join(remote_info_dir, RECOVERY_MANIFEST_FILENAME),
+            build_recovery_manifest(selected_files),
+        )
+        generated.append(RECOVERY_MANIFEST_FILENAME)
 
         for filename, command in INFO_COMMANDS:
             command_str = shell_join(command)
@@ -1950,6 +2327,7 @@ def preview_restore_archive(archive_path):
                 'critical': bool(item.get('critical')),
                 'tags': item.get('tags', []),
                 'member_count': len(matching_names),
+                'recovery': recovery_profile_for_path(path),
             })
     return available
 
@@ -2514,8 +2892,24 @@ class RemoteSshRestoreService:
         self.run_required(client, f'cp -a {shlex.quote(staged_path)} {shlex.quote(target_parent)}/', timeout=300)
         return None
 
-    def restore(self, archive_path, selected_paths):
-        member_names = [member.name for member in restore_archive_members(archive_path, selected_paths)]
+    def stage_path(self, client, staging_dir, review_dir, restore_path):
+        """Pripraví cestu do review adresára v /root bez zásahu do živého systému."""
+        arcname = archive_name_for_path(restore_path)
+        staged_path = posixpath.join(staging_dir, arcname)
+        review_parent = posixpath.join(review_dir, posixpath.dirname(arcname))
+
+        test_command = f'test -e {shlex.quote(staged_path)} || test -L {shlex.quote(staged_path)}'
+        exit_code, _stdout, _stderr = self.source.run_command(client, test_command, timeout=30)
+        if exit_code != 0:
+            return {'path': restore_path, 'reason': 'missing_in_staging'}
+
+        self.run_required(client, f'mkdir -p {shlex.quote(review_parent)}', timeout=30)
+        self.run_required(client, f'cp -a {shlex.quote(staged_path)} {shlex.quote(review_parent)}/', timeout=300)
+        return None
+
+    def restore(self, archive_path, selected_paths, stage_paths=None):
+        stage_paths = list(stage_paths or [])
+        member_names = [member.name for member in restore_archive_members(archive_path, list(selected_paths) + stage_paths)]
         if not member_names:
             raise ValueError('Archív neobsahuje vybrané obnoviteľné položky')
 
@@ -2526,11 +2920,16 @@ class RemoteSshRestoreService:
             remote_archive = posixpath.join(remote_workdir, 'restore.tar.gz')
             remote_members = posixpath.join(remote_workdir, 'members.txt')
             staging_dir = posixpath.join(remote_workdir, 'staging')
-            backup_dir = f"/root/proxmox-backup-restore-preapply-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            run_stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+            backup_dir = f"/root/proxmox-backup-restore-preapply-{run_stamp}" if selected_paths else None
+            review_dir = f"/root/proxmox-backup-restore-review-{run_stamp}" if stage_paths else None
 
             self.upload_archive(client, archive_path, remote_archive)
             self.write_remote_file(client, remote_members, '\n'.join(member_names) + '\n')
-            self.run_required(client, f'mkdir -p {shlex.quote(staging_dir)} {shlex.quote(backup_dir)}', timeout=30)
+            mkdir_targets = [staging_dir] + [path for path in (backup_dir, review_dir) if path]
+            self.run_required(client, 'mkdir -p ' + ' '.join(shlex.quote(path) for path in mkdir_targets), timeout=30)
+            if review_dir:
+                self.run_required(client, f'chmod 700 {shlex.quote(review_dir)}', timeout=30)
             extract_command = (
                 f'tar -xzf {shlex.quote(remote_archive)} '
                 f'-C {shlex.quote(staging_dir)} '
@@ -2539,6 +2938,7 @@ class RemoteSshRestoreService:
             self.run_required(client, extract_command, timeout=600)
 
             applied = []
+            staged = []
             skipped = []
             for restore_path in selected_paths:
                 skip = self.apply_path(client, staging_dir, backup_dir, restore_path)
@@ -2547,11 +2947,27 @@ class RemoteSshRestoreService:
                 else:
                     applied.append({'path': restore_path})
 
+            for restore_path in stage_paths:
+                skip = self.stage_path(client, staging_dir, review_dir, restore_path)
+                if skip:
+                    skipped.append(skip)
+                else:
+                    staged.append({'path': restore_path})
+
+            if review_dir and staged:
+                self.write_remote_file(
+                    client,
+                    posixpath.join(review_dir, 'README-REVIEW.txt'),
+                    build_review_dir_readme(review_dir, [item['path'] for item in staged]),
+                )
+
             return {
                 'success': True,
                 'remote_host': self.source.ssh_config.get('host'),
                 'backup_dir': backup_dir,
+                'review_dir': review_dir,
                 'applied': applied,
+                'staged': staged,
                 'skipped': skipped,
             }
         finally:
@@ -2561,33 +2977,86 @@ class RemoteSshRestoreService:
                     self.source.run_command(client, f'rm -rf {shlex.quote(safe_workdir)}', timeout=30)
             client.close()
 
-def run_restore_job(backup_id, selected_paths, source_config):
-    """Spoločný restore flow pre API."""
-    if not selected_paths:
+class RestoreAcknowledgementRequired(ValueError):
+    """Priamy restore REVIEW/SELECTIVE/REFERENCE položiek bez výslovného potvrdenia kontroly."""
+
+    def __init__(self, paths):
+        self.paths = list(paths)
+        super().__init__(
+            'Tieto položky vyžadujú kontrolu pred obnovou (REVIEW FIRST / SELECTIVE / REFERENCE ONLY). '
+            f'Potvrď ich kontrolu alebo použi režim „Iba pripraviť na kontrolu“: {", ".join(self.paths)}'
+        )
+
+def clean_restore_paths(paths):
+    """Normalizuje restore cesty a overí whitelist; zachová poradie bez duplicít."""
+    allowed_paths = restore_whitelist_paths()
+    clean_paths = []
+    for path in paths or []:
+        normalized = normalize_remote_path(path)
+        if normalized not in allowed_paths:
+            raise ValueError(f'Cesta nie je povolená pre restore: {path}')
+        if glob.has_magic(normalized):
+            raise ValueError(f'Wildcard cesty nie sú podporované pre restore: {path}')
+        if normalized not in clean_paths:
+            clean_paths.append(normalized)
+    return clean_paths
+
+def build_review_dir_readme(review_dir, staged_paths):
+    """Návod v review adresári: čo bolo pripravené a ako s tým bezpečne naložiť."""
+    lines = [
+        'Proxmox Backup Manager – pripravené na kontrolu',
+        f'Vygenerované: {datetime.now().isoformat(timespec="seconds")}',
+        '',
+        'Tieto súbory NEBOLI aplikované na systém. Porovnaj ich s aktuálnym stavom (diff -u)',
+        'a prenes ručne iba to, čo potrebuješ. Detailné postupy sú vo Wiki aplikácie.',
+        '',
+    ]
+    for path in staged_paths:
+        profile = recovery_profile_for_path(path)
+        lines.append(f"## {path} [{profile['badge']}]")
+        lines.append(f"Na novom HW: {profile.get('restore_new_hardware', '')}")
+        for warning in profile.get('warnings', []):
+            lines.append(f'! {warning}')
+        lines.append(f'  diff -ru {review_dir}{path} {path}')
+        lines.append('')
+    lines.append(f'Po dokončení adresár zmaž: rm -rf {review_dir}')
+    return '\n'.join(lines) + '\n'
+
+def run_restore_job(backup_id, selected_paths, source_config, stage_paths=None, acknowledged_paths=None):
+    """Spoločný restore flow pre API: `selected_paths` sa aplikujú, `stage_paths` iba pripravia na kontrolu."""
+    if not selected_paths and not stage_paths:
         raise ValueError('Nevybral si žiadne cesty na obnovu')
 
     source_config = sanitize_source_config(source_config)
     if source_config['mode'] != 'remote_ssh':
         raise ValueError('Obnova je v tejto verzii podporovaná iba cez Remote SSH')
 
-    allowed_paths = restore_whitelist_paths()
-    clean_paths = []
-    for path in selected_paths:
-        normalized = normalize_remote_path(path)
-        if normalized not in allowed_paths:
-            raise ValueError(f'Cesta nie je povolená pre restore: {path}')
-        if glob.has_magic(normalized):
-            raise ValueError(f'Wildcard cesty nie sú podporované pre restore: {path}')
-        clean_paths.append(normalized)
+    clean_stage_paths = clean_restore_paths(stage_paths)
+    clean_paths = [path for path in clean_restore_paths(selected_paths) if path not in clean_stage_paths]
+
+    blocked = [path for path in clean_paths if not recovery_profile_for_path(path)['direct_restore_allowed']]
+    if blocked:
+        raise ValueError(
+            'Tieto cesty aplikácia nikdy priamo neprepisuje (ADVANCED RESTORE / REFERENCE ONLY), '
+            f'použi režim „Iba pripraviť na kontrolu“ a postup z Wiki: {", ".join(blocked)}'
+        )
+
+    acknowledged = {normalize_remote_path(path) for path in (acknowledged_paths or []) if path}
+    unacknowledged = [
+        path for path in clean_paths
+        if recovery_profile_for_path(path)['requires_review'] and path not in acknowledged
+    ]
+    if unacknowledged:
+        raise RestoreAcknowledgementRequired(unacknowledged)
 
     entry, archive_path, cached = ensure_backup_cached(backup_id)
     available_paths = {item['path'] for item in preview_restore_archive(archive_path)}
-    missing = [path for path in clean_paths if path not in available_paths]
+    missing = [path for path in clean_paths + clean_stage_paths if path not in available_paths]
     if missing:
         raise ValueError(f'Archív neobsahuje vybrané cesty: {", ".join(missing)}')
 
     restore_service = RemoteSshRestoreService(source_config)
-    result = restore_service.restore(archive_path, clean_paths)
+    result = restore_service.restore(archive_path, clean_paths, clean_stage_paths)
     result['archive_source'] = restore_archive_source(entry, cached)
     result['archive_filename'] = entry.get('filename') or os.path.basename(archive_path)
     return result
@@ -2996,14 +3465,15 @@ def get_config():
         'critical_total': critical_total,
         'recommended_selected': recommended_selected,
         'recommended_total': recommended_total,
-        'backup_categories': BACKUP_CATEGORIES
+        'backup_categories': BACKUP_CATEGORIES,
+        'restore_categories': RESTORE_CATEGORIES,
     })
 
 @app.route('/api/files')
 def get_files():
     """API endpoint pre zoznam súborov na zálohovanie"""
     config = load_config()
-    return jsonify(config['backup_files'])
+    return jsonify(items_with_recovery_metadata(config['backup_files']))
 
 @app.route('/api/files/<int:file_index>/toggle', methods=['POST'])
 def toggle_file_api(file_index):
@@ -3024,13 +3494,13 @@ def set_file_selection_api():
     for item in config['backup_files']:
         item['selected'] = selected
     save_config(config)
-    return jsonify({'success': True, 'selected': selected, 'backup_files': config['backup_files']})
+    return jsonify({'success': True, 'selected': selected, 'backup_files': items_with_recovery_metadata(config['backup_files'])})
 
 @app.route('/api/auto-files')
 def get_auto_files():
     """API endpoint pre zoznam súborov automatickej zálohy."""
     config = load_config()
-    return jsonify(config['auto_backup_files'])
+    return jsonify(items_with_recovery_metadata(config['auto_backup_files']))
 
 @app.route('/api/auto-files/<int:file_index>/toggle', methods=['POST'])
 def toggle_auto_file_api(file_index):
@@ -3051,7 +3521,7 @@ def set_auto_file_selection_api():
     for item in config['auto_backup_files']:
         item['selected'] = selected
     save_config(config)
-    return jsonify({'success': True, 'selected': selected, 'backup_files': config['auto_backup_files']})
+    return jsonify({'success': True, 'selected': selected, 'backup_files': items_with_recovery_metadata(config['auto_backup_files'])})
 
 @app.route('/api/test-ftp', methods=['POST'])
 def test_ftp_api():
@@ -3261,12 +3731,74 @@ def restore_api():
     config = load_config()
     source_config = data.get('source_config') or config.get('source_config', DEFAULT_SOURCE_CONFIG)
     try:
-        result = run_restore_job(data.get('backup_id'), data.get('paths') or [], source_config)
+        result = run_restore_job(
+            data.get('backup_id'),
+            data.get('paths') or [],
+            source_config,
+            stage_paths=data.get('stage_paths') or [],
+            acknowledged_paths=data.get('acknowledged_paths') or [],
+        )
         return jsonify(result)
+    except FileNotFoundError as e:
+        return jsonify({'success': False, 'error': str(e)}), 404
+    except RestoreAcknowledgementRequired as e:
+        return jsonify({'success': False, 'error': str(e), 'requires_acknowledgement': e.paths}), 400
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/recovery/overview')
+def recovery_overview_api():
+    """Pripravenosť na obnovu na novom HW, klasifikované položky, checklist a index wiki."""
+    return jsonify(build_recovery_overview(load_config()))
+
+@app.route('/api/recovery/checklist')
+def recovery_checklist_api():
+    """Krokový postup obnovy Proxmox hosta na novom HW."""
+    return jsonify({'success': True, 'steps': RECOVERY_CHECKLIST})
+
+@app.route('/api/recovery/wiki')
+def recovery_wiki_index_api():
+    """Zoznam článkov internej DR wiki."""
+    return jsonify({'success': True, 'articles': wiki_index()})
+
+@app.route('/api/recovery/wiki/<slug>')
+def recovery_wiki_article_api(slug):
+    """Jeden článok DR wiki vrátane položiek, ktoré naň odkazujú."""
+    article = find_wiki_article(slug)
+    if not article:
+        return jsonify({'success': False, 'error': 'Článok neexistuje'}), 404
+    related = [
+        {'path': item['path'], 'name': item.get('name', item['path'])}
+        for item in DEFAULT_BACKUP_FILES
+        if recovery_profile_for_path(item['path']).get('wiki_slug') == slug
+    ]
+    return jsonify({'success': True, 'article': article, 'related_items': related})
+
+@app.route('/api/recovery/snapshot/<backup_id>')
+def recovery_snapshot_api(backup_id):
+    """DR metadata snapshot pôvodného hosta z backup-info/ (REFERENCE ONLY, iba whitelisted výstupy)."""
+    try:
+        entry, archive_path, cached = ensure_backup_cached(backup_id)
+        return jsonify({
+            'success': True,
+            'reference_only': True,
+            'cached': cached,
+            'archive': {
+                'id': entry.get('id'),
+                'filename': entry.get('filename') or os.path.basename(archive_path),
+                'timestamp': entry.get('timestamp') or entry.get('date') or '',
+                'source_host': entry.get('source_host'),
+            },
+            'files': read_host_snapshot(archive_path),
+        })
     except FileNotFoundError as e:
         return jsonify({'success': False, 'error': str(e)}), 404
     except ValueError as e:
         return jsonify({'success': False, 'error': str(e)}), 400
+    except RuntimeError as e:
+        return jsonify({'success': False, 'error': str(e)}), 502
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 

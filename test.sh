@@ -18,8 +18,9 @@ if [ -z "${PYTHON_BIN}" ]; then
 fi
 
 echo "0️⃣ Lokálne Python smoke testy..."
-"${PYTHON_BIN}" -m py_compile app.py
+"${PYTHON_BIN}" -m py_compile app.py recovery_data.py
 "${PYTHON_BIN}" tests/test_archive.py
+"${PYTHON_BIN}" tests/test_recovery.py
 echo "✅ Python smoke testy prešli"
 
 # Test service status

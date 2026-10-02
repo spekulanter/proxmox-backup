@@ -733,6 +733,17 @@ def main():
             assert response.status_code == 400
             assert "nie je povolená" in response.get_json()["error"]
 
+            restore_source = {
+                "mode": "remote_ssh",
+                "ssh": {
+                    "host": "pve.example",
+                    "port": 22,
+                    "username": "root",
+                    "password": "secret",
+                },
+            }
+
+            # /etc/passwd je REFERENCE ONLY: priamy prepis je zakázaný, iba príprava na kontrolu.
             fake_restore_client = FakeSshClient()
             app_module.SSH_CLIENT_FACTORY = lambda: fake_restore_client
             response = client.post(
@@ -740,24 +751,66 @@ def main():
                 json={
                     "backup_id": "restore-ok",
                     "paths": ["/etc/passwd"],
-                    "source_config": {
-                        "mode": "remote_ssh",
-                        "ssh": {
-                            "host": "pve.example",
-                            "port": 22,
-                            "username": "root",
-                            "password": "secret",
-                        },
-                    },
+                    "acknowledged_paths": ["/etc/passwd"],
+                    "source_config": restore_source,
+                    "confirm": "OBNOVIT",
+                },
+            )
+            assert response.status_code == 400, response.get_data(as_text=True)
+            assert "priamo neprepisuje" in response.get_json()["error"]
+            assert fake_restore_client.commands == []
+
+            response = client.post(
+                "/api/restore",
+                json={
+                    "backup_id": "restore-ok",
+                    "stage_paths": ["/etc/passwd"],
+                    "source_config": restore_source,
+                    "confirm": "OBNOVIT",
+                },
+            )
+            assert response.status_code == 200, response.get_data(as_text=True)
+            restore_data = response.get_json()
+            assert restore_data["backup_dir"] is None
+            assert restore_data["review_dir"].startswith("/root/proxmox-backup-restore-review-")
+            assert restore_data["applied"] == []
+            assert restore_data["staged"] == [{"path": "/etc/passwd"}]
+            assert any(command.startswith("tar -xzf") for command in fake_restore_client.commands)
+            assert not any(command.startswith("cp -a") and command.endswith(" /etc/") for command in fake_restore_client.commands)
+            assert any(command.startswith("cp -a") and restore_data["review_dir"] in command for command in fake_restore_client.commands)
+            assert any(command.startswith("rm -rf /tmp/pve-restore.TEST") for command in fake_restore_client.commands)
+
+            # /etc/ssh je SELECTIVE/REVIEW: priamy restore iba po výslovnom potvrdení kontroly.
+            fake_restore_client = FakeSshClient()
+            app_module.SSH_CLIENT_FACTORY = lambda: fake_restore_client
+            response = client.post(
+                "/api/restore",
+                json={
+                    "backup_id": "restore-ok",
+                    "paths": ["/etc/ssh"],
+                    "source_config": restore_source,
+                    "confirm": "OBNOVIT",
+                },
+            )
+            assert response.status_code == 400, response.get_data(as_text=True)
+            assert response.get_json()["requires_acknowledgement"] == ["/etc/ssh"]
+            assert fake_restore_client.commands == []
+
+            response = client.post(
+                "/api/restore",
+                json={
+                    "backup_id": "restore-ok",
+                    "paths": ["/etc/ssh"],
+                    "acknowledged_paths": ["/etc/ssh"],
+                    "source_config": restore_source,
                     "confirm": "OBNOVIT",
                 },
             )
             assert response.status_code == 200, response.get_data(as_text=True)
             restore_data = response.get_json()
             assert restore_data["backup_dir"].startswith("/root/proxmox-backup-restore-preapply-")
-            assert restore_data["applied"] == [{"path": "/etc/passwd"}]
-            assert any(command.startswith("tar -xzf") for command in fake_restore_client.commands)
-            assert any(command.startswith("cp -a") and "/etc/" in command for command in fake_restore_client.commands)
+            assert restore_data["applied"] == [{"path": "/etc/ssh"}]
+            assert any(command.startswith("cp -a") and command.endswith(" /etc/") for command in fake_restore_client.commands)
             assert any(command.startswith("rm -rf /tmp/pve-restore.TEST") for command in fake_restore_client.commands)
         finally:
             app_module.CONFIG_FILE = original_config_file
