@@ -418,6 +418,14 @@ RETIRED_BACKUP_PATHS = {
     '/etc/ssl/pve',
 }
 
+# Overí existenciu hook skriptov z vzdump jobov (riadky "script <cesta>" v jobs.cfg / vzdump.conf).
+HOOK_SCRIPT_CHECK = (
+    "for f in $(sed -n 's/^[[:space:]]*script:\\{0,1\\}[[:space:]]\\{1,\\}//p' "
+    "/etc/pve/jobs.cfg /etc/vzdump.conf 2>/dev/null | sort -u); do "
+    "if [ -x \"$f\" ]; then echo \"OK $f\"; elif [ -e \"$f\" ]; then echo \"NOEXEC $f\"; "
+    "else echo \"MISSING $f\"; fi; done"
+)
+
 # Diagnostika hosta do backup-info/. Časť z nich tvorí DR metadata snapshot (REFERENCE ONLY,
 # HOST_SNAPSHOT_FILES v recovery_data.py). Chýbajúci príkaz zapíše chybu, záloha nezlyhá.
 INFO_COMMANDS = [
@@ -449,6 +457,7 @@ INFO_COMMANDS = [
     ('zfs-list.txt', ['zfs', 'list']),
     ('lspci-nn.txt', ['lspci', '-nn']),
     ('systemctl-failed.txt', ['systemctl', '--failed', '--no-pager']),
+    ('hook-scripts.txt', ['sh', '-c', HOOK_SCRIPT_CHECK]),
     ('systemctl-unit-files.txt', ['systemctl', 'list-unit-files']),
     ('systemctl-timers.txt', ['systemctl', 'list-timers']),
     ('crontab-root.txt', ['crontab', '-l']),
@@ -1255,6 +1264,7 @@ def build_recovery_overview(config=None, history=None, now=None):
         'snapshot_files': [{'file': name, 'label': label} for name, label in HOST_SNAPSHOT_FILES],
         'wiki': wiki_index(),
         'checklist': RECOVERY_CHECKLIST,
+        'risks': build_recovery_risks(history),
     }
 
 def wiki_index():
@@ -1314,6 +1324,636 @@ def read_host_snapshot(archive_path):
                 **parsed,
             })
     return files
+
+# ---------------------------------------------------------------------------
+# Fakty o pôvodnom hoste z najnovšieho archívu (riziká obnovy, offline príručka)
+# ---------------------------------------------------------------------------
+
+# Iba konfiguračné súbory bez tajomstiev; shadow, priv/ ani /root sa nikdy nečítajú.
+ARCHIVE_FACT_FILES = {
+    'etc/hostname', 'etc/hosts', 'etc/resolv.conf', 'etc/network/interfaces', 'etc/fstab',
+    'etc/auto.master', 'etc/auto.nfs', 'etc/pve/storage.cfg', 'etc/pve/jobs.cfg',
+}
+ARCHIVE_FACT_INFO_FILES = {
+    'hostname.txt', 'pveversion-v.txt', 'ip-br-link.txt', 'ip-br-addr.txt', 'ip-route.txt',
+    'lsblk-f.txt', 'pvesm-status.txt', 'qm-list.txt', 'pct-list.txt', 'pve-backup-jobs.json',
+    'hook-scripts.txt', 'lscpu.txt', 'ip-addr.txt',
+}
+ARCHIVE_FACT_MAX_BYTES = 64 * 1024
+GUEST_CONF_PATTERN = re.compile(r'^etc/pve/nodes/([^/]+)/(lxc|qemu-server)/(\d+)\.conf$')
+_ARCHIVE_FACTS_CACHE = {}
+
+def archive_fact_wanted(name):
+    return (
+        name in ARCHIVE_FACT_FILES
+        or name.startswith('etc/auto.master.d/')
+        or bool(GUEST_CONF_PATTERN.match(name))
+        or (name.startswith('backup-info/') and name[len('backup-info/'):] in ARCHIVE_FACT_INFO_FILES)
+    )
+
+def read_archive_facts(archive_path):
+    """Načíta whitelisted konfiguráciu a diagnostiku z archívu (cache podľa mtime/veľkosti)."""
+    stat = os.stat(archive_path)
+    cache_key = (os.path.realpath(archive_path), stat.st_mtime_ns, stat.st_size)
+    if cache_key in _ARCHIVE_FACTS_CACHE:
+        return _ARCHIVE_FACTS_CACHE[cache_key]
+
+    members = set()
+    files = {}
+    info = {}
+    with tarfile.open(archive_path, 'r:gz') as tar:
+        for member in tar.getmembers():
+            validate_tar_member(member)
+            name = member.name.rstrip('/')
+            members.add(name)
+            if not member.isfile() or not archive_fact_wanted(name):
+                continue
+            handle = tar.extractfile(member)
+            text = (handle.read(ARCHIVE_FACT_MAX_BYTES) if handle else b'').decode('utf-8', errors='replace')
+            if name.startswith('backup-info/'):
+                info[name[len('backup-info/'):]] = parse_info_command_output(text)
+            else:
+                files[name] = text
+
+    facts = {'members': members, 'files': files, 'info': info}
+    if len(_ARCHIVE_FACTS_CACHE) > 8:
+        _ARCHIVE_FACTS_CACHE.clear()
+    _ARCHIVE_FACTS_CACHE[cache_key] = facts
+    return facts
+
+def info_stdout(facts, filename):
+    parsed = (facts.get('info') or {}).get(filename)
+    if not parsed or parsed.get('error'):
+        return ''
+    return parsed.get('stdout', '')
+
+def latest_local_archive_entry(history):
+    """Najnovší záznam histórie, ktorého archív leží lokálne (fakty sa čítajú bez FTP)."""
+    for entry in sorted(history, key=lambda item: parse_backup_timestamp(item) or datetime.min, reverse=True):
+        try:
+            path = resolve_backup_entry_local_path(entry)
+        except (ValueError, TypeError):
+            continue
+        if os.path.isfile(path):
+            return entry, path
+    return None, None
+
+def parse_guest_lists(facts):
+    """VM a LXC z `qm list` a `pct list` v backup-info."""
+    guests = []
+    for filename, guest_type in (('qm-list.txt', 'VM'), ('pct-list.txt', 'LXC')):
+        for line in info_stdout(facts, filename).splitlines():
+            parts = line.split()
+            if not parts or not parts[0].isdigit():
+                continue
+            if guest_type == 'VM':
+                name = parts[1] if len(parts) > 1 else ''
+                status = parts[2] if len(parts) > 2 else ''
+            else:
+                status = parts[1] if len(parts) > 1 else ''
+                name = parts[-1] if len(parts) > 2 else ''
+            guests.append({'vmid': int(parts[0]), 'type': guest_type, 'name': name, 'status': status})
+    return sorted(guests, key=lambda guest: guest['vmid'])
+
+def parse_vmid_list(value):
+    result = set()
+    for part in re.split(r'[,\s]+', str(value or '')):
+        if part.isdigit():
+            result.add(int(part))
+    return result
+
+def parse_pve_section_config(text):
+    """Jednoduchý parser PVE section configu (jobs.cfg, storage.cfg): `typ: id` + odsadené `kľúč hodnota`."""
+    sections = []
+    current = None
+    for raw in (text or '').splitlines():
+        if not raw.strip() or raw.lstrip().startswith('#'):
+            continue
+        if not raw[0].isspace() and ':' in raw:
+            section_type, _sep, section_id = raw.partition(':')
+            current = {'type': section_type.strip(), 'id': section_id.strip(), 'props': {}}
+            sections.append(current)
+        elif current is not None:
+            key, _sep, value = raw.strip().partition(' ')
+            current['props'][key] = value.strip()
+    return sections
+
+def normalize_vzdump_job(job):
+    def flag(value, default):
+        if value in (None, ''):
+            return default
+        return str(value).strip().lower() not in ('0', 'false', 'no')
+    return {
+        'id': str(job.get('id', '')),
+        'vmids': parse_vmid_list(job.get('vmid')),
+        'all': flag(job.get('all'), False),
+        'exclude': parse_vmid_list(job.get('exclude')),
+        'pool': str(job.get('pool') or ''),
+        'node': str(job.get('node') or ''),
+        'enabled': flag(job.get('enabled'), True),
+        'storage': str(job.get('storage') or ''),
+        'schedule': str(job.get('schedule') or ''),
+        'script': str(job.get('script') or ''),
+    }
+
+def parse_vzdump_jobs(facts):
+    """Vzdump joby z `pvesh get /cluster/backup` (JSON), fallback na /etc/pve/jobs.cfg."""
+    raw = info_stdout(facts, 'pve-backup-jobs.json').strip()
+    if raw:
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return [normalize_vzdump_job(job) for job in data if isinstance(job, dict)]
+        except json.JSONDecodeError:
+            pass
+    jobs = []
+    for section in parse_pve_section_config(facts['files'].get('etc/pve/jobs.cfg', '')):
+        if section['type'] == 'vzdump':
+            jobs.append(normalize_vzdump_job({'id': section['id'], **section['props']}))
+    return jobs
+
+def nic_summary(facts):
+    """Názvy NIC a MAC pôvodného hosta: `ip -br link`, pre staršie archívy odvodené z `ip addr`."""
+    brief = info_stdout(facts, 'ip-br-link.txt').strip()
+    if brief:
+        return brief
+    lines = []
+    current = None
+    for line in info_stdout(facts, 'ip-addr.txt').splitlines():
+        match = re.match(r'^\d+:\s+([^:@\s]+)(?:@\S+)?:\s+<([^>]*)>', line)
+        if match:
+            current = [match.group(1), 'UP' if 'LOWER_UP' in match.group(2) else 'DOWN', '']
+            if not current[0].startswith(('tap', 'veth', 'fwbr', 'fwpr', 'fwln')):
+                lines.append(current)
+            continue
+        ether = re.match(r'^\s+link/ether\s+(\S+)', line)
+        if ether and current is not None:
+            current[2] = ether.group(1)
+    return '\n'.join(f'{name:<16} {state:<5} {mac}'.rstrip() for name, state, mac in lines)
+
+def archive_node_name(facts):
+    name = info_stdout(facts, 'hostname.txt').strip().splitlines()
+    if name:
+        return name[0].strip()
+    return facts['files'].get('etc/hostname', '').strip().split('.')[0]
+
+def hook_script_status(facts, script_path):
+    """OK / NOEXEC / MISSING z hook-scripts.txt, inak odhad podľa zálohovaného adresára, inak unknown."""
+    for line in info_stdout(facts, 'hook-scripts.txt').splitlines():
+        status, _sep, path = line.strip().partition(' ')
+        if path == script_path and status in ('OK', 'NOEXEC', 'MISSING'):
+            return status, 'host'
+    arcname = archive_name_for_path(script_path)
+    parent = posixpath.dirname(arcname)
+    if arcname in facts['members']:
+        return 'OK', 'archive'
+    if parent and parent in facts['members']:
+        return 'MISSING', 'archive'
+    return 'unknown', ''
+
+def analyze_recovery_risks(facts, entry=None):
+    """Deterministické riziká obnovy z faktov archívu (nemenia READY/WARNING/INCOMPLETE)."""
+    risks = []
+    guests = parse_guest_lists(facts)
+    jobs = parse_vzdump_jobs(facts)
+    node = archive_node_name(facts)
+
+    if guests:
+        if not jobs:
+            risks.append({
+                'id': 'no-vzdump-jobs', 'level': 'error',
+                'title': 'Žiadny vzdump job',
+                'detail': 'Na hoste nie je definovaný žiadny vzdump job – disky VM a LXC sa nezálohujú.',
+                'items': [],
+            })
+        else:
+            pool_jobs = [job['id'] for job in jobs if job['pool']]
+            uncovered = []
+            for guest in guests:
+                covered = any(
+                    (job['all'] and guest['vmid'] not in job['exclude']) or guest['vmid'] in job['vmids']
+                    for job in jobs
+                )
+                guest['backed_up'] = covered
+                if not covered:
+                    uncovered.append(guest)
+            if uncovered:
+                running = [guest for guest in uncovered if guest['status'] == 'running']
+                risks.append({
+                    'id': 'guests-without-vzdump',
+                    'level': 'info' if pool_jobs else ('error' if running else 'warning'),
+                    'title': f'Hostia bez vzdump zálohy ({len(uncovered)})',
+                    'detail': (
+                        'Tieto VM/LXC nie sú v žiadnom vzdump jobe. Ich config sa obnoví z /etc/pve, ale disky nie.'
+                        + (f' Joby s poolom ({", ".join(pool_jobs)}) sa nedajú overiť – skontroluj ručne.' if pool_jobs else '')
+                    ),
+                    'items': [f"{guest['vmid']} {guest['name']} ({guest['type']}, {guest['status'] or 'n/a'})" for guest in uncovered],
+                })
+
+    if node:
+        mismatched = [job for job in jobs if job['node'] and job['node'] != node]
+        if mismatched:
+            risks.append({
+                'id': 'job-node-mismatch', 'level': 'error',
+                'title': 'Vzdump job je viazaný na iný node',
+                'detail': f'Host sa volá „{node}“, ale tieto joby majú iný node – nezálohujú nič (napr. po zmene hostname).',
+                'items': [f"{job['id']}: node {job['node']}" for job in mismatched],
+            })
+
+    scripts = sorted({job['script'] for job in jobs if job['script']})
+    missing, unknown = [], []
+    for script in scripts:
+        status, source = hook_script_status(facts, script)
+        label = 'podľa kontroly na hoste' if source == 'host' else 'podľa obsahu archívu'
+        if status in ('MISSING', 'NOEXEC'):
+            missing.append(f"{script} – {'neexistuje' if status == 'MISSING' else 'nie je spustiteľný'} ({label})")
+        elif status == 'unknown':
+            unknown.append(script)
+    if missing:
+        risks.append({
+            'id': 'hook-script-missing', 'level': 'error',
+            'title': 'Hook skript vzdump jobu chýba',
+            'detail': 'Vzdump job odkazuje na hook skript, ktorý na hoste nie je. Over v `journalctl`, či zálohy VM/LXC reálne vznikajú.',
+            'items': missing,
+        })
+    if unknown:
+        risks.append({
+            'id': 'hook-script-unknown', 'level': 'info',
+            'title': 'Hook skript sa nedá overiť',
+            'detail': 'Adresár skriptu nie je v zálohe. Novšie zálohy to overia priamo na hoste (hook-scripts.txt).',
+            'items': unknown,
+        })
+
+    if jobs and not any(job['enabled'] for job in jobs):
+        orchestrated = any(
+            name.startswith('etc/systemd/system/') and name.endswith('.timer') and 'backup' in name
+            for name in facts['members']
+        )
+        risks.append({
+            'id': 'jobs-disabled', 'level': 'info' if orchestrated else 'warning',
+            'title': 'Všetky vzdump joby sú v PVE vypnuté',
+            'detail': (
+                'Joby majú enabled 0 – spúšťa ich vlastný systemd timer (orchestrátor). Over `systemctl list-timers`.'
+                if orchestrated else
+                'Joby majú enabled 0 a nenašiel sa vlastný timer – zálohy VM/LXC sa pravdepodobne nespúšťajú.'
+            ),
+            'items': [job['id'] for job in jobs],
+        })
+
+    return {'node': node, 'guests': guests, 'jobs': jobs, 'risks': risks}
+
+def build_recovery_risks(history):
+    """Riziká obnovy z najnovšieho lokálneho archívu + pripomienka offline kópie archívu."""
+    risks = []
+    entry, archive_path = latest_local_archive_entry(history)
+    archive = None
+    if entry:
+        archive = {
+            'id': entry.get('id'),
+            'filename': entry.get('filename'),
+            'timestamp': entry.get('timestamp'),
+        }
+        try:
+            analysis = analyze_recovery_risks(read_archive_facts(archive_path), entry)
+            risks.extend(analysis['risks'])
+        except (OSError, tarfile.TarError, ValueError) as exc:
+            risks.append({'id': 'archive-unreadable', 'level': 'warning', 'title': 'Archív sa nedá analyzovať',
+                          'detail': str(exc), 'items': []})
+    else:
+        risks.append({
+            'id': 'no-local-archive', 'level': 'info',
+            'title': 'Žiadny lokálny archív na analýzu',
+            'detail': 'Riziká sa počítajú z najnovšieho lokálneho archívu. Vytvor zálohu alebo načítaj archív z FTP (História).',
+            'items': [],
+        })
+
+    downloads = [item.get('downloaded_at') for item in history if item.get('downloaded_at')]
+    latest = max(history, key=lambda item: parse_backup_timestamp(item) or datetime.min, default=None)
+    if latest and not latest.get('downloaded_at'):
+        last_download = max(downloads) if downloads else None
+        risks.append({
+            'id': 'no-offline-copy', 'level': 'warning',
+            'title': 'Najnovší archív nemáš stiahnutý mimo servera',
+            'detail': (
+                'Archívy sú na FTP/NAS. Ak zomrie aj NAS, konfiguráciu hosta nebudeš mať. Stiahni si najnovší archív '
+                '(História → Stiahnuť) a offline príručku na svoje PC.'
+                + (f' Posledné stiahnutie: {last_download[:16].replace("T", " ")}.' if last_download else ' Zatiaľ si nestiahol žiadny archív.')
+            ),
+            'items': [],
+        })
+    return {'archive': archive, 'risks': risks}
+
+# ---------------------------------------------------------------------------
+# Offline DR príručka (HTML generovaná z najnovšieho archívu + nastavení appky)
+# ---------------------------------------------------------------------------
+
+APP_REPO_URL = 'https://github.com/spekulanter/proxmox-backup'
+APP_INSTALL_SCRIPT_URL = 'https://raw.githubusercontent.com/spekulanter/proxmox-backup/main/install_in_lxc.sh'
+WEEKDAY_NAMES = ['pondelok', 'utorok', 'streda', 'štvrtok', 'piatok', 'sobota', 'nedeľa']
+REDACT_KEY_PATTERN = re.compile(r'(pass|secret|token|apikey|api-key|encryption)', re.IGNORECASE)
+
+def redact_config_text(text):
+    """Pre istotu zamaskuje hodnoty kľúčov, ktoré vyzerajú ako tajomstvá."""
+    lines = []
+    for line in (text or '').splitlines():
+        key = line.strip().split(' ', 1)[0].rstrip(':=')
+        lines.append(re.sub(r'^(\s*\S+[\s:=]+).*$', r'\1***', line) if key and REDACT_KEY_PATTERN.search(key) else line)
+    return '\n'.join(lines)
+
+def parse_interfaces_stanzas(text):
+    stanzas = []
+    current = None
+    for raw in (text or '').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#'):
+            continue
+        parts = line.split()
+        if parts[0] == 'iface' and len(parts) >= 2:
+            current = {'name': parts[1], 'method': parts[3] if len(parts) > 3 else '', 'options': {}}
+            stanzas.append(current)
+        elif parts[0] in ('auto', 'allow-hotplug', 'source', 'source-directory'):
+            current = None
+        elif current is not None:
+            current['options'][parts[0]] = ' '.join(parts[1:])
+    return stanzas
+
+def describe_management_network(facts, host_ip):
+    """Zistí management rozhranie, bridge, VLAN a vygeneruje minimálnu šablónu /etc/network/interfaces."""
+    stanzas = parse_interfaces_stanzas(facts['files'].get('etc/network/interfaces', ''))
+    by_name = {stanza['name']: stanza for stanza in stanzas}
+    mgmt = None
+    for stanza in stanzas:
+        address = stanza['options'].get('address', '')
+        if host_ip and (address == host_ip or address.startswith(host_ip + '/')):
+            mgmt = stanza
+            break
+    if not mgmt:
+        return None
+
+    name = mgmt['name']
+    vlan = None
+    bridge = name
+    if mgmt['options'].get('vlan-raw-device'):
+        bridge = mgmt['options']['vlan-raw-device']
+        vlan = mgmt['options'].get('vlan-id') or ''.join(ch for ch in name if ch.isdigit()) or None
+    elif '.' in name:
+        bridge, vlan = name.rsplit('.', 1)
+    bridge_stanza = by_name.get(bridge, {'options': {}})
+    ports = bridge_stanza['options'].get('bridge-ports', '')
+    address = mgmt['options'].get('address', '')
+    if '/' not in address and mgmt['options'].get('netmask'):
+        address = f"{address} (netmask {mgmt['options']['netmask']})"
+    gateway = mgmt['options'].get('gateway', '')
+    is_bridge = bridge.startswith('vmbr')
+
+    lines = ['auto lo', 'iface lo inet loopback', '', 'iface NIC inet manual', '']
+    if is_bridge and vlan:
+        lines += [f'auto {bridge}', f'iface {bridge} inet manual', '\tbridge-ports NIC', '\tbridge-stp off', '\tbridge-fd 0',
+                  '\tbridge-vlan-aware yes', '\tbridge-vids 2-4094', '', f'auto {bridge}.{vlan}',
+                  f'iface {bridge}.{vlan} inet static', f'\taddress {address}']
+    elif is_bridge:
+        lines += [f'auto {bridge}', f'iface {bridge} inet static', f'\taddress {address}', '\tbridge-ports NIC',
+                  '\tbridge-stp off', '\tbridge-fd 0']
+    else:
+        lines = ['auto lo', 'iface lo inet loopback', '', 'auto NIC', 'iface NIC inet static', f'\taddress {address}']
+    if gateway:
+        lines.append(f'\tgateway {gateway}')
+
+    return {
+        'interface': name,
+        'bridge': bridge if is_bridge else '',
+        'vlan': vlan,
+        'vlan_aware': bridge_stanza['options'].get('bridge-vlan-aware') == 'yes',
+        'bridge_ports': ports,
+        'address': address,
+        'gateway': gateway,
+        'template': '\n'.join(lines),
+    }
+
+def parse_automounts(facts):
+    """AutoFS NFS/CIFS mapy z auto.master + map súborov v archíve."""
+    mounts = []
+    master_lines = facts['files'].get('etc/auto.master', '').splitlines()
+    for name, text in facts['files'].items():
+        if name.startswith('etc/auto.master.d/'):
+            master_lines += text.splitlines()
+    for line in master_lines:
+        parts = line.split()
+        if len(parts) < 2 or parts[0].startswith(('#', '+')):
+            continue
+        root, map_file = parts[0], parts[1]
+        map_text = facts['files'].get(archive_name_for_path(map_file), '') if map_file.startswith('/') else ''
+        for entry in map_text.splitlines():
+            fields = entry.split()
+            if len(fields) < 3 or fields[0].startswith('#'):
+                continue
+            key, options, source = fields[0], fields[1], fields[-1]
+            option_list = [opt for opt in options.lstrip('-').split(',') if opt]
+            fstype = next((opt.split('=', 1)[1] for opt in option_list if opt.startswith('fstype=')), 'nfs')
+            mount_options = ','.join(opt for opt in option_list if not opt.startswith('fstype='))
+            mounts.append({
+                'key': key, 'fstype': fstype, 'options': mount_options, 'source': source,
+                'server': source.split(':', 1)[0].lstrip('/').split('/', 1)[0],
+                'path': posixpath.join(root, key) if root != '/-' else key,
+                'map_file': map_file,
+            })
+    return mounts
+
+def parse_backup_storages(facts):
+    storages = []
+    for section in parse_pve_section_config(facts['files'].get('etc/pve/storage.cfg', '')):
+        props = section['props']
+        content = props.get('content', '')
+        if 'backup' not in content and section['type'] not in ('pbs',):
+            continue
+        storages.append({
+            'id': section['id'], 'type': section['type'], 'path': props.get('path', ''),
+            'server': props.get('server', ''), 'export': props.get('export', '') or props.get('share', ''),
+            'disabled': 'disable' in props, 'datastore': props.get('datastore', ''),
+        })
+    return storages
+
+def detect_own_ip(peer_host, peer_port=22):
+    """Lokálna IP, cez ktorú appka dosiahne Proxmox host (UDP connect – nič sa neposiela)."""
+    if not peer_host:
+        return None
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect((peer_host, int(peer_port or 22)))
+            return sock.getsockname()[0]
+    except (OSError, ValueError):
+        return None
+
+def find_app_guest(facts, own_ip):
+    """LXC/VM s appkou podľa IP v net0 configu pôvodného hosta."""
+    if not own_ip:
+        return None
+    for name, text in sorted(facts['files'].items()):
+        match = GUEST_CONF_PATTERN.match(name)
+        if not match:
+            continue
+        main = text.split('\n[', 1)[0]
+        if re.search(rf'ip={re.escape(own_ip)}/', main):
+            net = {}
+            for line in main.splitlines():
+                if line.startswith('net0:'):
+                    for part in line.split(':', 1)[1].strip().split(','):
+                        key, _sep, value = part.partition('=')
+                        net[key] = value
+            return {
+                'vmid': int(match.group(3)), 'node': match.group(1),
+                'type': 'LXC' if match.group(2) == 'lxc' else 'VM',
+                'config': '\n'.join(line for line in main.splitlines() if line and not line.startswith('#')),
+                'net': net,
+            }
+    return None
+
+def describe_auto_backup(config):
+    if not config.get('auto_backup_enabled'):
+        return 'vypnutá'
+    frequency = config.get('auto_backup_frequency', 'monthly')
+    time_text = f"{int(config.get('auto_backup_hour', 2)):02d}:{int(config.get('auto_backup_minute', 0)):02d}"
+    day = int(config.get('auto_backup_day', 0))
+    if frequency == 'daily':
+        return f'denne o {time_text}'
+    if frequency == 'weekly':
+        return f'týždenne – {WEEKDAY_NAMES[day % 7]} {time_text}'
+    return f'mesačne – {day + 1}. deň v mesiaci {time_text}'
+
+def app_git_version():
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    try:
+        commit = subprocess.run(['git', '-C', app_dir, 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True, timeout=5).stdout.strip()
+        branch = subprocess.run(['git', '-C', app_dir, 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True, text=True, timeout=5).stdout.strip()
+        return f'{branch}@{commit}' if commit else ''
+    except (OSError, subprocess.SubprocessError):
+        return ''
+
+def build_handbook_context(config=None):
+    """Údaje pre offline príručku – bez hesiel a bez obsahu citlivých súborov."""
+    config = config or load_config()
+    history = visible_backup_history(config, persist_pruned=False)
+    overview = build_recovery_overview(config, history=history)
+    source = sanitize_source_config(config.get('source_config'))
+    ftp = sanitize_ftp_config(config.get('ftp_config'))
+    host_ip = source['ssh']['host'] if source['mode'] == 'remote_ssh' else ''
+
+    entry, archive_path = latest_local_archive_entry(history)
+    facts = None
+    archive_error = ''
+    if archive_path:
+        try:
+            facts = read_archive_facts(archive_path)
+        except (OSError, tarfile.TarError, ValueError) as exc:
+            archive_error = str(exc)
+
+    context = {
+        'generated_at': datetime.now(),
+        'app_version': app_git_version(),
+        'repo_url': APP_REPO_URL,
+        'install_url': APP_INSTALL_SCRIPT_URL,
+        'archive': None,
+        'archive_error': archive_error,
+        'host_ip': host_ip,
+        'source_mode': source['mode'],
+        'ssh': {'host': source['ssh']['host'], 'port': source['ssh']['port'], 'username': source['ssh']['username']},
+        'ftp': {'host': ftp['host'], 'port': ftp['port'], 'username': ftp['username'], 'remote_dir': ftp['remote_dir']},
+        'max_backup_count': config.get('max_backup_count'),
+        'auto_backup': describe_auto_backup(config),
+        'readiness': overview['readiness'],
+        'risks': overview['risks']['risks'],
+        'items': overview['items'],
+        'categories': overview['categories'],
+        'wiki': WIKI_ARTICLES,
+        'checklist': RECOVERY_CHECKLIST,
+        'node': '', 'fqdn': '', 'pve_version': '', 'dns': [], 'network': None,
+        'automounts': [], 'storages': [], 'jobs': [], 'guests': [], 'app_guest': None, 'own_ip': None,
+        'dump_dir': '', 'raw': {}, 'diag': {}, 'timers': [],
+    }
+    if entry:
+        timestamp = parse_backup_timestamp(entry)
+        context['archive'] = {'filename': entry.get('filename'), 'timestamp': timestamp, 'ftp_status': entry.get('ftp_status')}
+    if not facts:
+        return context
+
+    analysis = analyze_recovery_risks(facts)
+    for guest in analysis['guests']:
+        guest.setdefault('backed_up', False)
+    node = analysis['node']
+    fqdn = ''
+    for line in facts['files'].get('etc/hosts', '').splitlines():
+        parts = line.split()
+        if parts and host_ip and parts[0] == host_ip and len(parts) > 1:
+            fqdn = parts[1]
+    if not host_ip:
+        for line in info_stdout(facts, 'ip-br-addr.txt').splitlines():
+            parts = line.split()
+            if len(parts) > 2 and parts[0].startswith('vmbr'):
+                host_ip = parts[2].split('/')[0]
+                break
+    network = describe_management_network(facts, host_ip)
+    if network and not network['gateway']:
+        route = re.search(r'^default via (\S+)', info_stdout(facts, 'ip-route.txt'), re.MULTILINE)
+        network['gateway'] = route.group(1) if route else ''
+
+    storages = parse_backup_storages(facts)
+    automounts = parse_automounts(facts)
+    jobs = analysis['jobs']
+    storage_by_id = {storage['id']: storage for storage in storages}
+    dump_dir = ''
+    for job in jobs:
+        storage = storage_by_id.get(job['storage'])
+        if storage and storage['path']:
+            dump_dir = posixpath.join(storage['path'], 'dump')
+            break
+    own_ip = detect_own_ip(host_ip, source['ssh']['port']) if source['mode'] == 'remote_ssh' else None
+
+    context.update({
+        'node': node,
+        'fqdn': fqdn or (f'{node}.<doména>' if node else ''),
+        'host_ip': host_ip,
+        'pve_version': '\n'.join(info_stdout(facts, 'pveversion-v.txt').splitlines()[:2]),
+        'dns': [line.split()[1] for line in facts['files'].get('etc/resolv.conf', '').splitlines()
+                if line.startswith('nameserver') and len(line.split()) > 1],
+        'network': network,
+        'automounts': automounts,
+        'storages': storages,
+        'jobs': [{**job, 'vmids': sorted(job['vmids']), 'exclude': sorted(job['exclude'])} for job in jobs],
+        'guests': analysis['guests'],
+        'backed_up_lxc': [guest['vmid'] for guest in analysis['guests'] if guest['backed_up'] and guest['type'] == 'LXC'],
+        'backed_up_vm': [guest['vmid'] for guest in analysis['guests'] if guest['backed_up'] and guest['type'] == 'VM'],
+        'own_ip': own_ip,
+        'app_guest': find_app_guest(facts, own_ip),
+        'dump_dir': dump_dir,
+        'timers': sorted(
+            posixpath.basename(name) for name in facts['members']
+            if name.startswith('etc/systemd/system/') and name.count('/') == 3
+            and name.endswith(('.service', '.timer')) and 'backup' in name
+        ),
+        'raw': {
+            'interfaces': facts['files'].get('etc/network/interfaces', ''),
+            'hosts': facts['files'].get('etc/hosts', ''),
+            'auto_master': facts['files'].get('etc/auto.master', ''),
+            'auto_nfs': facts['files'].get('etc/auto.nfs', ''),
+            'storage_cfg': redact_config_text(facts['files'].get('etc/pve/storage.cfg', '')),
+            'jobs_cfg': redact_config_text(facts['files'].get('etc/pve/jobs.cfg', '')),
+            'fstab': facts['files'].get('etc/fstab', ''),
+        },
+        'diag': {
+            'ip_br_link': nic_summary(facts),
+            'lsblk': info_stdout(facts, 'lsblk-f.txt'),
+            'pvesm': info_stdout(facts, 'pvesm-status.txt'),
+        },
+    })
+    return context
+
+def render_inline_markup(text):
+    """`kód` → <code>; všetko ostatné escapované (pre wiki texty v príručke)."""
+    from markupsafe import Markup, escape
+    return Markup(re.sub(r'`([^`]+)`', r'<code>\1</code>', str(escape(text or ''))))
+
+app.add_template_filter(render_inline_markup, 'dr_inline')
 
 def load_backup_history():
     """Načítanie histórie záloh"""
@@ -3643,6 +4283,7 @@ def download_backup_api(backup_id):
     try:
         entry, archive_path, _cached = ensure_backup_cached(backup_id, config)
         filename = safe_backup_filename(entry.get('filename') or os.path.basename(archive_path))
+        annotate_backup_history_entry(entry.get('id'), {'downloaded_at': now_iso()})
         return send_file(archive_path, as_attachment=True, download_name=filename)
     except FileNotFoundError as e:
         return jsonify({'success': False, 'error': str(e)}), 404
@@ -3775,6 +4416,19 @@ def recovery_wiki_article_api(slug):
         if recovery_profile_for_path(item['path']).get('wiki_slug') == slug
     ]
     return jsonify({'success': True, 'article': article, 'related_items': related})
+
+@app.route('/api/recovery/handbook')
+def recovery_handbook_api():
+    """Offline DR príručka ako samostatný HTML súbor (bez hesiel a obsahu citlivých súborov)."""
+    context = build_handbook_context(load_config())
+    html = render_template('handbook.html', **context)
+    node = re.sub(r'[^A-Za-z0-9_-]', '_', context.get('node') or 'proxmox')
+    filename = f"DR-prirucka-{node}-{datetime.now():%Y%m%d}.html"
+    response = app.response_class(html, mimetype='text/html')
+    disposition = 'inline' if request.args.get('inline') == '1' else 'attachment'
+    response.headers['Content-Disposition'] = f'{disposition}; filename="{filename}"'
+    response.headers['Cache-Control'] = 'no-store'
+    return response
 
 @app.route('/api/recovery/snapshot/<backup_id>')
 def recovery_snapshot_api(backup_id):

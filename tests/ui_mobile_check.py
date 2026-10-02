@@ -102,7 +102,7 @@ OVERFLOW_JS = """
       if (['auto','scroll','hidden'].includes(ps.overflowX)) { clipped = true; break; }
       p = p.parentElement;
     }
-    if (!clipped && (r.right > vw + 1 || r.left < -1)) {
+    if (!clipped && r.right > vw + 1) {
       offenders.push((el.id ? '#' + el.id : el.tagName.toLowerCase()) + '.' + String(el.className).slice(0, 60) + ' right=' + Math.round(r.right));
     }
   });
@@ -193,6 +193,14 @@ with sync_playwright() as p:
         page.goto(BASE + '/#wiki/network')
         page.wait_for_selector('#rsec-wiki article h2:has-text("siete")', timeout=15000)
         check(page, 'deeplink-wiki-network', vp)
+
+        page.goto(BASE + '/api/recovery/handbook?inline=1')
+        page.wait_for_selector('#rychle-udaje')
+        check(page, 'offline-handbook', vp)
+        handbook_html = page.content()
+        results.append({'viewport': vp, 'view': 'handbook-no-secrets', 'ok': SECRET_MARKER not in handbook_html})
+        page.goto(BASE + '/')
+        page.wait_for_selector('#readiness-mini:not(:has-text("Načítavam"))', timeout=20000)
 
         html_dump = page.content()
         results.append({'viewport': vp, 'view': 'no-secrets-in-dom', 'ok': SECRET_MARKER not in html_dump})

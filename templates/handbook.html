@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DR príručka – {{ node or 'Proxmox host' }}</title>
+<style>
+:root {
+  --bg: #f4f6f9; --card: #ffffff; --text: #1d2733; --muted: #5b6878; --border: #d6dde6;
+  --primary: #1f4e79; --accent: #2b6cb0; --code-bg: #10161d; --code-text: #e6edf3;
+  --side-bg: #15283c; --side-text: #c4d3e3; --side-active: #2b6cb0;
+  --note-bg: #e8f1fb; --note-bd: #8bb4e0; --tip-bg: #e7f6ee; --tip-bd: #7cc39c;
+  --warn-bg: #fff4dc; --warn-bd: #e5b45a; --crit-bg: #fde8e8; --crit-bd: #e38a8a;
+  --ok-bg: #e6f6ea; --ok-bd: #6fbf83; --done: #2f855a;
+  --mono: ui-monospace, "Cascadia Code", Consolas, "SFMono-Regular", Menlo, monospace;
+  --sans: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12171d; --card: #1a2129; --text: #dde5ee; --muted: #9aa8b8; --border: #2e3a47;
+    --primary: #8fbcea; --accent: #6aa8e8; --code-bg: #0b0f14; --code-text: #e6edf3;
+    --side-bg: #0e1a26; --side-text: #b4c4d6; --side-active: #2b6cb0;
+    --note-bg: #16263a; --note-bd: #2f5680; --tip-bg: #13281e; --tip-bd: #2f6b4a;
+    --warn-bg: #2d2412; --warn-bd: #7a5c22; --crit-bg: #321718; --crit-bd: #7f3434;
+    --ok-bg: #13281b; --ok-bd: #2f6b44; --done: #68d391;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12171d; --card: #1a2129; --text: #dde5ee; --muted: #9aa8b8; --border: #2e3a47;
+  --primary: #8fbcea; --accent: #6aa8e8; --code-bg: #0b0f14; --code-text: #e6edf3;
+  --side-bg: #0e1a26; --side-text: #b4c4d6; --side-active: #2b6cb0;
+  --note-bg: #16263a; --note-bd: #2f5680; --tip-bg: #13281e; --tip-bd: #2f6b4a;
+  --warn-bg: #2d2412; --warn-bd: #7a5c22; --crit-bg: #321718; --crit-bd: #7f3434;
+  --ok-bg: #13281b; --ok-bd: #2f6b44; --done: #68d391;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 4rem; }
+body { margin: 0; font-family: var(--sans); background: var(--bg); color: var(--text); line-height: 1.6; font-size: 16px; }
+a { color: var(--accent); }
+code { font-family: var(--mono); font-size: 0.88em; background: color-mix(in srgb, var(--border) 45%, transparent); padding: 0.05em 0.35em; border-radius: 4px; overflow-wrap: anywhere; }
+
+/* layout */
+.layout { display: flex; min-height: 100vh; }
+#sidebar { width: 290px; flex-shrink: 0; background: var(--side-bg); color: var(--side-text); position: sticky; top: 0; height: 100vh; overflow-y: auto; padding: 1.25rem 1rem 3rem; }
+#sidebar .brand { font-size: 0.72rem; letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.7; }
+#sidebar .title { font-weight: 700; color: #fff; margin: 0.3rem 0 1rem; line-height: 1.3; }
+#sidebar ol { list-style: none; margin: 0; padding: 0; counter-reset: none; }
+#sidebar li a { display: block; color: var(--side-text); text-decoration: none; padding: 0.3rem 0.5rem; border-radius: 6px; font-size: 0.88rem; line-height: 1.35; }
+#sidebar li a:hover { background: rgba(255,255,255,0.08); color: #fff; }
+#sidebar li a.active { background: var(--side-active); color: #fff; }
+#sidebar li.sub a { padding-left: 1.4rem; font-size: 0.82rem; }
+#sidebar .side-tools { margin-top: 1.25rem; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+main { flex: 1; min-width: 0; }
+.topbar { display: none; }
+.content { max-width: 980px; margin: 0 auto; padding: 2rem 2rem 5rem; }
+
+/* cover */
+.cover { background: linear-gradient(135deg, #15283c, #1f4e79 70%, #2b6cb0); color: #fff; border-radius: 14px; padding: 2.2rem 2rem; margin-bottom: 2rem; }
+.cover .badge { display: inline-block; background: rgba(255,255,255,0.16); border: 1px solid rgba(255,255,255,0.35); border-radius: 999px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.12em; padding: 0.2rem 0.75rem; text-transform: uppercase; }
+.cover h1 { margin: 0.8rem 0 0.5rem; font-size: 2rem; line-height: 1.2; }
+.cover p { margin: 0.3rem 0; opacity: 0.92; }
+.cover .meta { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; margin-top: 1rem; font-size: 0.88rem; opacity: 0.9; }
+
+/* sections */
+section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem 1.6rem; margin-bottom: 1.5rem; }
+h2 { margin: 0 0 0.8rem; font-size: 1.45rem; color: var(--primary); line-height: 1.25; }
+h3 { margin: 1.6rem 0 0.6rem; font-size: 1.12rem; line-height: 1.3; }
+h4 { margin: 1.1rem 0 0.4rem; font-size: 1rem; }
+p { margin: 0.55rem 0; }
+p, li, td, h2, h3, h4, .callout { overflow-wrap: anywhere; }
+summary { overflow-wrap: anywhere; }
+.cover .meta span { min-width: 0; overflow-wrap: anywhere; }
+ul, ol { padding-left: 1.4rem; margin: 0.5rem 0; }
+li { margin: 0.2rem 0; }
+
+/* callouts */
+.callout { border: 1px solid; border-left-width: 5px; border-radius: 8px; padding: 0.75rem 1rem; margin: 0.9rem 0; }
+.callout > strong:first-child { display: block; margin-bottom: 0.15rem; }
+.note { background: var(--note-bg); border-color: var(--note-bd); }
+.tip { background: var(--tip-bg); border-color: var(--tip-bd); }
+.warn { background: var(--warn-bg); border-color: var(--warn-bd); }
+.crit { background: var(--crit-bg); border-color: var(--crit-bd); }
+.ok { background: var(--ok-bg); border-color: var(--ok-bd); }
+
+/* code */
+.code { position: relative; margin: 0.7rem 0; }
+.code pre { margin: 0; background: var(--code-bg); color: var(--code-text); border-radius: 8px; padding: 0.85rem 1rem; font-family: var(--mono); font-size: 0.84rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.code .c { color: #7d8b99; }
+.copy { position: absolute; top: 0.4rem; right: 0.4rem; font-size: 0.72rem; border: 1px solid #3a4756; background: #1d2731; color: #c9d6e2; border-radius: 5px; padding: 0.15rem 0.5rem; cursor: pointer; }
+.copy:hover { background: #2a3744; }
+
+/* tables */
+.table-wrap { overflow-x: auto; margin: 0.8rem 0; }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+th, td { border: 1px solid var(--border); padding: 0.45rem 0.6rem; text-align: left; vertical-align: top; }
+th { background: color-mix(in srgb, var(--border) 45%, transparent); }
+td code { white-space: nowrap; }
+
+/* steps */
+.step { border: 1px solid var(--border); border-radius: 10px; padding: 0.9rem 1rem; margin: 0.9rem 0; }
+.step-head { display: flex; align-items: flex-start; gap: 0.7rem; }
+.step-head input { width: 1.35rem; height: 1.35rem; margin-top: 0.15rem; flex-shrink: 0; accent-color: var(--done); }
+.step-head label { font-weight: 650; cursor: pointer; }
+.step-num { display: inline-block; min-width: 2.2rem; color: var(--muted); font-weight: 700; }
+.step.done { border-color: var(--done); }
+.step.done .step-head label { color: var(--done); text-decoration: line-through; }
+.step-body { padding-left: 2.05rem; }
+.pill { display: inline-block; font-size: 0.72rem; font-weight: 700; border-radius: 999px; padding: 0.05rem 0.55rem; border: 1px solid; white-space: nowrap; }
+.p-req { background: #dcfce7; color: #14532d; border-color: #86efac; }
+.p-rev { background: #ffedd5; color: #7c2d12; border-color: #fdba74; }
+.p-sel { background: #dbeafe; color: #1e3a8a; border-color: #93c5fd; }
+.p-ref { background: #f1f5f9; color: #334155; border-color: #cbd5e1; }
+.p-opt { background: transparent; color: var(--muted); border-color: var(--border); border-style: dashed; }
+.p-no { background: #fee2e2; color: #991b1b; border-color: #fca5a5; }
+
+.progress { position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 0.5rem 0; margin: -0.5rem 0 1rem; }
+.bar { height: 8px; border-radius: 99px; background: var(--border); overflow: hidden; }
+.bar > div { height: 100%; width: 0; background: var(--done); transition: width 0.2s; }
+.btn { font: inherit; font-size: 0.82rem; border: 1px solid var(--border); background: var(--card); color: var(--text); border-radius: 6px; padding: 0.3rem 0.65rem; cursor: pointer; }
+#sidebar .btn { background: rgba(255,255,255,0.08); color: #fff; border-color: rgba(255,255,255,0.2); }
+.diagram { width: 100%; height: auto; display: block; margin: 0.8rem 0; }
+.diagram text { font-family: var(--sans); fill: var(--text); }
+.diagram .box { fill: var(--card); stroke: var(--border); stroke-width: 1.5; }
+.diagram .boxa { fill: var(--note-bg); stroke: var(--note-bd); stroke-width: 1.5; }
+.diagram .line { stroke: var(--muted); stroke-width: 1.6; fill: none; }
+.diagram .small { font-size: 11px; fill: var(--muted); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.decision { border: 1px solid var(--border); border-radius: 10px; padding: 0.8rem 1rem; }
+.decision h4 { margin-top: 0; }
+footer { color: var(--muted); font-size: 0.85rem; text-align: center; margin-top: 2rem; }
+
+@media (max-width: 900px) {
+  .layout { display: block; }
+  #sidebar { position: fixed; inset: 0 auto 0 0; width: 85vw; max-width: 320px; z-index: 50; transform: translateX(-100%); transition: transform 0.2s; }
+  body.nav-open #sidebar { transform: none; box-shadow: 0 0 40px rgba(0,0,0,0.5); }
+  .topbar { display: flex; position: sticky; top: 0; z-index: 40; align-items: center; gap: 0.6rem; padding: 0.55rem 1rem; background: var(--side-bg); color: #fff; }
+  .topbar button { font-size: 1.2rem; background: none; border: 0; color: #fff; cursor: pointer; padding: 0.2rem 0.4rem; }
+  .topbar span { font-weight: 600; font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .content { padding: 1rem 0.75rem 4rem; }
+  section { padding: 1.1rem 1rem; }
+  .cover { padding: 1.5rem 1.1rem; }
+  .cover h1 { font-size: 1.5rem; }
+  .grid2 { grid-template-columns: 1fr; }
+  .step-body { padding-left: 0; }
+  .progress { top: 2.9rem; padding: 0.5rem 0.75rem; margin: -0.5rem -0.75rem 1rem; }
+  td code { white-space: normal; }
+}
+@media print {
+  #sidebar, .topbar, .copy, .side-tools, .progress, .no-print { display: none !important; }
+  body { background: #fff; color: #000; font-size: 11pt; }
+  .content { max-width: none; padding: 0; }
+  section { border: 0; padding: 0; page-break-inside: auto; }
+  h2 { page-break-before: always; }
+  .cover + section h2 { page-break-before: avoid; }
+  .code pre { background: #f3f3f3; color: #000; border: 1px solid #ccc; }
+  .step { page-break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+{%- set N = node or '<hostname>' -%}
+{%- set HOST = host_ip or '<IP hosta>' -%}
+{%- set GW = (network.gateway if network else '') or '<gateway>' -%}
+{%- set DNS = dns[0] if dns else GW -%}
+{%- set CAT = {'required': 'p-req', 'review': 'p-rev', 'selective': 'p-sel', 'reference': 'p-ref', 'optional': 'p-opt'} -%}
+{%- set AG = app_guest -%}
+{%- set AGID = AG.vmid if AG else '<VMID>' -%}
+{%- set FIRSTMOUNT = automounts[0] if automounts else None -%}
+{%- set RESTOREDIR = ('/mnt/restore-' ~ FIRSTMOUNT.key) if FIRSTMOUNT else '/mnt/restore-nas' -%}
+
+{%- macro step(id, num, title) -%}
+<div class="step" data-step="{{ id }}"><div class="step-head"><input type="checkbox" id="{{ id }}"><label for="{{ id }}"><span class="step-num">{{ num }}</span>{{ title }}</label></div>
+<div class="step-body">{{ caller() }}</div></div>
+{%- endmacro -%}
+{%- macro code(text) -%}<div class="code"><pre>{{ text }}</pre></div>{%- endmacro -%}
+{%- macro wiki_blocks(blocks) -%}
+{%- for block in blocks -%}
+{%- if block.type == 'h' %}<h4>{{ block.text|dr_inline }}</h4>
+{%- elif block.type == 'p' %}<p>{{ block.text|dr_inline }}</p>
+{%- elif block.type == 'ul' %}<ul>{% for item in block['items'] %}<li>{{ item|dr_inline }}</li>{% endfor %}</ul>
+{%- elif block.type == 'ol' %}<ol>{% for item in block['items'] %}<li>{{ item|dr_inline }}</li>{% endfor %}</ol>
+{%- elif block.type == 'code' %}{{ code(block.text) }}
+{%- elif block.type == 'warn' %}<div class="warn callout"><strong>⚠️ Pozor</strong>{{ block.text|dr_inline }}</div>
+{%- elif block.type == 'danger' %}<div class="crit callout"><strong>🔴 Nebezpečné</strong>{{ block.text|dr_inline }}</div>
+{%- elif block.type == 'tip' %}<div class="tip callout"><strong>💡 Tip</strong>{{ block.text|dr_inline }}</div>
+{%- endif -%}
+{%- endfor -%}
+{%- endmacro %}
+
+<div class="topbar"><button type="button" onclick="document.body.classList.toggle('nav-open')" aria-label="Obsah">☰</button><span>DR príručka – {{ node or 'Proxmox host' }}</span></div>
+<div class="layout">
+<nav id="sidebar" aria-label="Obsah">
+  <div class="brand">Offline DR príručka</div>
+  <div class="title">Obnova Proxmox hosta „{{ N }}“ a Proxmox Backup Managera</div>
+  <ol id="toc">
+    <li><a href="#rychle-udaje">0. Kľúčové údaje (ťahák)</a></li>
+    <li><a href="#rizika">1. Riziká obnovy</a></li>
+    <li><a href="#prehlad">2. Ako sú veci zálohované</a></li>
+    <li><a href="#priprava">3. Čo potrebuješ mať pripravené</a></li>
+    <li><a href="#faza1">4. Fáza 1 – inštalácia Proxmoxu</a></li>
+    <li><a href="#faza2">5. Fáza 2 – sieť</a></li>
+    <li><a href="#faza3">6. Fáza 3 – NAS a FTP</a></li>
+    <li><a href="#faza4">7. Fáza 4 – config.db</a></li>
+    <li class="sub"><a href="#novy-nazov">7B. Nový názov nodu</a></li>
+    <li><a href="#faza5">8. Fáza 5 – Proxmox Backup Manager</a></li>
+    <li><a href="#faza6">9. Fáza 6 – host-specific veci</a></li>
+    <li><a href="#faza7">10. Fáza 7 – VM a LXC</a></li>
+    <li><a href="#faza8">11. Fáza 8 – kontrola</a></li>
+    <li><a href="#co-obnovit">12. Čo obnoviť z archívu</a></li>
+    <li><a href="#prilohaA">A. Konfigurácia pôvodného hosta</a></li>
+    <li><a href="#prilohaB">B. Hostia a vzdump joby</a></li>
+    <li><a href="#prilohaC">C. Riešenie problémov</a></li>
+    <li><a href="#wiki">D. Wiki</a></li>
+  </ol>
+  <div class="side-tools">
+    <button class="btn" type="button" onclick="toggleTheme()">Svetlá/tmavá</button>
+    <button class="btn" type="button" onclick="window.print()">Tlačiť</button>
+    <button class="btn" type="button" onclick="resetSteps()">Reset postupu</button>
+  </div>
+</nav>
+
+<main>
+<div class="content">
+
+<div class="cover">
+  <span class="badge">Disaster Recovery · offline</span>
+  <h1>Obnova Proxmox hosta „{{ N }}“ na novom HW</h1>
+  <p>Postup od A po Z: nový hardvér → Proxmox → sieť → prístup k zálohám → konfigurácia hosta → Proxmox Backup Manager → VM/LXC → kontrola.</p>
+  <p>Súbor funguje úplne offline. Vygeneroval ho Proxmox Backup Manager z najnovšieho archívu a nastavení. Neobsahuje heslá ani obsah citlivých súborov.</p>
+  <div class="meta">
+    <span>Vygenerované: {{ generated_at.strftime('%d. %m. %Y %H:%M') }}</span>
+    <span>Archív: {% if archive %}{{ archive.filename }}{% if archive.timestamp %} ({{ archive.timestamp.strftime('%d. %m. %Y %H:%M') }}){% endif %}{% else %}žiadny lokálny archív{% endif %}</span>
+    {% if pve_version %}<span>{{ pve_version.splitlines()[0] }}</span>{% endif %}
+    {% if app_version %}<span>Appka: {{ app_version }}</span>{% endif %}
+  </div>
+</div>
+
+{% if not archive or archive_error %}
+<div class="crit callout"><strong>🔴 Príručka bez údajov z archívu</strong>{% if archive_error %}Archív sa nepodarilo prečítať: {{ archive_error }}.{% else %}Appka nemá lokálny archív konfigurácie hosta.{% endif %} Hodnoty hosta (sieť, NAS, joby, hostia) chýbajú – vytvor zálohu a vygeneruj príručku znova.</div>
+{% endif %}
+
+<div class="progress no-print">
+  <div style="display:flex;justify-content:space-between;font-size:0.85rem;margin-bottom:0.25rem"><span>Postup obnovy</span><span id="progress-text">0 / 0</span></div>
+  <div class="bar"><div id="progress-bar"></div></div>
+</div>
+
+<section id="rychle-udaje">
+<h2>0. Kľúčové údaje (ťahák)</h2>
+<div class="table-wrap"><table>
+<tr><th>Čo</th><th>Hodnota</th><th>Poznámka</th></tr>
+<tr><td>Proxmox host – hostname</td><td><code>{{ N }}</code>{% if fqdn %} (FQDN <code>{{ fqdn }}</code>){% endif %}</td><td>Najjednoduchšie je zachovať ho. Iný názov – <a href="#novy-nazov">7B</a>.</td></tr>
+<tr><td>Proxmox host – IP</td><td><code>{{ network.address if network else HOST }}</code></td><td>{% if network %}rozhranie <code>{{ network.interface }}</code>{% if network.vlan %} (VLAN {{ network.vlan }}){% endif %}{% endif %}</td></tr>
+<tr><td>Gateway / DNS</td><td><code>{{ GW }}</code> / <code>{{ dns|join(', ') if dns else '?' }}</code></td><td></td></tr>
+{% if network and network.bridge %}<tr><td>Bridge</td><td><code>{{ network.bridge }}</code>{% if network.vlan_aware %}, VLAN-aware{% endif %}</td><td>port bol <code>{{ network.bridge_ports or '?' }}</code></td></tr>{% endif %}
+<tr><td>Proxmox GUI</td><td><code>https://{{ HOST }}:8006</code></td><td>login <code>root</code> (PAM)</td></tr>
+<tr><td>Proxmox Backup Manager</td><td><code>http://{{ own_ip or '<IP appky>' }}:5000</code> (prod), <code>:5001</code> (dev)</td><td>{% if AG %}{{ AG.type }} <strong>{{ AG.vmid }}</strong> na node {{ AG.node }}{% else %}VMID appky sa nepodarilo zistiť{% endif %}; <code>/opt/proxmox-backup</code>, <code>/opt/proxmox-backup-dev</code></td></tr>
+{% if AG %}<tr><td>Sieť appky</td><td><code>bridge={{ AG.net.bridge or '?' }}{% if AG.net.tag %}, tag={{ AG.net.tag }}{% endif %}, ip={{ AG.net.ip or '?' }}, gw={{ AG.net.gw or '?' }}</code></td><td>MAC {{ AG.net.hwaddr or '?' }}</td></tr>{% endif %}
+{% for m in automounts %}<tr><td>NAS – {{ m.key }}</td><td><code>{{ m.source }}</code></td><td>{{ m.fstype }} ({{ m.options }}), autofs → <code>{{ m.path }}</code></td></tr>{% endfor %}
+{% for s in storages %}<tr><td>Storage {{ s.id }}</td><td><code>{{ s.path or (s.server ~ ':' ~ s.export) }}</code></td><td>{{ s.type }}{% if s.disabled %}, v PVE disabled{% endif %}</td></tr>{% endfor %}
+<tr><td>FTP (archívy konfigurácie hosta)</td><td><code>ftp://{{ ftp.host or '?' }}:{{ ftp.port }}</code>, používateľ <code>{{ ftp.username or '?' }}</code></td><td>adresár <code>{{ ftp.remote_dir or '/' }}</code></td></tr>
+<tr><td>Zdroj zálohy appky</td><td>{{ 'Remote SSH' if source_mode == 'remote_ssh' else 'Lokálny filesystem' }}{% if ssh.host %} – <code>{{ ssh.username }}@{{ ssh.host }}:{{ ssh.port }}</code>{% endif %}</td><td>automatická záloha: {{ auto_backup }}, retencia {{ max_backup_count }}</td></tr>
+<tr><td>Zdrojový kód appky</td><td><code>{{ repo_url }}</code></td><td>verejný repozitár</td></tr>
+</table></div>
+<div class="crit callout"><strong>🔴 Heslá maj mimo servera</strong>Root heslo Proxmoxu, FTP heslo, admin NAS, prihlásenie + recovery kódy appky. Ak používaš správcu hesiel ako VM/LXC na tomto hoste, pri havárii k nemu nebudeš mať prístup.</div>
+</section>
+
+<section id="rizika">
+<h2>1. Riziká obnovy</h2>
+<p>Pripravenosť na obnovu: <strong>{{ readiness.status }}</strong> – {{ readiness.label }} (REQUIRED {{ readiness.required_ok }}/{{ readiness.required_total }}).</p>
+{% for issue in readiness.issues %}<div class="warn callout"><strong>{{ issue.name }} <code>{{ issue.path }}</code></strong>{{ issue.message }}</div>{% endfor %}
+{% for risk in risks %}
+<div class="{{ 'crit' if risk.level == 'error' else ('warn' if risk.level == 'warning' else 'note') }} callout"><strong>{{ risk.title }}</strong>{{ risk.detail|dr_inline }}{% if risk['items'] %}<ul>{% for item in risk['items'] %}<li>{{ item }}</li>{% endfor %}</ul>{% endif %}</div>
+{% else %}
+<div class="ok callout"><strong>✅ Bez zistených rizík</strong>Analýza archívu nenašla hostí bez zálohy ani problémy s vzdump jobmi.</div>
+{% endfor %}
+</section>
+
+<section id="prehlad">
+<h2>2. Ako sú veci zálohované</h2>
+<div class="table-wrap"><table>
+<tr><th>Vrstva</th><th>Čo obsahuje</th><th>Kde leží</th></tr>
+<tr><td>① Konfigurácia hosta (Proxmox Backup Manager)</td><td><code>/etc/pve</code>, <code>config.db</code>, sieť, hosts, SSH, autofs, systemd, skripty… + <code>backup-info/</code> (snapshot pôvodného HW)</td><td>FTP <code>{{ ftp.host or '?' }}{{ ftp.remote_dir }}</code> + lokálne v LXC appky (<code>backups/</code>)</td></tr>
+<tr><td>② Disky VM a LXC (Proxmox vzdump)</td><td>celé hosťovské systémy vrátane LXC s appkou</td><td>{% for s in storages %}<code>{{ s.path or (s.server ~ ':' ~ s.export) }}/dump</code>{% if not loop.last %}, {% endif %}{% else %}?{% endfor %}</td></tr>
+</table></div>
+<div class="note callout"><strong>📘</strong>Archív ① neobsahuje disky VM ani samotný LXC appky. Archív ② neobsahuje konfiguráciu hosta. Appku na obnovu nepotrebuješ – všetko ide aj ručne podľa tejto príručky.</div>
+</section>
+
+<section id="priprava">
+<h2>3. Čo potrebuješ mať pripravené</h2>
+<ul>
+<li>Nový server, monitor a klávesnica; USB s Proxmox VE ISO {% if pve_version %}(pôvodne: <code>{{ pve_version.splitlines()[0] }}</code>){% endif %}.</li>
+<li>Kábel do portu switchu, kde ide management sieť{% if network and network.vlan %} (VLAN {{ network.vlan }} – pôvodne tagovaná na <code>{{ network.bridge }}</code>){% endif %}.</li>
+<li>Heslá mimo servera: root Proxmox, FTP <code>{{ ftp.username or '?' }}</code>, admin NAS, appka (+ 2FA, recovery kódy).</li>
+<li>Ideálne najnovší archív <code>proxmox_backup_*.tar.gz</code> stiahnutý na PC vedľa tejto príručky.</li>
+</ul>
+<p><strong>Odporúčané poradie:</strong> Proxmox → sieť → NAS → config.db (celá PVE konfigurácia) → LXC appky → host-specific veci → ostatné VM/LXC. Config.db sa dá nahradiť iba keď nič nebeží, preto ide pred obnovou hostí.</p>
+</section>
+
+<section id="faza1">
+<h2>4. Fáza 1 – inštalácia Proxmoxu</h2>
+{% call step('f1-1', '1.1', 'Spusti inštalátor Proxmox VE z USB') %}<p>V BIOS/UEFI zapni virtualizáciu (VT-x/VT-d alebo AMD-V/IOMMU), boot z USB, <strong>Install Proxmox VE (Graphical)</strong>.</p>{% endcall %}
+{% call step('f1-2', '1.2', 'Disk a filesystém ako pôvodne') %}<p>Pôvodné storage: {% for s in storages %}<code>{{ s.id }}</code> ({{ s.type }}){% if not loop.last %}, {% endif %}{% else %}?{% endfor %}. Ak pôvodne existoval <code>local-lvm</code>, zvoľ <strong>ext4</strong> (LVM thin); pri <code>local-zfs</code> zvoľ ZFS.</p>
+{% if diag.lsblk %}<details><summary>Pôvodné disky (lsblk -f)</summary>{{ code(diag.lsblk) }}</details>{% endif %}{% endcall %}
+{% call step('f1-3', '1.3', 'Sieť a hostname v inštalátore') %}
+<div class="table-wrap"><table>
+<tr><th>Pole</th><th>Hodnota</th></tr>
+<tr><td>Management Interface</td><td>NIC zapojená do switchu (pôvodne <code>{{ (network.bridge_ports if network else '') or '?' }}</code>)</td></tr>
+<tr><td>Hostname (FQDN)</td><td><code>{{ fqdn or N }}</code> (alebo nový názov – potom sekcia <a href="#novy-nazov">7B</a>)</td></tr>
+<tr><td>IP Address (CIDR)</td><td><code>{{ network.address if network else HOST }}</code></td></tr>
+<tr><td>Gateway</td><td><code>{{ GW }}</code></td></tr>
+<tr><td>DNS</td><td><code>{{ DNS }}</code></td></tr>
+</table></div>
+<p>Root heslo zvoľ rovnaké ako pôvodne – appka ho má uložené pre SSH.</p>
+{% if network and network.vlan %}<div class="note callout"><strong>📘 VLAN {{ network.vlan }}</strong>Inštalátor nevie nastaviť VLAN tag. Ak port switchu posiela VLAN {{ network.vlan }} tagovane, sieť po inštalácii nepôjde – opravíš ju vo Fáze 2 z konzoly.</div>{% endif %}
+{% endcall %}
+</section>
+
+<section id="faza2">
+<h2>5. Fáza 2 – sieť</h2>
+{% call step('f2-1', '2.1', 'Zisti názvy sieťových kariet') %}
+{{ code('ip -br link') }}
+{% if diag.ip_br_link %}<p>Pôvodný host (názov, stav, MAC):</p>{{ code(diag.ip_br_link) }}{% endif %}
+<p>Nájdi rozhranie so stavom <code>UP</code>. V šablóne nižšie ho nahraď za <code>NIC</code>.</p>
+{% endcall %}
+{% call step('f2-2', '2.2', 'Nastav management sieť') %}
+{{ code('cp /etc/network/interfaces /root/interfaces.po-instalacii\nnano /etc/network/interfaces') }}
+{% if network %}{{ code(network.template) }}{% else %}<div class="warn callout"><strong>⚠️</strong>Pôvodnú management konfiguráciu sa nepodarilo zistiť – pozri prílohu A (pôvodný /etc/network/interfaces).</div>{% endif %}
+{{ code('ifreload -a\nip -br addr\nping -c3 ' ~ GW) }}
+{% for server in automounts|map(attribute='server')|unique %}{{ code('ping -c3 ' ~ server) }}{% endfor %}
+<div class="ok callout"><strong>✅ Výsledok</strong>Ping na gateway a NAS prechádza, GUI je na <code>https://{{ HOST }}:8006</code>.</div>
+{% endcall %}
+{% call step('f2-3', '2.3', 'Hostname, /etc/hosts a repozitáre') %}
+{{ code('hostname                 # ' ~ N ~ '\nhostname --ip-address    # ' ~ HOST ~ '\ncat /etc/hosts') }}
+<p>Proxmox VE 9 (Debian 13 „trixie“) – vypni enterprise repozitáre a pridaj no-subscription (pri inej verzii uprav codename podľa <code>/etc/os-release</code>):</p>
+{{ code("for f in /etc/apt/sources.list.d/pve-enterprise.sources /etc/apt/sources.list.d/ceph.sources; do\n  [ -f \"$f\" ] && grep -q '^Enabled:' \"$f\" || echo 'Enabled: no' >> \"$f\"\ndone\ncat > /etc/apt/sources.list.d/proxmox.sources <<'EOF'\nTypes: deb\nURIs: http://download.proxmox.com/debian/pve\nSuites: trixie\nComponents: pve-no-subscription\nSigned-By: /usr/share/keyrings/proxmox-archive-keyring.gpg\nEOF\napt update && apt full-upgrade -y") }}
+{% endcall %}
+</section>
+
+<section id="faza3">
+<h2>6. Fáza 3 – NAS a FTP</h2>
+{% call step('f3-1', '3.1', 'Pripoj NAS so zálohami VM/LXC') %}
+{{ code('apt install -y nfs-common autofs cifs-utils') }}
+{% for m in automounts %}
+<h4>{{ m.key }} ({{ m.source }})</h4>
+{{ code('showmount -e ' ~ m.server ~ '\nmkdir -p /mnt/restore-' ~ m.key ~ '\nmount -t ' ~ m.fstype ~ (' -o ' ~ m.options if m.options else '') ~ ' ' ~ m.source ~ ' /mnt/restore-' ~ m.key ~ '\nls -lt /mnt/restore-' ~ m.key ~ '/dump | head -30') }}
+{% else %}
+{% for s in storages if s.server %}{{ code('mkdir -p /mnt/restore-' ~ s.id ~ '\nmount -t ' ~ ('cifs' if s.type == 'cifs' else 'nfs') ~ ' ' ~ s.server ~ ':' ~ s.export ~ ' /mnt/restore-' ~ s.id) }}{% else %}<p>Automounty ani sieťové storage sa v archíve nenašli – pripoj NAS ručne.</p>{% endfor %}
+{% endfor %}
+<div class="warn callout"><strong>⚠️ access denied</strong>Ak má nový host inú IP ako <code>{{ HOST }}</code>, povoľ ju na NAS v NFS prístupových právach.</div>
+{% endcall %}
+{% call step('f3-2', '3.2', 'Stiahni archív konfigurácie hosta z FTP') %}
+<p>Ak máš archív na PC: <code>scp proxmox_backup_*.tar.gz root@{{ HOST }}:/root/</code> a tento krok preskoč.</p>
+{{ code('cd /root\ncurl -u ' ~ (ftp.username or 'USER') ~ ' --list-only "ftp://' ~ (ftp.host or 'FTP') ~ ':' ~ ftp.port ~ (ftp.remote_dir|replace(' ', '%20')) ~ '/"\ncurl -u ' ~ (ftp.username or 'USER') ~ ' -O "ftp://' ~ (ftp.host or 'FTP') ~ ':' ~ ftp.port ~ (ftp.remote_dir|replace(' ', '%20')) ~ '/proxmox_backup_NAZOV.tar.gz"') }}
+{% endcall %}
+{% call step('f3-3', '3.3', 'Rozbaľ archív do review adresára (nikdy nie do /)') %}
+{{ code('mkdir -p /root/pve-restore-review && chmod 700 /root/pve-restore-review\ntar -xzf /root/proxmox_backup_*.tar.gz -C /root/pve-restore-review\nless /root/pve-restore-review/backup-info/README-RESTORE.txt') }}
+{% endcall %}
+</section>
+
+<section id="faza4">
+<h2>7. Fáza 4 – config.db</h2>
+<p><code>/etc/pve</code> je FUSE súborový systém pmxcfs nad <code>/var/lib/pve-cluster/config.db</code>. Celú PVE konfiguráciu (VM/LXC configy, storage, joby, používatelia, firewall) obnovíš nahradením config.db – iba kontrolovane.</p>
+<div class="crit callout"><strong>🔴 Nikdy</strong><code>cp -r backup/etc/pve /etc/pve</code> ani kopírovanie config.db pri bežiacom <code>pve-cluster</code>.</div>
+{% call step('f4-1', '4.1', 'Over predpoklady') %}<ul><li>Nebeží žiadna VM ani LXC.</li><li><code>hostname</code> a <code>/etc/hosts</code> sedia navzájom (pôvodne <code>{{ N }}</code>).</li><li>Máš konzolu.</li></ul>{% endcall %}
+{% call step('f4-2', '4.2', 'Nahraď config.db') %}
+{{ code('cp -a /var/lib/pve-cluster/config.db /root/config.db.fresh-install\nsystemctl stop pve-cluster\ncp /root/pve-restore-review/var/lib/pve-cluster/config.db /var/lib/pve-cluster/config.db\nchown root:root /var/lib/pve-cluster/config.db\nchmod 0600 /var/lib/pve-cluster/config.db\nreboot') }}
+<div class="warn callout"><strong>⚠️</strong>Po reštarte uvidíš pôvodné VM/LXC bez diskov. Hostia s onboot sa pokúsia štartovať a zlyhajú – to je neškodné.</div>
+{% endcall %}
+{% call step('f4-3', '4.3', 'Skontroluj PVE konfiguráciu') %}
+{{ code('systemctl status pve-cluster --no-pager\nls /etc/pve/nodes/\npvesm status\ncat /etc/pve/jobs.cfg\npvecm updatecerts --force && systemctl restart pveproxy   # ak GUI hlási certifikát') }}
+{% endcall %}
+</section>
+
+<section id="novy-nazov">
+<h2>7B. Nový názov nodu namiesto „{{ N }}“</h2>
+<p>Dá sa. Hostname je však aj názov nodu: configy hostí sú v <code>/etc/pve/nodes/{{ N }}/</code> a odkazujú naň aj vzdump joby{% if timers %} a vlastné systemd jednotky ({{ timers|join(', ') }}){% endif %}. Najjednoduchšie je pri havárii ponechať „{{ N }}“.</p>
+<div class="crit callout"><strong>🔴 Poradie</strong>Configy presuň na nový node <strong>pred</strong> obnovou VM/LXC – inak <code>pct restore … --force</code> skončí chybou, že VMID existuje na inom node.</div>
+{% set jobnodes = jobs|selectattr('node')|map(attribute='id')|list %}
+{% if jobnodes %}<div class="warn callout"><strong>⚠️ Vzdump joby viazané na node {{ N }}</strong>{{ jobnodes|join(', ') }} – po premenovaní ich zmeň, inak nezálohujú nič.</div>{% endif %}
+{% call step('f7b-1', '7B.1', '(Voliteľné) Presuň configy, joby a NODE= na nový názov') %}
+{{ code('OLD=' ~ N ~ '\nN=$(hostname -s)\nmkdir -p /root/node-$OLD-backup && cp -r /etc/pve/nodes/$OLD/. /root/node-$OLD-backup/\nmv /etc/pve/nodes/$OLD/qemu-server/*.conf /etc/pve/nodes/$N/qemu-server/\nmv /etc/pve/nodes/$OLD/lxc/*.conf         /etc/pve/nodes/$N/lxc/\n[ -f /etc/pve/nodes/$OLD/host.fw ] && cp /etc/pve/nodes/$OLD/host.fw /etc/pve/nodes/$N/host.fw\n[ -f /etc/pve/nodes/$OLD/config ]  && cp /etc/pve/nodes/$OLD/config  /etc/pve/nodes/$N/config\nsed -i "s/^\\(\\s*node\\) $OLD$/\\1 $N/" /etc/pve/jobs.cfg\ngrep -n "node " /etc/pve/jobs.cfg\nqm list; pct list\nrm -rf /etc/pve/nodes/$OLD     # až po kontrole\nsystemctl restart pveproxy') }}
+<p>Vlastné systemd jednotky s <code>NODE={{ N }}</code> uprav pri ich obnove (Fáza 6): <code>grep -rl "NODE=$OLD" /etc/systemd/system/ | xargs -r sed -i "s/NODE=$OLD$/NODE=$N/"</code>.</p>
+{% endcall %}
+</section>
+
+<section id="faza5">
+<h2>8. Fáza 5 – Proxmox Backup Manager</h2>
+<h3>8A. Obnova z vzdump (odporúčané)</h3>
+{% call step('f5a-1', '5A.1', 'Obnov ' ~ ((AG.type ~ ' ' ~ AG.vmid) if AG else 'LXC appky') ~ ' z najnovšieho vzdump') %}
+{{ code('ls -lt ' ~ RESTOREDIR ~ '/dump/vzdump-lxc-' ~ AGID ~ '-*.tar.zst | head -3\npct restore ' ~ AGID ~ ' ' ~ RESTOREDIR ~ '/dump/vzdump-lxc-' ~ AGID ~ '-<čas>.tar.zst --storage local-lvm --force\npct config ' ~ AGID ~ ' | grep net0\npct start ' ~ AGID ~ '\npct exec ' ~ AGID ~ ' -- systemctl is-active proxmox-backup.service') }}
+{% if AG %}<p>Pôvodný config:</p>{{ code(AG.config) }}{% endif %}
+<p>Potom v appke <strong>Nastavenia → Test SSH</strong>. Nový SSH kľúč hosta appke nevadí; iné root heslo zmeň v Nastaveniach.</p>
+{% endcall %}
+<h3>8B. Nová inštalácia (vzdump appky chýba)</h3>
+{% call step('f5b-1', '5B.1', 'Vytvor LXC a nainštaluj appku') %}
+{{ code('pveam update\npveam available --section system | grep debian-12\npveam download local debian-12-standard_<verzia>_amd64.tar.zst\n\npct create ' ~ AGID ~ ' local:vztmpl/debian-12-standard_<verzia>_amd64.tar.zst \\\n  --hostname proxmox-backup --cores 2 --memory 2048 --swap 512 --rootfs local-lvm:20 \\\n  --net0 name=eth0,bridge=' ~ ((AG.net.bridge if AG else '') or 'vmbr0') ~ ((',tag=' ~ AG.net.tag) if AG and AG.net.tag else '') ~ ',ip=' ~ ((AG.net.ip if AG else '') or '<IP>/24') ~ ',gw=' ~ ((AG.net.gw if AG else '') or GW) ~ ' \\\n  --nameserver ' ~ DNS ~ ' --unprivileged 1 --features nesting=1 --onboot 1 --password\npct start ' ~ AGID ~ ' && pct enter ' ~ AGID ~ '\n\napt update && apt install -y curl git\nbash -c "$(curl -fsSL ' ~ install_url ~ ')"') }}
+<p>Voliteľne dev inštancia (port 5001):</p>
+{{ code('git clone -b dev ' ~ repo_url ~ '.git /opt/proxmox-backup-dev\ncd /opt/proxmox-backup-dev && python3 -m venv venv\nchmod +x update.sh auto_backup.sh test.sh && ./update.sh') }}
+{% endcall %}
+{% call step('f5b-2', '5B.2', 'Nastavenia appky') %}
+<div class="table-wrap"><table>
+<tr><th>Pole</th><th>Hodnota</th></tr>
+<tr><td>Režim zdroja</td><td>{{ 'Remote SSH z LXC' if source_mode == 'remote_ssh' else 'Lokálny filesystem' }}</td></tr>
+<tr><td>Proxmox IP / port / používateľ</td><td><code>{{ ssh.host or HOST }}</code> / <code>{{ ssh.port }}</code> / <code>{{ ssh.username }}</code> + heslo</td></tr>
+<tr><td>FTP host / port / používateľ</td><td><code>{{ ftp.host }}</code> / <code>{{ ftp.port }}</code> / <code>{{ ftp.username }}</code> + heslo</td></tr>
+<tr><td>Cieľový adresár na FTP</td><td><code>{{ ftp.remote_dir or '/' }}</code></td></tr>
+<tr><td>Maximálny počet záloh</td><td><code>{{ max_backup_count }}</code></td></tr>
+<tr><td>Automatická záloha</td><td>{{ auto_backup }}</td></tr>
+</table></div>
+<p>Registrácia admina + nové 2FA (recovery kódy ulož mimo servera), Test SSH, Test FTP, Uložiť. Archívy z FTP sa zobrazia v Histórii.</p>
+{% endcall %}
+</section>
+
+<section id="faza6">
+<h2>9. Fáza 6 – host-specific veci</h2>
+<p>Súbory z <code>/root/pve-restore-review</code> prenášaj selektívne po kontrole (<code>diff -u</code>).</p>
+{% if automounts %}
+{% call step('f6-1', '6.1', 'AutoFS mapy') %}
+{{ code('B=/root/pve-restore-review\numount /mnt/restore-* 2>/dev/null\ncp $B/etc/auto.master /etc/auto.master\n[ -d $B/etc/auto.master.d ] && cp -r $B/etc/auto.master.d/. /etc/auto.master.d/') }}
+{% for map_file in automounts|map(attribute='map_file')|unique %}{{ code('cp $B' ~ map_file ~ ' ' ~ map_file) }}{% endfor %}
+{{ code('systemctl enable --now autofs && systemctl restart autofs') }}
+{% for m in automounts %}{{ code('ls ' ~ m.path ~ '/dump | head') }}{% endfor %}
+{% endcall %}
+{% endif %}
+{% if timers %}
+{% call step('f6-2', '6.2', 'Vlastné backup služby a timery') %}
+<p>V archíve: {% for t in timers %}<code>{{ t }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.</p>
+{{ code('ls $B/usr/local/sbin $B/usr/local/bin\ncp $B/usr/local/sbin/<skript> /usr/local/sbin/ && chmod 0755 /usr/local/sbin/<skript>\ncd $B/etc/systemd/system && cp ' ~ timers|join(' ') ~ ' /etc/systemd/system/\nsystemctl daemon-reload\n# timery zapni až po obnove hostí a úspešnom ručnom behu (Fáza 8)') }}
+{% endcall %}
+{% endif %}
+{% call step('f6-3', '6.3', 'SSH, /root, cron, HW-závislé nastavenia') %}
+{{ code('diff -u $B/etc/ssh/sshd_config /etc/ssh/sshd_config\n# host keys iba ak pôvodný server už nikdy nepobeží:\ncp $B/etc/ssh/ssh_host_* /etc/ssh/ && chmod 600 /etc/ssh/ssh_host_*_key && sshd -t && systemctl restart ssh\ncat $B/backup-info/crontab-root.txt\ndiff -u $B/etc/fstab /etc/fstab            # root/boot/swap nikdy neprepisuj\ndiff -u $B/etc/modules /etc/modules\ndiff -ru $B/etc/modprobe.d /etc/modprobe.d\ndiff -ru $B/etc/sysctl.d /etc/sysctl.d') }}
+{% endcall %}
+</section>
+
+<section id="faza7">
+<h2>10. Fáza 7 – VM a LXC</h2>
+<p>Configy prišli s config.db, preto restore potrebuje <code>--force</code>.</p>
+{% if AG %}<p>{{ AG.type }} {{ AG.vmid }} s appkou je vynechaný – obnovil si ho vo Fáze 5.</p>{% endif %}
+{% set DUMP = dump_dir or (RESTOREDIR ~ '/dump') %}
+{{ code('DUMP=' ~ DUMP ~ '\n\nfor id in ' ~ ((backed_up_lxc|default([]))|reject('equalto', AG.vmid if AG else -1)|join(' ') or '<VMID>') ~ '; do\n  f=$(ls -t $DUMP/vzdump-lxc-$id-*.tar.zst 2>/dev/null | head -1)\n  [ -n "$f" ] && pct restore $id "$f" --storage local-lvm --force || echo "CHÝBA záloha LXC $id"\ndone\n\nfor id in ' ~ ((backed_up_vm|default([]))|join(' ') or '<VMID>') ~ '; do\n  f=$(ls -t $DUMP/vzdump-qemu-$id-*.vma.zst 2>/dev/null | head -1)\n  [ -n "$f" ] && qmrestore "$f" $id --storage local-lvm --force || echo "CHÝBA záloha VM $id"\ndone') }}
+<div class="warn callout"><strong>⚠️ Pred štartom</strong><ul><li>Sieť: správny bridge a <code>tag=</code>.</li><li>Passthrough (<code>hostpci</code>, <code>usb</code>) – na novom HW iné ID.</li><li>CPU typ <code>host</code> pri Intel ↔ AMD → <code>x86-64-v2-AES</code>.</li><li>Počas obnovy môžeš vypnúť autostart: <code>pct set ID --onboot 0</code>.</li></ul></div>
+{% set nobackup = guests|rejectattr('backed_up')|list %}
+{% if nobackup %}<div class="crit callout"><strong>🔴 Bez vzdump zálohy</strong>{% for g in nobackup %}{{ g.vmid }} {{ g.name }} ({{ g.type }}){% if not loop.last %}, {% endif %}{% endfor %} – config príde s config.db, disky nie.</div>{% endif %}
+</section>
+
+<section id="faza8">
+<h2>11. Fáza 8 – kontrola a nové zálohy</h2>
+{% call step('f8-1', '8.1', 'Kontrola hosta') %}{{ code('pveversion\npvesm status\nip -br addr; ip route\nfindmnt | grep -E "autofs|nfs|cifs"\nsystemctl --failed\nqm list; pct list\npve-firewall status\ntimedatectl') }}{% endcall %}
+{% call step('f8-2', '8.2', 'Vzdump zálohy a timery') %}{{ code('systemctl list-timers\ncat /etc/pve/jobs.cfg\n# spusti jeden backup job ručne (GUI: Datacenter → Backup → Run now) a over súbory v dump/') }}{% endcall %}
+{% call step('f8-3', '8.3', 'Nová záloha hosta a nová offline príručka') %}<p>V appke <strong>Vytvoriť zálohu teraz</strong>, skontroluj <em>Obnova na novom HW</em> (READY) a stiahni novú offline príručku.</p>{% endcall %}
+{% call step('f8-4', '8.4', 'Upratanie') %}{{ code('rm -rf /root/pve-restore-review /root/proxmox-backup-restore-review-*\nrm -f /root/proxmox_backup_*.tar.gz') }}{% endcall %}
+</section>
+
+<section id="co-obnovit">
+<h2>12. Čo obnoviť z archívu hosta</h2>
+<div class="table-wrap"><table>
+<tr><th>Cesta</th><th>Kategória</th><th>Na novom HW</th></tr>
+{% for item in items %}
+<tr><td><code>{{ item.path }}</code><br><span style="font-size:0.82rem">{{ item.name }}</span></td><td><span class="pill {{ CAT[item.recovery.restore_category] }}">{{ item.recovery.badge }}</span>{% if item.recovery.advanced_restore %} ADVANCED{% endif %}{% if not item.recovery.direct_restore_allowed %}<br><span style="font-size:0.78rem">nikdy neprepisovať priamo</span>{% endif %}</td><td>{{ item.recovery.restore_new_hardware|dr_inline }}</td></tr>
+{% endfor %}
+</table></div>
+</section>
+
+<section id="prilohaA">
+<h2>A. Konfigurácia pôvodného hosta</h2>
+{% if raw.interfaces %}<h4>/etc/network/interfaces</h4>{{ code(raw.interfaces) }}{% endif %}
+{% if raw.hosts %}<h4>/etc/hosts</h4>{{ code(raw.hosts) }}{% endif %}
+{% if raw.fstab %}<h4>/etc/fstab</h4>{{ code(raw.fstab) }}{% endif %}
+{% if raw.auto_master %}<h4>/etc/auto.master</h4>{{ code(raw.auto_master) }}{% endif %}
+{% if raw.auto_nfs %}<h4>/etc/auto.nfs</h4>{{ code(raw.auto_nfs) }}{% endif %}
+{% if raw.storage_cfg %}<h4>/etc/pve/storage.cfg</h4>{{ code(raw.storage_cfg) }}{% endif %}
+{% if raw.jobs_cfg %}<h4>/etc/pve/jobs.cfg</h4>{{ code(raw.jobs_cfg) }}{% endif %}
+{% if diag.pvesm %}<h4>pvesm status</h4>{{ code(diag.pvesm) }}{% endif %}
+</section>
+
+<section id="prilohaB">
+<h2>B. Hostia a vzdump joby</h2>
+<div class="table-wrap"><table>
+<tr><th>ID</th><th>Typ</th><th>Názov</th><th>Stav</th><th>Vzdump</th></tr>
+{% for g in guests %}<tr><td>{{ g.vmid }}{% if AG and AG.vmid == g.vmid %} ★{% endif %}</td><td>{{ g.type }}</td><td>{{ g.name }}</td><td>{{ g.status }}</td><td>{% if g.backed_up %}áno{% else %}<span class="pill p-no">nie</span>{% endif %}</td></tr>{% else %}<tr><td colspan="5">Zoznam hostí nie je v archíve.</td></tr>{% endfor %}
+</table></div>
+{% if AG %}<p>★ = LXC/VM s Proxmox Backup Managerom.</p>{% endif %}
+<div class="table-wrap"><table>
+<tr><th>Job</th><th>Storage</th><th>Plán</th><th>Node</th><th>Zapnutý</th><th>Hostia</th></tr>
+{% for j in jobs %}<tr><td><code>{{ j.id }}</code></td><td>{{ j.storage }}</td><td>{{ j.schedule }}</td><td>{{ j.node or 'všetky' }}</td><td>{{ 'áno' if j.enabled else 'nie' }}</td><td>{% if j.all %}všetci{% if j.exclude %} okrem {{ j.exclude|join(', ') }}{% endif %}{% else %}{{ j.vmids|join(', ') }}{% endif %}{% if j.pool %} pool {{ j.pool }}{% endif %}</td></tr>{% else %}<tr><td colspan="6">Žiadne vzdump joby.</td></tr>{% endfor %}
+</table></div>
+</section>
+
+<section id="prilohaC">
+<h2>C. Riešenie problémov</h2>
+<div class="table-wrap"><table>
+<tr><th>Problém</th><th>Riešenie</th></tr>
+<tr><td>Po inštalácii nejde sieť</td><td>VLAN/bridge podľa Fázy 2 z konzoly; zlý názov NIC → <code>ip -br link</code>.</td></tr>
+<tr><td>NFS <code>access denied</code></td><td>NAS nepovoľuje IP hosta – NFS prístupové práva na NAS.</td></tr>
+<tr><td><code>pve-cluster</code> nenaštartuje po config.db</td><td>hostname vs /etc/hosts, práva 0600; vráť <code>/root/config.db.fresh-install</code>.</td></tr>
+<tr><td>GUI certifikát</td><td><code>pvecm updatecerts --force &amp;&amp; systemctl restart pveproxy</code></td></tr>
+<tr><td><code>CT … already exists</code></td><td><code>--force</code>; pri novom názve nodu najprv sekcia 7B.</td></tr>
+<tr><td>Appka: Test SSH zlyhá</td><td>iné root heslo → Nastavenia; <code>ping {{ HOST }}</code> z LXC.</td></tr>
+<tr><td>Stratené 2FA do appky</td><td>recovery kód; krajne: v LXC presuň <code>/opt/proxmox-backup/auth_config.json</code> mimo a reštartuj službu → nová registrácia.</td></tr>
+</table></div>
+</section>
+
+<section id="wiki">
+<h2>D. Wiki</h2>
+<p>Kompletná interná wiki appky pre offline použitie.</p>
+{% for article in wiki %}
+<details class="decision" style="margin:0.6rem 0"><summary><strong>{{ loop.index }}. {{ article.title }}</strong> – {{ article.summary }}</summary>
+<div style="margin-top:0.6rem">{{ wiki_blocks(article.blocks) }}</div>
+</details>
+{% endfor %}
+</section>
+
+<footer>Vygeneroval Proxmox Backup Manager · {{ generated_at.strftime('%d. %m. %Y %H:%M') }} · neobsahuje heslá ani tajomstvá</footer>
+</div>
+</main>
+</div>
+<script>
+(function () {
+  var KEY = 'dr-handbook-steps-v1-' + {{ (node or 'host')|tojson }};
+  function load() { try { return JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) { return {}; } }
+  function save(s) { try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) {} }
+  var steps = Array.prototype.slice.call(document.querySelectorAll('.step'));
+  function refresh() {
+    var state = load(), done = 0;
+    steps.forEach(function (step) {
+      var id = step.getAttribute('data-step'), box = step.querySelector('input[type=checkbox]');
+      box.checked = !!state[id];
+      step.classList.toggle('done', box.checked);
+      if (box.checked) done++;
+    });
+    document.getElementById('progress-text').textContent = done + ' / ' + steps.length;
+    document.getElementById('progress-bar').style.width = (steps.length ? Math.round(done / steps.length * 100) : 0) + '%';
+  }
+  steps.forEach(function (step) {
+    step.querySelector('input[type=checkbox]').addEventListener('change', function (e) {
+      var state = load(), id = step.getAttribute('data-step');
+      if (e.target.checked) state[id] = true; else delete state[id];
+      save(state); refresh();
+    });
+  });
+  window.resetSteps = function () { if (confirm('Odznačiť všetky kroky?')) { save({}); refresh(); } };
+  refresh();
+
+  // tlačidlo Kopírovať pri každom bloku príkazov
+  document.querySelectorAll('.code').forEach(function (block) {
+    var btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'copy'; btn.textContent = 'Kopírovať';
+    btn.addEventListener('click', function () {
+      var text = block.querySelector('pre').innerText;
+      var done = function () { btn.textContent = 'Skopírované'; setTimeout(function () { btn.textContent = 'Kopírovať'; }, 1500); };
+      if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(text).then(done); }
+      else { var t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select(); try { document.execCommand('copy'); done(); } catch (e) {} t.remove(); }
+    });
+    block.appendChild(btn);
+  });
+
+  // téma
+  var THEME = 'dr-handbook-theme';
+  try { var saved = localStorage.getItem(THEME); if (saved) document.documentElement.setAttribute('data-theme', saved); } catch (e) {}
+  window.toggleTheme = function () {
+    var cur = document.documentElement.getAttribute('data-theme');
+    if (!cur) cur = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    var next = cur === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem(THEME, next); } catch (e) {}
+  };
+
+  // aktívna položka obsahu + zatvorenie menu na mobile
+  var links = Array.prototype.slice.call(document.querySelectorAll('#toc a'));
+  links.forEach(function (a) { a.addEventListener('click', function () { document.body.classList.remove('nav-open'); }); });
+  if ('IntersectionObserver' in window) {
+    var obs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (en) {
+        if (!en.isIntersecting) return;
+        links.forEach(function (a) { a.classList.toggle('active', a.getAttribute('href') === '#' + en.target.id); });
+      });
+    }, { rootMargin: '-10% 0px -80% 0px' });
+    document.querySelectorAll('section[id], h3[id]').forEach(function (el) { obs.observe(el); });
+  }
+})();
+</script>
+</body>
+</html>

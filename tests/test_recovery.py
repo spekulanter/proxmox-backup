@@ -2,6 +2,7 @@
 """Testy disaster recovery funkcionality (klasifikácia, readiness, wiki, snapshot, restore ochrany)."""
 
 import io
+import re
 import json
 import sys
 import tarfile
@@ -384,12 +385,201 @@ def test_api_and_snapshot():
             app_module.sync_flask_secret()
 
 
+def info_file(stdout, command='cmd', exit_code=0):
+    return f'$ {command}\nexit_code={exit_code}\n\n--- stdout ---\n{stdout}\n--- stderr ---\n\n'
+
+
+def build_host_archive(path, jobs_json=True, hook_report=None, node_in_jobs='nuc'):
+    """Syntetický archív hosta s backup-info, sieťou, NAS mapami a configmi hostí."""
+    jobs = [
+        {'id': 'backup-qnap', 'vmid': '100,113', 'node': node_in_jobs, 'enabled': 0, 'storage': 'qnap.autofs',
+         'schedule': 'sun 04:00', 'script': '/usr/local/bin/missing_hook.sh'},
+    ]
+    with tarfile.open(path, 'w:gz') as tar:
+        for directory in ('usr/local/bin', 'etc/systemd/system'):
+            info = tarfile.TarInfo(directory)
+            info.type = tarfile.DIRTYPE
+            tar.addfile(info)
+        add_member(tar, 'usr/local/bin/figlet', 'binary')
+        add_member(tar, 'etc/systemd/system/pve-backup-qnap.timer', '[Timer]\n')
+        add_member(tar, 'etc/systemd/system/pve-backup-qnap.service', 'Environment=NODE=nuc\n')
+        add_member(tar, 'etc/hostname', 'nuc\n')
+        add_member(tar, 'etc/hosts', '127.0.0.1 localhost\n192.0.2.2 nuc.lan nuc\n')
+        add_member(tar, 'etc/resolv.conf', 'nameserver 192.0.2.1\n')
+        add_member(tar, 'etc/network/interfaces', (
+            'auto lo\niface lo inet loopback\n\niface enp45s0 inet manual\n\nauto vmbr0\niface vmbr0 inet manual\n'
+            '\tbridge-ports enp45s0\n\tbridge-vlan-aware yes\n\tbridge-vids 2-4094\n\n'
+            'auto vmbr0.200\niface vmbr0.200 inet static\n\taddress 192.0.2.2/24\n\tgateway 192.0.2.1\n'
+        ))
+        add_member(tar, 'etc/auto.master', '+auto.master\n/autofs /etc/auto.nfs --timeout=600\n')
+        add_member(tar, 'etc/auto.nfs', 'qnap -fstype=nfs,rw,vers=4.0 198.51.100.2:/Backups/Host\n')
+        add_member(tar, 'etc/pve/storage.cfg', (
+            'lvmthin: local-lvm\n\tthinpool data\n\tvgname pve\n\tcontent rootdir,images\n\n'
+            'dir: qnap.autofs\n\tdisable\n\tpath /autofs/qnap\n\tcontent backup\n\n'
+            'cifs: smb\n\tserver 198.51.100.9\n\tshare backup\n\tusername admin\n\tpassword ' + SECRET_MARKER + '\n\tcontent backup\n'
+        ))
+        add_member(tar, 'etc/pve/jobs.cfg', (
+            f'vzdump: backup-qnap\n\tnode {node_in_jobs}\n\tvmid 100,113\n\tstorage qnap.autofs\n\tenabled 0\n'
+            '\tscript /usr/local/bin/missing_hook.sh\n'
+        ))
+        add_member(tar, 'etc/pve/nodes/nuc/lxc/113.conf', (
+            'hostname: proxmox-backup\nnet0: name=eth0,bridge=vmbr0,gw=192.0.2.1,hwaddr=BC:24:11:00:00:01,'
+            'ip=127.0.0.1/8,tag=200,type=veth\nrootfs: local-lvm:vm-113-disk-0,size=20G\n\n[snap]\nparent: x\n'
+        ))
+        add_member(tar, 'etc/shadow', f'root:{SECRET_MARKER}:19000::::::\n')
+        add_member(tar, 'root/.ssh/id_ed25519', SECRET_MARKER)
+        add_member(tar, 'backup-info/hostname.txt', info_file('nuc', 'hostname'))
+        add_member(tar, 'backup-info/pveversion-v.txt', info_file('proxmox-ve: 9.2.0\npve-manager: 9.2.3', 'pveversion -v'))
+        add_member(tar, 'backup-info/ip-br-link.txt', info_file('enp45s0 UP 34:5a:60:60:57:b6', 'ip -br link'))
+        add_member(tar, 'backup-info/ip-route.txt', info_file('default via 192.0.2.1 dev vmbr0.200', 'ip route'))
+        add_member(tar, 'backup-info/qm-list.txt', info_file(
+            '      VMID NAME                 STATUS     MEM(MB)    BOOTDISK(GB) PID\n'
+            '       100 home-assistant       running    8192              60.00 1790\n'
+            '       122 mikrotik-chr         running    512                8.00 2324', 'qm list'))
+        add_member(tar, 'backup-info/pct-list.txt', info_file(
+            'VMID       Status     Lock         Name\n113        running                 proxmox-backup\n'
+            '124        stopped                 games', 'pct list'))
+        add_member(tar, 'backup-info/crontab-root.txt', info_file(SECRET_MARKER, 'crontab -l'))
+        if jobs_json:
+            add_member(tar, 'backup-info/pve-backup-jobs.json', info_file(json.dumps(jobs), 'pvesh get /cluster/backup'))
+        if hook_report is not None:
+            add_member(tar, 'backup-info/hook-scripts.txt', info_file(hook_report, 'sh -c ...'))
+
+
+def test_wiki_additions():
+    slugs = set(recovery_data.WIKI_ARTICLE_SLUGS)
+    assert 'backup-manager-recovery' in slugs
+    pve_text = json.dumps(app_module.find_wiki_article('pve-config-db'), ensure_ascii=False)
+    assert 'jobs.cfg' in pve_text and 'NODE=' in pve_text and 'PRED obnovou' in pve_text
+    app_text = json.dumps(app_module.find_wiki_article('backup-manager-recovery'), ensure_ascii=False)
+    assert 'install_in_lxc.sh' in app_text and 'pct restore' in app_text and 'auth_config.json' in app_text
+
+
+def test_risk_analysis():
+    with tempfile.TemporaryDirectory(prefix='pve-recovery-risk-', dir=str(ROOT)) as workdir:
+        archive = Path(workdir) / 'host.tar.gz'
+        build_host_archive(archive, node_in_jobs='nuc')
+        facts = app_module.read_archive_facts(str(archive))
+        assert 'etc/shadow' not in facts['files'] and 'root/.ssh/id_ed25519' not in facts['files']
+        assert 'crontab-root.txt' not in facts['info']
+        analysis = app_module.analyze_recovery_risks(facts)
+        by_id = {risk['id']: risk for risk in analysis['risks']}
+        assert analysis['node'] == 'nuc'
+        uncovered = by_id['guests-without-vzdump']
+        assert uncovered['level'] == 'error'
+        assert any(item.startswith('122 mikrotik-chr') for item in uncovered['items'])
+        assert any(item.startswith('124 games') for item in uncovered['items'])
+        assert not any(item.startswith(('100 ', '113 ')) for item in uncovered['items'])
+        assert 'job-node-mismatch' not in by_id
+        assert '/usr/local/bin/missing_hook.sh' in by_id['hook-script-missing']['items'][0]
+        assert 'podľa obsahu archívu' in by_id['hook-script-missing']['items'][0]
+        assert by_id['jobs-disabled']['level'] == 'info'
+
+        archive2 = Path(workdir) / 'host2.tar.gz'
+        build_host_archive(archive2, jobs_json=False, hook_report='OK /usr/local/bin/missing_hook.sh', node_in_jobs='oldnode')
+        analysis = app_module.analyze_recovery_risks(app_module.read_archive_facts(str(archive2)))
+        by_id = {risk['id']: risk for risk in analysis['risks']}
+        assert analysis['jobs'][0]['vmids'] == {100, 113}, 'fallback na jobs.cfg'
+        assert by_id['job-node-mismatch']['level'] == 'error'
+        assert 'hook-script-missing' not in by_id, 'hook-scripts.txt z hosta má prednosť'
+
+        legacy = {'info': {'ip-addr.txt': app_module.parse_info_command_output(info_file(
+            '1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536\n    link/loopback 00:00:00:00:00:00\n'
+            '2: enp45s0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n    link/ether 34:5a:60:60:57:b6 brd ff:ff:ff:ff:ff:ff\n'
+            '6: vmbr0.200@vmbr0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500\n    link/ether 34:5a:60:60:57:b6 brd ff:ff:ff:ff:ff:ff\n'
+            '11: tap102i0: <BROADCAST,UP,LOWER_UP> mtu 1500\n    link/ether aa:bb:cc:dd:ee:ff brd ff:ff:ff:ff:ff:ff', 'ip addr'))}}
+        summary = app_module.nic_summary(legacy)
+        assert 'enp45s0' in summary and '34:5a:60:60:57:b6' in summary and 'vmbr0.200' in summary
+        assert 'tap102i0' not in summary, 'virtuálne tap/veth rozhrania hostí sa vynechajú'
+
+        empty = app_module.build_recovery_risks([])
+        assert {risk['id'] for risk in empty['risks']} == {'no-local-archive'}
+
+
+def test_downloads_and_handbook():
+    with tempfile.TemporaryDirectory(prefix='pve-recovery-hb-', dir=str(ROOT)) as workdir:
+        workdir = Path(workdir)
+        originals = (app_module.CONFIG_FILE, app_module.BACKUP_HISTORY_FILE, app_module.BACKUP_STORAGE_DIR, app_module.list_ftp_backups)
+        original_detect = app_module.detect_own_ip
+        app_module.CONFIG_FILE = str(workdir / 'backup_config.json')
+        app_module.BACKUP_HISTORY_FILE = str(workdir / 'backup_history.json')
+        app_module.BACKUP_STORAGE_DIR = str(workdir / 'backups')
+        app_module.list_ftp_backups = lambda cfg: {'available': False, 'warning': 'test', 'archives': []}
+        app_module.detect_own_ip = lambda host, port=22: '127.0.0.1' if host == '192.0.2.2' else None
+        (workdir / 'backups').mkdir()
+        original_auth, secret, _password = create_test_auth_config(workdir / 'auth_config.json')
+        try:
+            config = app_module.default_config()
+            config['ftp_config'].update({'host': '198.51.100.2', 'username': 'maros', 'password': 'FTP-' + SECRET_MARKER,
+                                         'remote_dir': '/Proxmox Backup Manager/Host'})
+            config['source_config']['ssh'].update({'host': '192.0.2.2', 'password': 'SSH-' + SECRET_MARKER})
+            config['auto_backup_enabled'] = True
+            config['auto_backup_frequency'] = 'weekly'
+            config['auto_backup_day'] = 5
+            config['auto_backup_hour'] = 15
+            app_module.save_config(config)
+            archive = workdir / 'backups' / 'proxmox_backup_host.tar.gz'
+            build_host_archive(archive)
+            app_module.save_backup_history([{
+                'id': 'hb1', 'filename': archive.name, 'local_path': str(archive), 'timestamp': datetime.now().isoformat(),
+                'ftp_status': 'success', 'files': sorted(REQUIRED_PATHS), 'skipped': [],
+            }])
+
+            anonymous = app_module.app.test_client()
+            assert anonymous.get('/api/recovery/handbook').status_code == 401
+
+            client = make_authed_client(secret)
+            overview = client.get('/api/recovery/overview').get_json()
+            risk_ids = {risk['id'] for risk in overview['risks']['risks']}
+            assert {'guests-without-vzdump', 'hook-script-missing', 'no-offline-copy'} <= risk_ids
+            assert overview['readiness']['status'] == 'READY', 'riziká nemenia readiness'
+
+            response = client.get('/api/backups/hb1/download')
+            assert response.status_code == 200
+            response.close()
+            assert app_module.load_backup_history()[0].get('downloaded_at')
+            overview = client.get('/api/recovery/overview').get_json()
+            assert 'no-offline-copy' not in {risk['id'] for risk in overview['risks']['risks']}
+
+            response = client.get('/api/recovery/handbook')
+            assert response.status_code == 200, response.get_data(as_text=True)[:500]
+            assert response.headers['Content-Disposition'].startswith('attachment; filename="DR-prirucka-nuc-')
+            html = response.get_data(as_text=True)
+            assert SECRET_MARKER not in html, 'príručka nesmie obsahovať heslá ani citlivé súbory'
+            assert 'password ***' in html, 'heslo zo storage.cfg je zamaskované'
+            for expected in (
+                'nuc.lan', '192.0.2.2/24', 'vmbr0.200', 'bridge-vlan-aware yes', 'VLAN 200',
+                '198.51.100.2:/Backups/Host', '/Proxmox Backup Manager/Host', 'mount -t nfs -o rw,vers=4.0',
+                'týždenne – sobota 15:00', '122 mikrotik-chr', 'pct restore 113', 'LXC <strong>113</strong>',
+                'pve-backup-qnap.timer', '/autofs/qnap/dump', 'Obnova Proxmox Backup Managera (LXC)',
+                'missing_hook.sh',
+            ):
+                assert expected in html, expected
+            loop_line = next(line for line in html.splitlines() if line.startswith('for id in'))
+            assert '113' not in loop_line, 'LXC appky sa v hromadnom restore neobnovuje znova'
+            assert not re.search(r'<(script|link)[^>]+(src|href)="https?://', html), 'príručka musí byť offline'
+
+            empty_history = client.get('/api/recovery/handbook?inline=1')
+            assert empty_history.headers['Content-Disposition'].startswith('inline;')
+            app_module.save_backup_history([])
+            html = client.get('/api/recovery/handbook').get_data(as_text=True)
+            assert 'Príručka bez údajov z archívu' in html and SECRET_MARKER not in html
+        finally:
+            app_module.CONFIG_FILE, app_module.BACKUP_HISTORY_FILE, app_module.BACKUP_STORAGE_DIR, app_module.list_ftp_backups = originals
+            app_module.detect_own_ip = original_detect
+            app_module.AUTH_CONFIG_FILE = original_auth
+            app_module.sync_flask_secret()
+
+
 def main():
     test_data_model()
     test_readiness()
     test_restore_guards()
     test_info_commands_resilience()
     test_api_and_snapshot()
+    test_wiki_additions()
+    test_risk_analysis()
+    test_downloads_and_handbook()
     print('test_recovery: OK')
 
 

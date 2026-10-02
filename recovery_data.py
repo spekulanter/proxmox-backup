@@ -1050,8 +1050,38 @@ cp $B/user.cfg /etc/pve/user.cfg
 cp $B/jobs.cfg /etc/pve/jobs.cfg
 """),
             _warn('Firewall (firewall/cluster.fw, nodes/*/host.fw) obnov ako posledný – pravidlá so starou IP/sieťou ťa môžu odstrihnúť. Najprv skontroluj, potom zapni.'),
-            _h('Iný hostname'),
-            _p('VM configy sú pod nodes/<starý-hostname>/. Pri bežiacom pmxcfs ich presuň: `mv /etc/pve/nodes/<starý>/qemu-server/*.conf /etc/pve/nodes/<nový>/qemu-server/` (rovnako lxc/). Potom starý adresár nodu odstráň až po kontrole.'),
+            _h('Nový názov nodu (iný hostname)'),
+            _p('Hostname je v Proxmoxe zároveň názov nodu: configy VM/LXC sú pod /etc/pve/nodes/<hostname>/ a na názov odkazujú aj backup joby a vlastné skripty. Pri havárii je najjednoduchšie zachovať pôvodný názov. Nový názov je možný, ale treba upraviť všetky miesta nižšie.'),
+            _ul(
+                'Configy VM a LXC: nodes/<starý>/qemu-server/*.conf a nodes/<starý>/lxc/*.conf → presunúť na nový node.',
+                'Vzdump joby v /etc/pve/jobs.cfg s riadkom `node <starý>` – inak bežia pre neexistujúci node a NEZÁLOHUJÚ NIČ (bez chyby v GUI).',
+                'Vlastné systemd služby/skripty s názvom nodu (napr. `Environment=NODE=<starý>` v pve-backup-*.service).',
+                'Firewall a nastavenia nodu: nodes/<starý>/host.fw a nodes/<starý>/config (ak existujú).',
+                'storage.cfg s obmedzením `nodes <starý>`, DNS záznam na routeri, monitoring a záložky.',
+            ),
+            _warn('Poradie: configy presuň PRED obnovou VM/LXC. VMID je unikátne v celom datacentri – kým je 113.conf pod nodes/<starý>/, `pct restore 113 … --force` na novom node skončí chybou, že CT už existuje na inom node.'),
+            _p('Postup po obnove config.db (nový hostname zadaný už pri inštalácii, pmxcfs beží):'),
+            _code("""
+OLD=nuc                     # pôvodný názov nodu
+N=$(hostname -s)            # nový názov nodu
+ls /etc/pve/nodes/          # vidíš starý (offline) aj nový node
+mkdir -p /root/node-$OLD-backup && cp -r /etc/pve/nodes/$OLD/. /root/node-$OLD-backup/   # záloha
+
+mv /etc/pve/nodes/$OLD/qemu-server/*.conf /etc/pve/nodes/$N/qemu-server/
+mv /etc/pve/nodes/$OLD/lxc/*.conf         /etc/pve/nodes/$N/lxc/
+[ -f /etc/pve/nodes/$OLD/host.fw ] && cp /etc/pve/nodes/$OLD/host.fw /etc/pve/nodes/$N/host.fw
+[ -f /etc/pve/nodes/$OLD/config ]  && cp /etc/pve/nodes/$OLD/config  /etc/pve/nodes/$N/config
+
+grep -n '^\\s*node ' /etc/pve/jobs.cfg
+sed -i "s/^\\(\\s*node\\) $OLD$/\\1 $N/" /etc/pve/jobs.cfg
+grep -rl "NODE=$OLD" /etc/systemd/system/ | xargs -r sed -i "s/NODE=$OLD$/NODE=$N/"
+systemctl daemon-reload
+
+qm list; pct list           # všetci hostia sú na novom node
+rm -rf /etc/pve/nodes/$OLD  # až po kontrole; certifikáty pve-ssl.* nový node má vlastné
+systemctl restart pveproxy
+"""),
+            _p('Premenovanie neskôr (už obnovený pôvodný názov): vypni všetkých hostí, zmeň /etc/hostname a riadok v /etc/hosts, reboot a urob rovnaké kroky. Detekcia v Prehľade (Riziká obnovy) upozorní, ak je vzdump job viazaný na iný node, než ako sa host volá.'),
             _h('Cluster'),
             _p('Tento postup je pre samostatný node. Pre člena clustra config.db nenahrádzaj – node vymaž z clustra (`pvecm delnode`) a nový pridaj (`pvecm add`), konfigurácia sa zosynchronizuje.'),
             _h('Čo v aplikácii'),
@@ -1333,6 +1363,57 @@ pveam update
 pveam available | grep debian
 pveam download local <template>
 """),
+        ],
+    },
+    {
+        'slug': 'backup-manager-recovery',
+        'title': 'Obnova Proxmox Backup Managera (LXC)',
+        'summary': 'Ako dostať späť samotnú appku: z vzdump zálohy LXC alebo novou inštaláciou.',
+        'blocks': [
+            _p('Appka (táto stránka) beží v samostatnom LXC na Proxmox hoste. Pri havárii hosta zomrie spolu s ním – preto si stiahni offline príručku (Prehľad → Stiahnuť offline príručku) a maj ju mimo servera. Na obnovu hosta appku nepotrebuješ, ale uľahčí ti ju.'),
+            _h('A) Obnova LXC z vzdump (odporúčané)'),
+            _p('Získaš presný pôvodný stav: prod aj dev inštanciu, históriu záloh, nastavenia FTP/SSH, admin účet a 2FA.'),
+            _code("""
+ls -lt /mnt/<nas>/dump/vzdump-lxc-<VMID>-*.tar.zst | head -3
+pct restore <VMID> /mnt/<nas>/dump/vzdump-lxc-<VMID>-<čas>.tar.zst --storage local-lvm --force
+pct config <VMID> | grep net0      # bridge, tag (VLAN), ip, gw
+pct start <VMID>
+pct exec <VMID> -- systemctl is-active proxmox-backup.service
+"""),
+            _p('`--force` je potrebné, ak config LXC už prišiel s obnoveným config.db. Potom v appke: Nastavenia → Test SSH. Nový SSH kľúč hosta appke nevadí; ak má nový host iné root heslo, zadaj ho do Nastavení.'),
+            _h('B) Nová inštalácia (vzdump LXC chýba)'),
+            _code("""
+pveam update
+pveam available --section system | grep debian-12
+pveam download local debian-12-standard_<verzia>_amd64.tar.zst
+
+pct create <VMID> local:vztmpl/debian-12-standard_<verzia>_amd64.tar.zst \\
+  --hostname proxmox-backup --cores 2 --memory 2048 --swap 512 --rootfs local-lvm:20 \\
+  --net0 name=eth0,bridge=vmbr0,tag=<VLAN>,ip=<IP>/24,gw=<GW> \\
+  --nameserver <DNS> --unprivileged 1 --features nesting=1 --onboot 1 --password
+pct start <VMID> && pct enter <VMID>
+
+apt update && apt install -y curl git
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/spekulanter/proxmox-backup/main/install_in_lxc.sh)"
+"""),
+            _p('Inštalátor vytvorí /opt/proxmox-backup, službu proxmox-backup.service (port 5000) a timer automatickej zálohy. Voliteľná dev inštancia (port 5001):'),
+            _code("""
+git clone -b dev https://github.com/spekulanter/proxmox-backup.git /opt/proxmox-backup-dev
+cd /opt/proxmox-backup-dev && python3 -m venv venv
+chmod +x update.sh auto_backup.sh test.sh && ./update.sh
+"""),
+            _h('Čo zadať po novej inštalácii'),
+            _ol(
+                'Registrácia admina a nové 2FA – recovery kódy si ulož mimo servera.',
+                'Nastavenia → Zdroj: Remote SSH, IP Proxmox hosta, port 22, root + heslo → Test SSH.',
+                'Nastavenia → FTP: host, port, používateľ, heslo a cieľový adresár (hodnoty sú v offline príručke) → Test pripojenia.',
+                'Retencia a automatická záloha (frekvencia, deň, čas).',
+                'Účet → Pushover, ak ho používaš.',
+                'História: archívy z FTP sa zobrazia automaticky, pri použití sa stiahnu do lokálneho cache.',
+            ),
+            _h('Stratené 2FA alebo heslo'),
+            _p('Použi recovery kód (Obnoviť heslo alebo 2FA). Krajná možnosť priamo v LXC: `systemctl stop proxmox-backup`, presuň /opt/proxmox-backup/auth_config.json mimo, `systemctl start proxmox-backup` – appka ponúkne novú registráciu admina. Nastavenia FTP/SSH a história zostanú.'),
+            _tip('Po každej väčšej zmene prostredia (IP, VLAN, NAS, VMID) si stiahni novú offline príručku – generuje sa z najnovšieho archívu.'),
         ],
     },
     {

@@ -2777,6 +2777,16 @@
                     </details>
                 </div>
 
+                ${renderRecoveryRisks(recoveryOverview.risks)}
+
+                <div class="flex flex-col gap-3 rounded-lg border p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
+                    <div class="min-w-0">
+                        <div class="font-semibold">Offline príručka obnovy</div>
+                        <p class="text-muted-foreground">Jeden HTML súbor s postupom od A po Z, hodnotami tvojho hosta (sieť, VLAN, NAS, joby, hostia), wiki a checklistom. Ulož si ho na PC – funguje aj keď server ani táto appka nebežia.</p>
+                    </div>
+                    <a href="/api/recovery/handbook" download class="inline-flex h-9 shrink-0 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90">Stiahnuť offline príručku</a>
+                </div>
+
                 <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">${categoryCards}</div>
 
                 <div class="grid gap-3 md:grid-cols-2">
@@ -2797,6 +2807,37 @@
                             <button type="button" onclick="openWikiArticle('new-hardware')" class="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 text-sm font-medium hover:bg-accent">Wiki: obnova na novom HW</button>
                         </div>
                     </div>
+                </div>
+            `;
+        }
+
+        function renderRecoveryRisks(riskData) {
+            const risks = riskData?.risks || [];
+            const archive = riskData?.archive;
+            const levelClass = {
+                error: 'border-red-200 bg-red-50 text-red-800',
+                warning: 'border-amber-200 bg-amber-50 text-amber-900',
+                info: 'border-sky-200 bg-sky-50 text-sky-900'
+            };
+            const levelLabel = { error: 'Riziko', warning: 'Pozor', info: 'Info' };
+            const cards = risks.map(risk => `
+                <div class="rounded-lg border px-3 py-2 ${levelClass[risk.level] || levelClass.info}">
+                    <div class="flex flex-wrap items-center gap-2">
+                        <span class="text-[11px] font-bold uppercase tracking-wide">${escapeHtml(levelLabel[risk.level] || 'Info')}</span>
+                        <span class="font-medium">${escapeHtml(risk.title)}</span>
+                    </div>
+                    <p class="mt-1">${formatInline(risk.detail)}</p>
+                    ${(risk.items || []).length ? `<ul class="mt-1 list-disc space-y-0.5 pl-5">${risk.items.map(item => `<li class="break-words">${escapeHtml(item)}</li>`).join('')}</ul>` : ''}
+                </div>
+            `).join('');
+            return `
+                <div class="space-y-2 rounded-lg border p-4 text-sm">
+                    <div class="flex flex-wrap items-center justify-between gap-2">
+                        <div class="font-semibold">Riziká obnovy</div>
+                        <span class="text-xs text-muted-foreground">${archive ? `z archívu ${escapeHtml(formatDateTime(archive.timestamp))}` : 'bez lokálneho archívu'}</span>
+                    </div>
+                    <p class="text-xs text-muted-foreground">Automatická kontrola vzdump jobov, hostí bez zálohy a hook skriptov. Neovplyvňuje stav READY/WARNING/INCOMPLETE.</p>
+                    ${cards || '<div class="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-green-900">Bez zistených rizík.</div>'}
                 </div>
             `;
         }
@@ -3043,7 +3084,10 @@
             currentWikiSlug = '';
             const articles = recoveryOverview?.wiki || [];
             container.innerHTML = `
-                <p class="text-sm text-muted-foreground">Praktické postupy pre obnovu Proxmox hosta. Príkazy sú príklady – IP adresy, názvy NIC a storage uprav podľa svojho prostredia.</p>
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <p class="text-sm text-muted-foreground">Praktické postupy pre obnovu Proxmox hosta. Príkazy sú príklady – IP adresy, názvy NIC a storage uprav podľa svojho prostredia.</p>
+                    <a href="/api/recovery/handbook" download class="inline-flex h-9 shrink-0 items-center justify-center rounded-md border border-input bg-background px-3 text-sm font-medium hover:bg-accent">Stiahnuť offline (HTML)</a>
+                </div>
                 <div class="grid gap-3 sm:grid-cols-2">${articles.map((article, index) => `
                     <button type="button" onclick="openWikiArticle('${escapeHtml(article.slug)}')" class="flex min-w-0 flex-col items-start gap-1 rounded-lg border p-3 text-left hover:bg-accent/50">
                         <span class="text-xs font-semibold text-muted-foreground">${index + 1}.</span>

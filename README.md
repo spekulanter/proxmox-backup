@@ -125,11 +125,21 @@ Obnova je zámerne whitelistovaná na známe konfiguračné cesty a nepodporuje 
 
 Scenár: pôvodný Proxmox server (napr. MSI Cubi) zomrel a konfiguráciu treba obnoviť na novom, prípadne inom hardvéri. Záložka **Obnova na novom HW** obsahuje:
 
-- **Prehľad** - pripravenosť na obnovu a počty „X/Y aktuálne zálohované“ pre každú restore kategóriu.
+- **Prehľad** - pripravenosť na obnovu, počty „X/Y aktuálne zálohované“ pre každú restore kategóriu, **riziká obnovy** a tlačidlo **Stiahnuť offline príručku**.
 - **Postup obnovy** - 11-krokový checklist (stav sa ukladá v prehliadači) s príkazmi a položkami zálohy pre každý krok.
 - **Položky** - všetky zálohované cesty zoskupené podľa restore kategórie, s detailom.
 - **Snapshot hosta** - DR metadata z archívu (NIC a MAC, IP, disky, UUID, storage, PCI, verzia PVE).
-- **Wiki** - praktické články (prehľad DR, obnova na novom HW, `/etc/pve` a `config.db`, sieť, disky a fstab, používatelia, SSH, systemd/cron, AutoFS/QNAP/WD, VM/LXC, systémové nastavenia, snapshot, checklist po obnove). Odkaz na článok: `#wiki/<slug>`.
+- **Wiki** - praktické články (prehľad DR, obnova na novom HW, `/etc/pve` a `config.db` vrátane nového názvu nodu, sieť, disky a fstab, používatelia, SSH, systemd/cron, AutoFS/QNAP/WD, VM/LXC, obnova samotného Proxmox Backup Managera, systémové nastavenia, snapshot, checklist po obnove). Odkaz na článok: `#wiki/<slug>`.
+
+**Riziká obnovy** sa počítajú deterministicky z najnovšieho lokálneho archívu (`backup-info/` + `/etc/pve`). Stav READY/WARNING/INCOMPLETE neovplyvňujú:
+
+- hostia (VM/LXC), ktorí nie sú v žiadnom vzdump jobe,
+- vzdump job viazaný na iný node, než ako sa host volá (napr. po zmene hostname) – taký job nezálohuje nič,
+- hook skript vzdump jobu, ktorý na hoste neexistuje (overí `backup-info/hook-scripts.txt`, pri starších archívoch odhad podľa obsahu archívu),
+- všetky vzdump joby vypnuté (info, ak ich spúšťa vlastný systemd timer),
+- najnovší archív ešte nebol stiahnutý cez prehliadač mimo servera (`downloaded_at` v histórii).
+
+**Offline príručka** (`GET /api/recovery/handbook`) je jeden HTML súbor bez externých závislostí. Obsahuje postup obnovy od A po Z s hodnotami tvojho hosta odvodenými z najnovšieho archívu a nastavení appky: hostname, management IP, bridge/VLAN a šablónu `/etc/network/interfaces`, NAS automounty s príkazmi na ručný mount, backup storage, vzdump joby, zoznam hostí so stavom zálohy, VMID a sieť LXC s appkou (podľa vlastnej IP). Pridá aj riziká, klasifikáciu položiek a celú wiki. Neobsahuje heslá ani obsah citlivých súborov. Hodnoty kľúčov ako `password` v `storage.cfg` sú zamaskované. Po zmene prostredia (IP, VLAN, NAS, VMID) si príručku stiahni znova.
 
 Na záložke Zálohovanie sú filtre (Critical, Recommended, Optional, New HW – Required/Review/Selective, Reference only, Sensitive, Network, Storage) a pri každej položke tlačidlo **Detail**. Detail ukazuje, prečo sa položka zálohuje, čo obsahuje, či sa dá obnoviť priamo, riziká a postup obnovy na rovnakom aj inom HW.
 
@@ -153,11 +163,11 @@ Na záložke Zálohovanie sú filtre (Critical, Recommended, Optional, New HW �
 
 **Čo aplikácia obnovuje automaticky:** nič. Každý restore spúšťa používateľ, vyberá konkrétne cesty a potvrdzuje ho. Disky VM/LXC aplikácia nezálohuje ani neobnovuje.
 
-**DR metadata snapshot:** každá záloha pridá do `backup-info/` výstupy `pveversion -v`, `hostname`, `uname -a`, `lscpu`, `ip -br link`, `ip -br addr`, `ip addr`, `ip route`, `bridge link`, `lsblk -f`, `blkid`, `/dev/disk/by-id`, `findmnt`, `df -h`, `pvesm status`, `pvs`, `vgs`, `lvs`, `zpool status`, `zfs list`, `lspci -nn`, `systemctl --failed`, `qm list` a `pct list`. Pridá aj `recovery-manifest.json` s klasifikáciou položiek. Ak príkaz na hoste neexistuje, zapíše sa chyba a záloha pokračuje. Snapshot je REFERENCE ONLY a nikdy sa neobnovuje.
+**DR metadata snapshot:** každá záloha pridá do `backup-info/` výstupy `pveversion -v`, `hostname`, `uname -a`, `lscpu`, `ip -br link`, `ip -br addr`, `ip addr`, `ip route`, `bridge link`, `lsblk -f`, `blkid`, `/dev/disk/by-id`, `findmnt`, `df -h`, `pvesm status`, `pvs`, `vgs`, `lvs`, `zpool status`, `zfs list`, `lspci -nn`, `systemctl --failed`, `qm list`, `pct list` a kontrolu hook skriptov vzdump jobov (`hook-scripts.txt`). Pridá aj `recovery-manifest.json` s klasifikáciou položiek. Ak príkaz na hoste neexistuje, zapíše sa chyba a záloha pokračuje. Snapshot je REFERENCE ONLY a nikdy sa neobnovuje.
 
 DR metadáta položiek sú definované v `recovery_data.py` (kľúč = cesta z `DEFAULT_BACKUP_FILES`). Neklasifikovaná vlastná položka dostane bezpečný fallback REVIEW FIRST. Metadáta sa pripájajú iba k API odpovediam (`recovery` objekt), do `backup_config.json` sa neukladajú, preto sa `CONFIG_VERSION` nemení.
 
-Nové API endpointy: `GET /api/recovery/overview`, `GET /api/recovery/checklist`, `GET /api/recovery/wiki`, `GET /api/recovery/wiki/<slug>`, `GET /api/recovery/snapshot/<backup_id>`. `POST /api/restore` po novom prijíma aj `stage_paths` a `acknowledged_paths`.
+Nové API endpointy: `GET /api/recovery/overview` (vrátane `risks`), `GET /api/recovery/checklist`, `GET /api/recovery/wiki`, `GET /api/recovery/wiki/<slug>`, `GET /api/recovery/snapshot/<backup_id>`, `GET /api/recovery/handbook` (`?inline=1` na zobrazenie v prehliadači). `POST /api/restore` po novom prijíma aj `stage_paths` a `acknowledged_paths`.
 
 ### 💾 Ukladanie archívov
 
