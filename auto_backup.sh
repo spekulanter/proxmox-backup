@@ -6,7 +6,7 @@ APP_DIR="${APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 CONFIG_FILE="${CONFIG_FILE:-${APP_DIR}/backup_config.json}"
 HISTORY_FILE="${HISTORY_FILE:-${APP_DIR}/backup_history.json}"
 AUTH_FILE="${AUTH_FILE:-${APP_DIR}/auth_config.json}"
-API_URL="${BACKUP_MANAGER_URL:-http://127.0.0.1:5000/api/backup/auto}"
+API_URL="${BACKUP_MANAGER_URL:-http://127.0.0.1:${APP_PORT:-5000}/api/backup/auto}"
 PYTHON_BIN="${APP_DIR}/venv/bin/python"
 
 if [ ! -x "${PYTHON_BIN}" ]; then
