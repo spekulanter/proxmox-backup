@@ -453,12 +453,7 @@
                                 Vyberte súbory a priečinky, ktoré chcete zálohovať
                             </div>
                         </div>
-                        <details id="backup-files-details" class="px-6">
-                            <summary class="flex min-h-11 cursor-pointer select-none flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm">
-                                <span>Čo sa zálohuje: <strong id="backup-files-summary">načítavam…</strong></span>
-                                <span class="font-medium text-primary dark:text-foreground">Upraviť výber</span>
-                            </summary>
-                            <div class="pt-4">
+                        <div class="px-6">
                             <div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                 <div class="space-y-2">
                                     <div class="text-sm text-muted-foreground" id="backup-profile-help">
@@ -496,8 +491,7 @@
                             <div class="space-y-3" id="backup-files-list">
                                 <!-- Files will be loaded here -->
                             </div>
-                            </div>
-                        </details>
+                        </div>
                     </div>
                 </div>
 
@@ -1980,10 +1974,6 @@
             const totalCritical = criticalFiles.length;
             
             document.getElementById('files-count').textContent = `${selectedCount} z ${totalCount}`;
-            const filesSummary = document.getElementById('backup-files-summary');
-            if (filesSummary) {
-                filesSummary.textContent = `${selectedCount} z ${totalCount} položiek (${activeBackupProfile === 'auto' ? 'automatická' : 'ručná'} záloha)${selectedCritical < totalCritical ? ` · chýba ${totalCritical - selectedCritical} kritických` : ''}`;
-            }
             document.getElementById('critical-count').textContent = `${selectedCritical} z ${totalCritical}`;
             
             // Update badge colors

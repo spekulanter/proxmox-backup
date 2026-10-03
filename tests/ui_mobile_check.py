@@ -191,11 +191,9 @@ with sync_playwright() as p:
         page.wait_for_timeout(500)
         vp = f'{width}x{height}'
         check(page, 'backup', vp)
-        assert not page.evaluate("document.getElementById('backup-files-details').open"), 'zoznam položiek je predvolene zbalený'
-        assert ' z ' in page.locator('#backup-files-summary').inner_text()
+        assert page.locator('#backup-files-list .file-checkbox').count() > 0, 'výber súborov je hneď viditeľný'
         if width == 390:
             page.screenshot(path=str(OUT / 'm-backup.png'), full_page=False)
-        page.click('#backup-files-details > summary')
         if width == 390:
             page.locator('#file-filter-chips').scroll_into_view_if_needed()
             page.screenshot(path=str(OUT / 'm-filters.png'))
