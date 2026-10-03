@@ -12,9 +12,11 @@ import fnmatch
 import subprocess
 import shlex
 import posixpath
+import difflib
 import re
 import ipaddress
 import fcntl
+import threading
 from contextlib import contextmanager
 from zoneinfo import ZoneInfo
 from datetime import datetime
@@ -61,6 +63,10 @@ CONFIG_FILE = 'backup_config.json'
 AUTH_CONFIG_FILE = 'auth_config.json'
 BACKUP_HISTORY_FILE = 'backup_history.json'
 MIGRATION_STATE_FILE = 'migration_state.json'
+RECOVERY_PROGRESS_FILE = 'recovery_progress.json'
+MIGRATION_TARGET_FILE = 'migration_target.json'
+MIGRATION_JOBS_FILE = 'migration_jobs.json'
+MIGRATION_TRANSFER_FILE = 'migration_transfer.json'
 BACKUP_STORAGE_DIR = os.environ.get('BACKUP_STORAGE_DIR', 'backups')
 APP_ISSUER = 'Proxmox Backup Manager'
 PUSHOVER_MESSAGE_URL = 'https://api.pushover.net/1/messages.json'
@@ -1273,8 +1279,15 @@ def build_recovery_overview(config=None, history=None, now=None):
         'snapshot_files': [{'file': name, 'label': label} for name, label in HOST_SNAPSHOT_FILES],
         'wiki': wiki_index(),
         'checklist': RECOVERY_CHECKLIST,
+        'checklist_progress': safe_recovery_progress(),
         'risks': build_recovery_risks(history),
     }
+
+def safe_recovery_progress():
+    try:
+        return load_recovery_progress()
+    except (OSError, RuntimeError):
+        return None
 
 def wiki_index():
     return [
@@ -1667,9 +1680,9 @@ def default_migration_state():
     }
 
 @contextmanager
-def migration_state_lock():
+def json_state_lock(path):
     """Stabilný lock serializuje read/modify/replace aj medzi gunicorn workermi."""
-    fd = os.open(f'{MIGRATION_STATE_FILE}.lock', os.O_CREAT | os.O_RDWR, 0o600)
+    fd = os.open(f'{path}.lock', os.O_CREAT | os.O_RDWR, 0o600)
     with os.fdopen(fd, 'a') as handle:
         os.fchmod(handle.fileno(), 0o600)
         fcntl.flock(handle, fcntl.LOCK_EX)
@@ -1677,6 +1690,24 @@ def migration_state_lock():
             yield
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
+
+def migration_state_lock():
+    return json_state_lock(MIGRATION_STATE_FILE)
+
+def write_json_state(path, state):
+    """0600 už pri vytvorení tmp, flush/fsync a atomický replace na rovnakom FS."""
+    directory = os.path.dirname(os.path.abspath(path))
+    fd, tmp_path = tempfile.mkstemp(prefix='.state-', suffix='.tmp', dir=directory)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            json.dump(state, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 def load_migration_state():
     if not os.path.exists(MIGRATION_STATE_FILE):
@@ -1714,19 +1745,50 @@ def load_migration_state():
         raise RuntimeError('Stav migrácie je poškodený alebo má nepodporovanú verziu. Obnov súbor zo zálohy alebo použi reset.') from None
 
 def save_migration_state(state):
-    """0600 už pri vytvorení tmp, flush/fsync a atomický replace na rovnakom FS."""
-    directory = os.path.dirname(os.path.abspath(MIGRATION_STATE_FILE))
-    fd, tmp_path = tempfile.mkstemp(prefix='.migration-state-', suffix='.tmp', dir=directory)
+    write_json_state(MIGRATION_STATE_FILE, state)
+
+# Postup obnovy po havárii (RECOVERY_CHECKLIST) – na serveri, aby fungoval z mobilu aj z PC.
+
+def default_recovery_progress():
+    return {'version': 1, 'steps': {}, 'updated_at': None}
+
+def load_recovery_progress():
+    if not os.path.exists(RECOVERY_PROGRESS_FILE):
+        return default_recovery_progress()
     try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
-            os.fchmod(handle.fileno(), 0o600)
-            json.dump(state, handle, ensure_ascii=False, indent=2)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, MIGRATION_STATE_FILE)
-    finally:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        with open(RECOVERY_PROGRESS_FILE, encoding='utf-8') as handle:
+            state = json.load(handle)
+        step_ids = {step['id'] for step in RECOVERY_CHECKLIST}
+        if (not isinstance(state, dict) or set(state) != {'version', 'steps', 'updated_at'}
+                or state['version'] != 1 or not isinstance(state['steps'], dict)
+                or not isinstance(state['updated_at'], (str, type(None)))):
+            raise ValueError()
+        for step_id, step in state['steps'].items():
+            if (step_id not in step_ids or not isinstance(step, dict)
+                    or set(step) != {'completed', 'updated_at'} or type(step['completed']) is not bool
+                    or not isinstance(step['updated_at'], str)):
+                raise ValueError()
+        return state
+    except (ValueError, TypeError, KeyError):
+        raise RuntimeError('Stav postupu obnovy je poškodený. Použi reset postupu.') from None
+
+def recovery_progress_response(update=None, reset=False):
+    try:
+        with json_state_lock(RECOVERY_PROGRESS_FILE):
+            state = default_recovery_progress() if reset else load_recovery_progress()
+            if update:
+                update(state)
+                state['updated_at'] = migration_now()
+            if update or reset:
+                write_json_state(RECOVERY_PROGRESS_FILE, state)
+        response = jsonify({'success': True, 'steps': RECOVERY_CHECKLIST, 'progress': state})
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+    except ValueError as exc:
+        return json_error(str(exc))
+    except (OSError, RuntimeError) as exc:
+        message = str(exc) if isinstance(exc, RuntimeError) else 'Stav postupu obnovy sa nedá uložiť.'
+        return json_error(message, 503)
 
 def validate_migration_host(host):
     if not isinstance(host, dict) or set(host) - {'ip', 'hostname'}:
@@ -1825,13 +1887,35 @@ def build_migration_payload(state, history=None):
             guest['commands'] = migration_guest_commands(guest)
             guests.append(guest)
     steps = [step for step in MIGRATION_STEPS if state['method'] in step['methods']]
+    target, target_error = safe_public_migration_target()
+    app_vmid = migration_app_vmid(history) if state['method'] == 'side_by_side' else None
+    try:
+        jobs = [public_migration_job(job) for job in list_migration_jobs()[:5]]
+    except (OSError, RuntimeError):
+        jobs = []
     return {
         'success': True, 'state': state, 'methods': MIGRATION_METHODS, 'steps': steps,
+        'target': target, 'target_error': target_error, 'jobs': jobs,
         'guests': guests, 'inventory': inventory, 'risks': build_recovery_risks(history),
+        'transfer': safe_migration_transfer(),
+        'app_vmid': app_vmid,
+        # LXC s appkou sa presúva až pri prepnutí (ručne, ako posledný), preto sa do podmienky neráta.
         'cutover_ready': state['method'] == 'disk_move' or (
             state['method'] == 'side_by_side' and inventory['available']
-            and all(g['status'] in ('verified', 'skipped') for g in guests)),
+            and all(g['status'] in ('verified', 'skipped') for g in guests if g['vmid'] != app_vmid)),
     }
+
+def migration_app_vmid(history):
+    """VMID LXC/VM, v ktorom beží táto appka (podľa jej IP v configoch z archívu)."""
+    try:
+        _entry, path = latest_local_archive_entry(history)
+        old_ssh = migration_old_ssh()
+        if not path or not old_ssh:
+            return None
+        guest = find_app_guest(read_archive_facts(path), detect_own_ip(old_ssh['host'], old_ssh['port']))
+        return guest['vmid'] if guest else None
+    except (OSError, ValueError, RuntimeError, tarfile.TarError):
+        return None
 
 def remember_migration_guests(state, guests):
     for guest in guests:
@@ -2058,10 +2142,14 @@ def build_migration_comparison(old, new):
         return '\n'.join(f"{v['name']}: porty {', '.join(v['ports']) or 'none'}, VLAN-aware {v['vlan_aware'] or 'neurčené'}, vids {v['vids'] or 'neurčené'}" for v in values) or 'žiadne'
     def vlan(values):
         return '\n'.join(f"{v['name']}: {v['raw_device']} / VLAN {v['vlan_id'] or 'neurčené'}" for v in values) or 'žiadne'
-    same = ((old['host'] == new['host'] and old['port'] == new['port'])
-            or (a['hostname'] and b['hostname'] and a['hostname'].split('.')[0] == b['hostname'].split('.')[0]))
-    row('identity', 'Identita hostov', ['hostname'], a['hostname'], b['hostname'], 'error' if same else 'ok',
-        'Porovnávaš rovnaký cieľ alebo rovnaký hostname. Pri súbehu over samostatné hosty.' if same else 'Hosty majú odlišné hostname.')
+    same_target = old['host'] == new['host'] and old['port'] == new['port']
+    same_name = bool(a['hostname'] and b['hostname'] and a['hostname'].split('.')[0] == b['hostname'].split('.')[0])
+    # Pri prenose 1:1 má nový host zámerne rovnaký názov nodu; kolízia je iba rovnaká adresa.
+    row('identity', 'Identita hostov', ['hostname'], a['hostname'], b['hostname'],
+        'error' if same_target else ('info' if same_name else 'ok'),
+        'Porovnávaš ten istý SSH cieľ. Zadaj adresu nového hosta.' if same_target else (
+            'Rovnaký názov nodu – očakávané pri prenose konfigurácie 1:1. Hosty rozlišuje rôzna IP; kontrola nového hosta overí aj /etc/machine-id.'
+            if same_name else 'Hosty majú odlišné hostname. Prenos config.db 1:1 vyžaduje rovnaký názov nodu.'))
     av, bv = a['pve_version'], b['pve_version']
     amajor, bmajor = int(av.split('.')[0]) if av else 0, int(bv.split('.')[0]) if bv else 0
     version_level = 'error' if bmajor < amajor else ('warning' if bmajor != amajor else ('info' if av != bv else 'ok'))
@@ -2129,6 +2217,1085 @@ def build_migration_comparison(old, new):
         'Na novom používaj pri súbehu dočasnú IP. Pri cutover starý host najprv vypni alebo odpoj.')
     return rows
 
+
+# ---------------------------------------------------------------------------
+# Migrácia – pripojenie nového hosta a operácie na pozadí (fáza 2)
+# ---------------------------------------------------------------------------
+# Prihlasovacie údaje nového hosta sú v samostatnom súbore (0600), nikdy v migration_state.json
+# a nikdy v API odpovediach. Zmažú sa pri resete migrácie, pri dokončení sa zmaže heslo.
+
+MIGRATION_JOB_HEARTBEAT_SECONDS = 20
+MIGRATION_JOB_STALE_SECONDS = 180
+MIGRATION_JOB_LOG_LIMIT = 300
+MIGRATION_JOBS_KEEP = 20
+MIGRATION_JOB_THREADS = {}
+PVE_MANAGER_VERSION = re.compile(r'pve-manager/(\d+)\.(\d+)(?:\.(\d+))?')
+
+def load_migration_target():
+    if not os.path.exists(MIGRATION_TARGET_FILE):
+        return None
+    try:
+        with open(MIGRATION_TARGET_FILE, encoding='utf-8') as handle:
+            target = json.load(handle)
+        if (not isinstance(target, dict)
+                or set(target) != {'host', 'port', 'username', 'password', 'saved_at', 'last_check'}
+                or not isinstance(target['host'], str) or not target['host']
+                or type(target['port']) is not int or not 1 <= target['port'] <= 65535
+                or target['username'] != 'root' or not isinstance(target['password'], str)
+                or not isinstance(target['saved_at'], str)
+                or not isinstance(target['last_check'], (dict, type(None)))):
+            raise ValueError()
+        return target
+    except (ValueError, TypeError, KeyError):
+        raise RuntimeError('Údaje nového hosta sú poškodené. Zabudni pripojenie a zadaj ho znova.') from None
+
+def forget_migration_target(keep_host=False):
+    """Zmaže pripojenie nového hosta; keep_host ponechá IP a výsledok kontroly, zmaže iba heslo."""
+    with json_state_lock(MIGRATION_TARGET_FILE):
+        if not os.path.exists(MIGRATION_TARGET_FILE):
+            return
+        if keep_host:
+            try:
+                target = load_migration_target()
+            except RuntimeError:
+                target = None
+            if target:
+                target['password'] = ''
+                write_json_state(MIGRATION_TARGET_FILE, target)
+                return
+        os.unlink(MIGRATION_TARGET_FILE)
+
+def public_migration_target(target):
+    if not target:
+        return None
+    return {
+        'host': target['host'], 'port': target['port'], 'username': target['username'],
+        'has_password': bool(target['password']), 'saved_at': target['saved_at'],
+        'last_check': target['last_check'],
+    }
+
+def safe_public_migration_target():
+    try:
+        return public_migration_target(load_migration_target()), None
+    except (OSError, RuntimeError) as exc:
+        return None, str(exc) if isinstance(exc, RuntimeError) else 'Údaje nového hosta sa nedajú načítať.'
+
+def migration_old_ssh():
+    """SSH cieľ starého hosta z Nastavení (iba remote_ssh s kompletnými údajmi)."""
+    source = sanitize_source_config(load_config().get('source_config'))
+    if source['mode'] != 'remote_ssh':
+        return None
+    try:
+        RemoteSshBackupSource(source).validate()
+    except ValueError:
+        return None
+    return dict(source['ssh'])
+
+class MigrationHost:
+    """Krátkodobé SSH spojenie na hosta migrácie; príkazy iba z pevných builderov v kóde."""
+
+    def __init__(self, ssh_config):
+        self.ssh_config = ssh_config
+        self.client = None
+
+    def __enter__(self):
+        self.client = SSH_CLIENT_FACTORY()
+        self.client.connect(hostname=self.ssh_config['host'], port=self.ssh_config['port'],
+                            username=self.ssh_config.get('username') or 'root',
+                            password=self.ssh_config['password'],
+                            timeout=10, banner_timeout=10, auth_timeout=10,
+                            look_for_keys=False, allow_agent=False)
+        return self
+
+    def run(self, command, timeout=MIGRATION_COMPARE_COMMAND_TIMEOUT):
+        return run_migration_compare_command(self.client, command, timeout)
+
+    def try_run(self, command, timeout=MIGRATION_COMPARE_COMMAND_TIMEOUT):
+        try:
+            return self.run(command, timeout), ''
+        except MigrationCompareReadError as exc:
+            return None, str(exc)
+        except TimeoutError:
+            return None, 'Príkaz prekročil časový limit.'
+        except Exception:
+            return None, 'Príkaz sa nepodarilo vykonať.'
+
+    def __exit__(self, *exc):
+        if self.client is not None:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+        return False
+
+def redact_secrets(text, secrets):
+    text = str(text)
+    for secret in sorted({item for item in secrets if item}, key=len, reverse=True):
+        text = text.replace(secret, '[skryté]')
+    return text
+
+def load_migration_jobs():
+    if not os.path.exists(MIGRATION_JOBS_FILE):
+        return []
+    try:
+        with open(MIGRATION_JOBS_FILE, encoding='utf-8') as handle:
+            jobs = json.load(handle)
+        if not isinstance(jobs, list) or not all(isinstance(job, dict) and isinstance(job.get('id'), str) for job in jobs):
+            raise ValueError()
+        return jobs
+    except (ValueError, TypeError):
+        raise RuntimeError('Záznam operácií migrácie je poškodený.') from None
+
+def parse_job_time(value):
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+def mark_stale_migration_jobs(jobs):
+    """Bežiaca operácia bez heartbeatu (reštart služby) sa označí ako prerušená."""
+    now = datetime.now(ZoneInfo('Europe/Bratislava'))
+    for job in jobs:
+        if job.get('status') != 'running':
+            continue
+        heartbeat = parse_job_time(job.get('heartbeat_at'))
+        thread = MIGRATION_JOB_THREADS.get(job['id'])
+        alive_here = thread is not None and thread.is_alive()
+        if not alive_here and (heartbeat is None or (now - heartbeat).total_seconds() > MIGRATION_JOB_STALE_SECONDS):
+            job.update(status='interrupted', finished_at=migration_now(),
+                       error='Operácia bola prerušená (napr. reštart služby). Skontroluj stav ručne a spusti ju znova.')
+    return jobs
+
+def list_migration_jobs():
+    with json_state_lock(MIGRATION_JOBS_FILE):
+        jobs = mark_stale_migration_jobs(load_migration_jobs())
+        if jobs:
+            write_json_state(MIGRATION_JOBS_FILE, jobs)
+    return list(reversed(jobs))
+
+def running_migration_job():
+    return next((job for job in list_migration_jobs() if job.get('status') == 'running'), None)
+
+def update_migration_job(job_id, mutate):
+    with json_state_lock(MIGRATION_JOBS_FILE):
+        jobs = load_migration_jobs()
+        for job in jobs:
+            if job['id'] == job_id:
+                mutate(job)
+                job['heartbeat_at'] = migration_now()
+                break
+        write_json_state(MIGRATION_JOBS_FILE, jobs)
+
+class MigrationJobContext:
+    def __init__(self, job_id, secrets):
+        self.job_id = job_id
+        self.secrets = list(secrets)
+
+    def log(self, message):
+        line = f'{datetime.now(ZoneInfo("Europe/Bratislava")).strftime("%H:%M:%S")} {redact_secrets(message, self.secrets)[:500]}'
+        def mutate(job):
+            job['log'] = (job.get('log') or [])[-(MIGRATION_JOB_LOG_LIMIT - 1):] + [line]
+        update_migration_job(self.job_id, mutate)
+
+    def progress(self, text):
+        update_migration_job(self.job_id, lambda job: job.update(progress=redact_secrets(text, self.secrets)[:200]))
+
+    def heartbeat(self):
+        update_migration_job(self.job_id, lambda job: None)
+
+def run_migration_job(job_id, func, secrets):
+    ctx = MigrationJobContext(job_id, secrets)
+    stop = threading.Event()
+
+    def beat():
+        while not stop.wait(MIGRATION_JOB_HEARTBEAT_SECONDS):
+            try:
+                ctx.heartbeat()
+            except Exception:
+                pass
+
+    threading.Thread(target=beat, daemon=True).start()
+    try:
+        result = func(ctx)
+        update_migration_job(job_id, lambda job: job.update(status='success', finished_at=migration_now(), result=result))
+    except (ValueError, RuntimeError, MigrationCompareReadError) as exc:
+        message = redact_secrets(exc, secrets)
+        update_migration_job(job_id, lambda job: job.update(status='failed', finished_at=migration_now(), error=message))
+    except Exception:
+        app.logger.exception('Migration job %s failed', job_id)
+        update_migration_job(job_id, lambda job: job.update(
+            status='failed', finished_at=migration_now(), error='Neočakávaná chyba operácie; podrobnosti sú v logu služby.'))
+    finally:
+        stop.set()
+        MIGRATION_JOB_THREADS.pop(job_id, None)
+
+def start_migration_job(kind, title, func, secrets=()):
+    """Spustí operáciu na pozadí; súčasne smie bežať iba jedna."""
+    with json_state_lock(MIGRATION_JOBS_FILE):
+        jobs = mark_stale_migration_jobs(load_migration_jobs())
+        running = next((job for job in jobs if job.get('status') == 'running'), None)
+        if running:
+            raise ValueError(f'Už beží operácia „{running.get("title")}“. Počkaj na jej dokončenie.')
+        now = migration_now()
+        job = {'id': f'{int(time.time() * 1000)}-{secrets_token()}', 'kind': kind, 'title': title,
+               'status': 'running', 'started_at': now, 'finished_at': None, 'heartbeat_at': now,
+               'progress': '', 'log': [], 'result': None, 'error': None}
+        jobs = (jobs + [job])[-MIGRATION_JOBS_KEEP:]
+        write_json_state(MIGRATION_JOBS_FILE, jobs)
+    thread = threading.Thread(target=run_migration_job, args=(job['id'], func, list(secrets)), daemon=True)
+    MIGRATION_JOB_THREADS[job['id']] = thread
+    thread.start()
+    return job
+
+def secrets_token():
+    return secrets.token_hex(4)
+
+def pve_version_tuple(text):
+    match = PVE_MANAGER_VERSION.search(text or '')
+    return tuple(int(part) for part in match.groups() if part is not None) if match else None
+
+def parse_guest_status_lists(qm_text, pct_text):
+    """(VMID, typ, názov, stav) z `qm list` a `pct list`."""
+    guests = []
+    for line in (qm_text or '').splitlines():
+        parts = line.split()
+        if parts and parts[0].isdigit():
+            guests.append({'vmid': int(parts[0]), 'type': 'VM', 'name': parts[1] if len(parts) > 1 else '',
+                           'status': parts[2] if len(parts) > 2 else ''})
+    for line in (pct_text or '').splitlines():
+        parts = line.split()
+        if parts and parts[0].isdigit():
+            guests.append({'vmid': int(parts[0]), 'type': 'LXC', 'name': parts[-1] if len(parts) > 2 else '',
+                           'status': parts[1] if len(parts) > 1 else ''})
+    return guests
+
+def run_migration_preflight(ctx, target, old_ssh):
+    """Read-only kontrola nového hosta pred prenosom konfigurácie a hostí."""
+    checks = []
+    facts = {'hostname': '', 'pve_version': '', 'guests': [], 'running_guests': [], 'links': []}
+
+    def add(check_id, level, title, detail):
+        checks.append({'id': check_id, 'level': level, 'title': title, 'detail': detail})
+        ctx.log(f'[{level}] {title}: {detail}')
+
+    old_ids = {}
+    if old_ssh:
+        ctx.progress('Načítavam starý host')
+        try:
+            with MigrationHost(old_ssh) as old:
+                machine, _err = old.try_run('cat /etc/machine-id')
+                version, _err = old.try_run('LC_ALL=C pveversion')
+                old_ids = {'machine_id': (machine or '').strip(), 'version': pve_version_tuple(version)}
+        except Exception:
+            add('old-host', 'warning', 'Starý host', 'Starý host sa nepodarilo načítať; porovnanie identity a verzie je neúplné.')
+    else:
+        add('old-host', 'warning', 'Starý host', 'V Nastaveniach nie je kompletný Remote SSH cieľ starého hosta.')
+
+    ctx.progress('Pripájam sa na nový host')
+    try:
+        with MigrationHost(target) as host:
+            add('ssh', 'ok', 'SSH pripojenie', f"root@{target['host']}:{target['port']} – prihlásenie úspešné")
+            hostname, _err = host.try_run('LC_ALL=C hostname')
+            version_text, version_err = host.try_run('LC_ALL=C pveversion')
+            machine, machine_err = host.try_run('cat /etc/machine-id')
+            cluster, _err = host.try_run('systemctl is-active pve-cluster || true')
+            qm_text, qm_err = host.try_run('LC_ALL=C qm list')
+            pct_text, pct_err = host.try_run('LC_ALL=C pct list')
+            links_text, _err = host.try_run('LC_ALL=C ip -br link')
+    except Exception:
+        add('ssh', 'error', 'SSH pripojenie', 'Prihlásenie na nový host zlyhalo. Over IP, port a root heslo.')
+        return {'ok': False, 'checks': checks, 'facts': facts, 'checked_at': migration_now()}
+
+    facts['hostname'] = (hostname or '').strip()
+    facts['links'] = new_physical_nics(links_text)
+    new_version = pve_version_tuple(version_text)
+    if new_version:
+        facts['pve_version'] = '.'.join(str(part) for part in new_version)
+        add('pve', 'ok', 'Proxmox VE', f"Na novom hoste beží Proxmox VE {facts['pve_version']}.")
+    else:
+        add('pve', 'error', 'Proxmox VE', 'Na novom hoste sa nenašiel Proxmox VE (pveversion). ' + (version_err or ''))
+
+    new_machine = (machine or '').strip()
+    if new_machine and old_ids.get('machine_id'):
+        if new_machine == old_ids['machine_id']:
+            add('identity', 'error', 'Iný server ako starý', 'Nový cieľ má rovnaké /etc/machine-id ako starý host – je to ten istý server.')
+        else:
+            add('identity', 'ok', 'Iný server ako starý', 'Nový host je iný stroj ako starý (rôzne /etc/machine-id).')
+    else:
+        add('identity', 'unknown', 'Iný server ako starý', 'Identitu sa nepodarilo porovnať. ' + (machine_err or ''))
+
+    if old_ssh and old_ssh['host'] == target['host']:
+        add('address', 'error', 'Iná adresa', 'Nový host má rovnakú adresu ako starý. Pri súbehu musí mať dočasnú inú IP.')
+    else:
+        add('address', 'ok', 'Iná adresa', f"Nový host {target['host']} má inú adresu ako starý.")
+
+    if (cluster or '').strip() == 'active':
+        add('pve-cluster', 'ok', 'pve-cluster', 'Služba pve-cluster beží.')
+    else:
+        add('pve-cluster', 'error', 'pve-cluster', f"Služba pve-cluster nebeží (stav: {(cluster or 'neznámy').strip() or 'neznámy'}).")
+
+    if qm_text is None or pct_text is None:
+        add('guests', 'unknown', 'Hostia na novom hoste', 'Zoznam VM/LXC sa nepodarilo načítať. ' + (qm_err or pct_err))
+    else:
+        guests = parse_guest_status_lists(qm_text, pct_text)
+        facts['guests'] = guests
+        facts['running_guests'] = [guest for guest in guests if guest['status'] == 'running']
+        if facts['running_guests']:
+            names = ', '.join(f"{g['type']} {g['vmid']} {g['name']}".strip() for g in facts['running_guests'])
+            add('guests', 'error', 'Hostia na novom hoste', f'Na novom hoste bežia hostia ({names}). Pred prenosom konfigurácie musí byť nový host bez bežiacich hostí.')
+        elif guests:
+            names = ', '.join(f"{g['type']} {g['vmid']}" for g in guests)
+            add('guests', 'warning', 'Hostia na novom hoste', f'Na novom hoste už existujú hostia ({names}). Prenos konfigurácie 1:1 by ich definície prepísal.')
+        else:
+            add('guests', 'ok', 'Hostia na novom hoste', 'Nový host je prázdny – bez VM a LXC.')
+
+    old_version = old_ids.get('version')
+    if new_version and old_version:
+        if new_version[0] < old_version[0] or (new_version[0] == old_version[0] and new_version[1] < old_version[1]):
+            add('version', 'error' if new_version[0] < old_version[0] else 'warning', 'Verzia PVE',
+                f"Nový host má staršiu verziu ({facts['pve_version']}) ako starý ({'.'.join(map(str, old_version))}). Najprv ho aktualizuj.")
+        elif new_version[0] > old_version[0]:
+            add('version', 'warning', 'Verzia PVE', f"Nový host má vyššiu major verziu ({facts['pve_version']}). Over kompatibilitu configov hostí.")
+        else:
+            add('version', 'ok', 'Verzia PVE', f"Rovnaká alebo novšia verzia ({facts['pve_version']}).")
+    else:
+        add('version', 'unknown', 'Verzia PVE', 'Verzie sa nepodarilo porovnať.')
+
+    result = {'ok': not any(check['level'] == 'error' for check in checks), 'checks': checks,
+              'facts': facts, 'checked_at': migration_now()}
+    with json_state_lock(MIGRATION_TARGET_FILE):
+        saved = load_migration_target()
+        if saved and saved['host'] == target['host'] and saved['port'] == target['port']:
+            saved['last_check'] = result
+            write_json_state(MIGRATION_TARGET_FILE, saved)
+    ctx.progress('Kontrola dokončená')
+    return result
+
+def start_migration_preflight(target):
+    old_ssh = migration_old_ssh()
+    secrets_list = [target['password'], (old_ssh or {}).get('password', '')]
+    return start_migration_job('preflight', 'Kontrola nového hosta',
+                               lambda ctx: run_migration_preflight(ctx, target, old_ssh), secrets_list)
+
+def public_migration_job(job):
+    return {key: job.get(key) for key in ('id', 'kind', 'title', 'status', 'started_at', 'finished_at',
+                                          'heartbeat_at', 'progress', 'log', 'result', 'error')}
+
+def no_store(response, code=200):
+    response.headers['Cache-Control'] = 'no-store'
+    return response, code
+
+
+# ---------------------------------------------------------------------------
+# Migrácia – prenos konfigurácie 1:1, presun hostí a prepnutie (fázy 3–5)
+# ---------------------------------------------------------------------------
+# Všetky príkazy na hostoch sú z pevných builderov s shlex.quote; API neprijíma ľubovoľné príkazy.
+
+MIGRATION_WORKDIR = '/root/pbm-migration'
+MIGRATION_SOURCE_MAX_AGE_HOURS = 24
+MIGRATION_LONG_TIMEOUT = 24 * 3600
+MIGRATION_FILE_ITEMS = [
+    {'path': '/etc/auto.master', 'default': True},
+    {'path': '/etc/auto.master.d', 'default': True},
+    {'path': '/etc/auto.nfs', 'default': True},
+    {'path': '/usr/local/sbin', 'default': True},
+    {'path': '/usr/local/bin', 'default': True},
+    {'path': '/etc/systemd/system', 'default': True,
+     'note': 'Skopírované timery sa na novom hoste vypnú a zapnú až pri prepnutí.'},
+    {'path': '/etc/sysctl.conf', 'default': True},
+    {'path': '/etc/sysctl.d', 'default': True},
+    {'path': '/etc/vzdump.conf', 'default': True},
+    {'path': '/etc/modules', 'default': False, 'note': 'Viazané na HW – prenes iba po kontrole rozdielu.'},
+    {'path': '/etc/modprobe.d', 'default': False, 'note': 'Viazané na HW (PCI ID, blacklisty) – iba po kontrole.'},
+    {'path': '/etc/default', 'default': False, 'note': 'GRUB/IOMMU parametre sú viazané na HW.'},
+    {'path': '/var/spool/cron', 'default': False, 'note': 'Cron joby začnú bežať hneď aj na novom hoste – radšej až pri prepnutí.'},
+    {'path': '/root', 'default': False, 'note': 'Citlivé (kľúče, skripty); prenes iba ak potrebuješ.'},
+]
+MIGRATION_FILE_PATHS = {item['path'] for item in MIGRATION_FILE_ITEMS}
+VZDUMP_ARCHIVE_PATTERN = re.compile(r"creating (?:vzdump )?archive '([^']+)'")
+REMOTE_TREE_SCRIPT = (
+    "import hashlib,json,os,sys\n"
+    "p=sys.argv[1];out={}\n"
+    "def h(f):\n"
+    " d=hashlib.sha256()\n"
+    " with open(f,'rb') as x:\n"
+    "  for b in iter(lambda:x.read(65536),b''):d.update(b)\n"
+    " return d.hexdigest()\n"
+    "def add(rel,full):\n"
+    " if os.path.islink(full):out[rel]='link:'+os.readlink(full)\n"
+    " elif os.path.isfile(full):out[rel]=h(full)\n"
+    "if os.path.isdir(p) and not os.path.islink(p):\n"
+    " for root,dirs,files in os.walk(p):\n"
+    "  for n in dirs+files:\n"
+    "   full=os.path.join(root,n)\n"
+    "   if n in dirs and not os.path.islink(full):continue\n"
+    "   add(os.path.relpath(full,p),full)\n"
+    "else:add('',p)\n"
+    "print(json.dumps({'exists':os.path.lexists(p),'files':out}))\n"
+)
+
+def default_migration_transfer():
+    return {'version': 1, 'config_db': None, 'files': None, 'network': None, 'guests': {}, 'cutover': None}
+
+def load_migration_transfer():
+    if not os.path.exists(MIGRATION_TRANSFER_FILE):
+        return default_migration_transfer()
+    try:
+        with open(MIGRATION_TRANSFER_FILE, encoding='utf-8') as handle:
+            transfer = json.load(handle)
+        if not isinstance(transfer, dict) or set(transfer) != set(default_migration_transfer()) or transfer['version'] != 1 \
+                or not isinstance(transfer['guests'], dict):
+            raise ValueError()
+        return transfer
+    except (ValueError, TypeError):
+        raise RuntimeError('Stav prenosu migrácie je poškodený. Resetuj migráciu.') from None
+
+def update_migration_transfer(mutate):
+    with json_state_lock(MIGRATION_TRANSFER_FILE):
+        transfer = load_migration_transfer()
+        mutate(transfer)
+        write_json_state(MIGRATION_TRANSFER_FILE, transfer)
+        return transfer
+
+def forget_migration_transfer():
+    with json_state_lock(MIGRATION_TRANSFER_FILE):
+        if os.path.exists(MIGRATION_TRANSFER_FILE):
+            os.unlink(MIGRATION_TRANSFER_FILE)
+
+def safe_migration_transfer():
+    try:
+        return load_migration_transfer()
+    except (OSError, RuntimeError):
+        return None
+
+def archive_member_bytes(archive_path, name, limit=256 * 1024 * 1024):
+    with tarfile.open(archive_path, 'r:gz') as tar:
+        try:
+            member = tar.getmember(name)
+        except KeyError:
+            return None
+        validate_tar_member(member)
+        if not member.isfile() or member.size > limit:
+            return None
+        handle = tar.extractfile(member)
+        return handle.read() if handle else None
+
+def archive_tree_hashes(archive_path, path):
+    """{relatívna cesta: sha256 | 'link:cieľ'} pre cestu v archíve (ako REMOTE_TREE_SCRIPT na hoste)."""
+    arcname = archive_name_for_path(path)
+    files = {}
+    with tarfile.open(archive_path, 'r:gz') as tar:
+        for member in tar.getmembers():
+            validate_tar_member(member)
+            name = member.name.rstrip('/')
+            if name != arcname and not name.startswith(arcname + '/'):
+                continue
+            rel = '' if name == arcname else name[len(arcname) + 1:]
+            if member.issym():
+                files[rel] = 'link:' + member.linkname
+            elif member.isfile():
+                digest = hashlib.sha256()
+                handle = tar.extractfile(member)
+                for block in iter(lambda: handle.read(65536), b''):
+                    digest.update(block)
+                files[rel] = digest.hexdigest()
+    return files
+
+class MigrationContext:
+    """Spoločné predpoklady operácií prenosu: archív, oba hosty, node, LXC s appkou."""
+
+    def __init__(self, require_target=True, require_fresh=False):
+        self.state = load_migration_state()
+        if self.state['method'] != 'side_by_side':
+            raise ValueError('Prenos konfigurácie a hostí je dostupný iba pri spôsobe „Nový host vedľa starého“.')
+        self.target = load_migration_target()
+        if require_target and (not self.target or not self.target['password']):
+            raise ValueError('Najprv v kroku „Nový host“ ulož pripojenie nového hosta a spusti kontrolu.')
+        self.old_ssh = migration_old_ssh()
+        if not self.old_ssh:
+            raise ValueError('V Nastaveniach chýba kompletný Remote SSH cieľ starého hosta.')
+        if self.target and self.target['host'] == self.old_ssh['host']:
+            raise ValueError('Nový host má rovnakú adresu ako starý.')
+        history = visible_backup_history(load_config(), persist_pruned=False)
+        self.entry, self.archive_path = latest_local_archive_entry(history)
+        if not self.archive_path:
+            raise ValueError('Chýba lokálny archív konfigurácie hosta. Vytvor čerstvú zálohu (krok Čerstvé zálohy).')
+        self.archive_time = parse_backup_timestamp(self.entry)
+        if require_fresh and (not self.archive_time or datetime.now() - self.archive_time > timedelta(hours=MIGRATION_SOURCE_MAX_AGE_HOURS)):
+            raise ValueError(f'Najnovší archív je starší ako {MIGRATION_SOURCE_MAX_AGE_HOURS} h. Vytvor čerstvú zálohu hosta '
+                             '(krok Čerstvé zálohy), aby kópia zodpovedala aktuálnemu stavu.')
+        self.facts = read_archive_facts(self.archive_path)
+        self.node = archive_node_name(self.facts)
+        self.transfer = load_migration_transfer()
+        self.app_guest = find_app_guest(self.facts, detect_own_ip(self.old_ssh['host'], self.old_ssh['port']))
+        self.secrets = [self.old_ssh.get('password', ''), (self.target or {}).get('password', '')]
+
+    def guest_info(self, vmid):
+        for guest in parse_guest_lists(self.facts):
+            if guest['vmid'] == vmid:
+                return guest
+        raise ValueError('Hosť s týmto VMID nie je v najnovšom archíve.')
+
+def migration_default_dump_dir(facts):
+    storages = {storage['id']: storage for storage in parse_backup_storages(facts)}
+    for job in parse_vzdump_jobs(facts):
+        storage = storages.get(job['storage'])
+        if storage and storage['path']:
+            return posixpath.join(storage['path'], 'dump')
+    for storage in storages.values():
+        if storage['path'] and storage['id'] != 'local':
+            return posixpath.join(storage['path'], 'dump')
+    return ''
+
+def migration_guest_storages(facts):
+    """Storage pre disky hostí (rootdir/images) z pôvodného storage.cfg."""
+    result = []
+    for section in parse_pve_section_config(facts['files'].get('etc/pve/storage.cfg', '')):
+        content = section['props'].get('content', '')
+        if 'images' in content or 'rootdir' in content:
+            result.append(section['id'])
+    return result or ['local-lvm']
+
+def validate_remote_dir(value):
+    if not isinstance(value, str) or not value.startswith('/') or '\x00' in value or '\n' in value \
+            or posixpath.normpath(value) != value.rstrip('/') or len(value) > 255:
+        raise ValueError('Neplatný adresár záloh (absolútna cesta bez špeciálnych znakov).')
+    return posixpath.normpath(value)
+
+def validate_storage_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9._-]{0,63}', value):
+        raise ValueError('Neplatné ID storage.')
+    return value
+
+def migration_stream(host, command, ctx, timeout=MIGRATION_LONG_TIMEOUT, label=''):
+    """Dlhý príkaz (vzdump/restore): priebežné riadky do logu, vráti (exit_code, posledné riadky)."""
+    stdin, stdout, _stderr = host.client.exec_command(command, timeout=timeout)
+    channel = stdout.channel
+    if stdin is not None:
+        try:
+            stdin.close()
+        except Exception:
+            pass
+    deadline = time.monotonic() + timeout
+    buffer = ''
+    tail = []
+    last_log = 0.0
+    try:
+        while True:
+            if time.monotonic() >= deadline:
+                raise TimeoutError()
+            got = False
+            for ready, read in ((channel.recv_ready, channel.recv), (channel.recv_stderr_ready, channel.recv_stderr)):
+                if ready():
+                    got = True
+                    buffer += read(65536).decode('utf-8', errors='replace')
+            while '\n' in buffer:
+                line, buffer = buffer.split('\n', 1)
+                line = line.strip()
+                if not line:
+                    continue
+                tail = (tail + [line])[-40:]
+                important = ('error' in line.lower() or 'warn' in line.lower() or 'creating' in line.lower()
+                             or 'finished' in line.lower() or 'total' in line.lower())
+                if important or time.monotonic() - last_log > 15:
+                    ctx.log(f'{label}{line}')
+                    ctx.progress(f'{label}{line}')
+                    last_log = time.monotonic()
+            if not got and channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+                if buffer.strip():
+                    tail = (tail + [buffer.strip()])[-40:]
+                return channel.recv_exit_status(), tail
+            if not got:
+                time.sleep(0.2)
+    finally:
+        channel.close()
+
+def require_ok(host, command, message, timeout=MIGRATION_COMPARE_COMMAND_TIMEOUT):
+    output, error = host.try_run(command, timeout)
+    if output is None:
+        raise RuntimeError(f'{message} ({error})')
+    return output
+
+def sftp_put_bytes(host, remote_path, data, mode=0o600):
+    sftp = host.client.open_sftp()
+    try:
+        with sftp.file(remote_path, 'wb') as handle:
+            handle.write(data)
+        sftp.chmod(remote_path, mode)
+    finally:
+        sftp.close()
+
+def guest_cli(guest_type):
+    return 'qm' if guest_type == 'VM' else 'pct'
+
+def guest_status(host, guest_type, vmid):
+    output, _err = host.try_run(f'{guest_cli(guest_type)} status {int(vmid)}')
+    match = re.search(r'status:\s*(\w+)', output or '')
+    return match.group(1) if match else 'unknown'
+
+def onboot_guests_from_facts(facts, node):
+    guests = []
+    for name, text in facts['files'].items():
+        match = GUEST_CONF_PATTERN.match(name)
+        if match and match.group(1) == node and re.search(r'^onboot:\s*1\s*$', text.split('\n[', 1)[0], re.MULTILINE):
+            guests.append({'vmid': int(match.group(3)), 'type': 'VM' if match.group(2) == 'qemu-server' else 'LXC'})
+    return sorted(guests, key=lambda guest: guest['vmid'])
+
+def firewall_enabled_in_archive(archive_path):
+    data = archive_member_bytes(archive_path, 'etc/pve/firewall/cluster.fw', limit=1024 * 1024)
+    if not data:
+        return False
+    options = data.decode('utf-8', errors='replace').split('[OPTIONS]', 1)
+    if len(options) < 2:
+        return False
+    section = options[1].split('\n[', 1)[0]
+    return bool(re.search(r'^\s*enable:\s*1\s*$', section, re.MULTILINE))
+
+def set_migration_guest_status(vmid, status, note=None, force=False):
+    with migration_state_lock():
+        state = load_migration_state()
+        guest = state['guests'].get(str(vmid))
+        if not guest:
+            return
+        if not force and status != guest['status'] and status not in MIGRATION_GUEST_TRANSITIONS[guest['status']]:
+            raise ValueError(f'Nepovolený prechod hosťa {vmid}: {guest["status"]} → {status}.')
+        guest['status'] = status
+        if note:
+            guest['note'] = (f"{guest['note']}\n{note}" if guest['note'] else note)[-2000:]
+        guest['updated_at'] = migration_now()
+        state['updated_at'] = migration_now()
+        save_migration_state(state)
+
+# --- Fáza 3: config.db 1:1 -------------------------------------------------
+
+def run_migration_config_db(ctx, mctx):
+    archive_db = archive_member_bytes(mctx.archive_path, 'var/lib/pve-cluster/config.db')
+    if not archive_db:
+        raise ValueError('Archív neobsahuje /var/lib/pve-cluster/config.db. Zapni túto položku v zálohe a vytvor novú zálohu.')
+    if not mctx.node:
+        raise ValueError('Z archívu sa nepodarilo zistiť názov pôvodného nodu.')
+    jobs = parse_vzdump_jobs(mctx.facts)
+    enabled_jobs = [job['id'] for job in jobs if job['enabled']]
+    onboot = onboot_guests_from_facts(mctx.facts, mctx.node)
+    firewall = firewall_enabled_in_archive(mctx.archive_path)
+    stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    backup_path = f'{MIGRATION_WORKDIR}/config.db.before-{stamp}'
+    new_db = f'{MIGRATION_WORKDIR}/config.db.new'
+
+    with MigrationHost(mctx.target) as host:
+        ctx.progress('Kontrolujem nový host')
+        hostname = require_ok(host, 'LC_ALL=C hostname', 'Hostname nového hosta sa nedá zistiť').strip().split('.')[0]
+        if hostname != mctx.node:
+            raise ValueError(f'Nový host sa volá „{hostname}“, pôvodný node „{mctx.node}“. Pre kópiu 1:1 nainštaluj nový '
+                             f'Proxmox s hostname „{mctx.node}“ (s dočasnou IP), alebo použi postup Nový názov nodu z wiki.')
+        if host.try_run('test -e /etc/pve/corosync.conf')[0] is not None:
+            raise ValueError('Nový host je členom clustra. Prenos config.db je iba pre samostatný node.')
+        guests = parse_guest_status_lists(require_ok(host, 'LC_ALL=C qm list', 'qm list zlyhal'),
+                                          require_ok(host, 'LC_ALL=C pct list', 'pct list zlyhal'))
+        if guests:
+            raise ValueError('Nový host nie je prázdny (' + ', '.join(f"{g['type']} {g['vmid']}" for g in guests) +
+                             '). Config.db sa prenáša iba na čistú inštaláciu – inak by sa prepísali existujúce definície.')
+        if require_ok(host, 'systemctl is-active pve-cluster || true', 'Stav pve-cluster').strip() != 'active':
+            raise ValueError('Na novom hoste nebeží pve-cluster.')
+
+        ctx.log(f'Nahrávam config.db z archívu {mctx.entry.get("filename")} ({len(archive_db)} B)')
+        require_ok(host, f'mkdir -p {MIGRATION_WORKDIR} && chmod 700 {MIGRATION_WORKDIR}', 'Pracovný adresár sa nedá vytvoriť')
+        sftp_put_bytes(host, new_db, archive_db)
+        check_script = ("import sqlite3,sys;c=sqlite3.connect('file:'+sys.argv[1]+'?mode=ro',uri=True);"
+                        "print(c.execute('PRAGMA integrity_check').fetchone()[0])")
+        integrity = require_ok(host, f'python3 -c {shlex.quote(check_script)} {shlex.quote(new_db)}', 'Kontrola integrity zlyhala').strip()
+        if integrity != 'ok':
+            raise ValueError(f'config.db z archívu neprešiel kontrolou integrity ({integrity[:200]}).')
+        ctx.log('Integrita config.db: ok')
+        require_ok(host, f'cp -a /var/lib/pve-cluster/config.db {shlex.quote(backup_path)}', 'Záloha pôvodného config.db zlyhala')
+        ctx.log(f'Pôvodný config.db nového hosta zálohovaný: {backup_path}')
+
+        ctx.progress('Nahrádzam config.db (pve-cluster je krátko zastavený)')
+        require_ok(host, 'systemctl stop pve-firewall', 'pve-firewall sa nedá zastaviť', timeout=60)
+        require_ok(host, 'systemctl stop pve-cluster', 'pve-cluster sa nedá zastaviť', timeout=120)
+        try:
+            require_ok(host, f'cp {shlex.quote(new_db)} /var/lib/pve-cluster/config.db && chown root:root /var/lib/pve-cluster/config.db '
+                             '&& chmod 0600 /var/lib/pve-cluster/config.db', 'Nahradenie config.db zlyhalo')
+            require_ok(host, 'systemctl start pve-cluster', 'pve-cluster sa po nahradení nespustil', timeout=120)
+            for _attempt in range(15):
+                if (host.try_run('systemctl is-active pve-cluster || true')[0] or '').strip() == 'active' \
+                        and host.try_run(f'test -d /etc/pve/nodes/{shlex.quote(mctx.node)}')[0] is not None:
+                    break
+                time.sleep(1)
+            else:
+                raise RuntimeError('pve-cluster po nahradení nie je aktívny alebo chýba adresár nodu.')
+        except Exception:
+            ctx.log('Chyba – vraciam pôvodný config.db nového hosta')
+            host.try_run(f'systemctl stop pve-cluster; cp {shlex.quote(backup_path)} /var/lib/pve-cluster/config.db; '
+                         'chmod 0600 /var/lib/pve-cluster/config.db; systemctl start pve-cluster; systemctl start pve-firewall', 180)
+            raise
+        ctx.log('config.db nahradený, pve-cluster beží')
+
+        if firewall:
+            require_ok(host, "sed -i 's/^enable: 1$/enable: 0/' /etc/pve/firewall/cluster.fw", 'Dočasné vypnutie firewallu zlyhalo')
+            ctx.log('Firewall datacentra dočasne vypnutý (zapne sa po prepnutí)')
+        host.try_run('systemctl start pve-firewall', 60)
+        for job_id in enabled_jobs:
+            output, error = host.try_run(f'pvesh set /cluster/backup/{shlex.quote(job_id)} --enabled 0', 60)
+            ctx.log(f'Vzdump job {job_id} vypnutý' if output is not None else f'Vzdump job {job_id} sa nepodarilo vypnúť: {error}')
+        for guest in onboot:
+            output, error = host.try_run(f'{guest_cli(guest["type"])} set {guest["vmid"]} --onboot 0', 60)
+            ctx.log(f'Autostart {guest["type"]} {guest["vmid"]} vypnutý' if output is not None
+                    else f'Autostart {guest["type"]} {guest["vmid"]} sa nepodarilo vypnúť: {error}')
+        host.try_run('pvecm updatecerts --force', 120)
+        host.try_run('systemctl restart pvedaemon pveproxy pvestatd', 120)
+        guests_after = parse_guest_status_lists(host.try_run('LC_ALL=C qm list')[0] or '', host.try_run('LC_ALL=C pct list')[0] or '')
+        ctx.log(f'Na novom hoste sú teraz definície {len(guests_after)} hostí (bez diskov – presunú sa v ďalšom kroku)')
+
+    result = {'applied_at': migration_now(), 'node': mctx.node, 'archive': mctx.entry.get('filename'),
+              'backup_path': backup_path, 'jobs_disabled': enabled_jobs, 'firewall_was_enabled': firewall,
+              'onboot_guests': onboot, 'guest_definitions': len(guests_after)}
+    update_migration_transfer(lambda transfer: transfer.update(config_db=result))
+    ctx.progress('Kópia PVE konfigurácie dokončená')
+    return result
+
+# --- Fáza 3: súbory hosta --------------------------------------------------
+
+def run_migration_files_diff(ctx, mctx, paths):
+    items = []
+    with MigrationHost(mctx.target) as host:
+        for path in paths:
+            ctx.progress(f'Porovnávam {path}')
+            profile = recovery_profile_for_path(path)
+            backup_files = archive_tree_hashes(mctx.archive_path, path)
+            output, error = host.try_run(f'python3 -c {shlex.quote(REMOTE_TREE_SCRIPT)} {shlex.quote(path)}', 60)
+            item = {'path': path, 'in_backup': bool(backup_files), 'status': 'unknown', 'changed': [], 'only_backup': [],
+                    'only_new': [], 'diff': '', 'error': ''}
+            if output is None:
+                item['error'] = error
+            else:
+                remote = json.loads(output)
+                new_files = remote['files'] if remote['exists'] else {}
+                item['changed'] = sorted(rel or path for rel in backup_files if rel in new_files and backup_files[rel] != new_files[rel])[:200]
+                item['only_backup'] = sorted(rel or path for rel in backup_files if rel not in new_files)[:200]
+                item['only_new'] = sorted(rel or path for rel in new_files if rel not in backup_files)[:200]
+                if not backup_files:
+                    item['status'] = 'not_in_backup'
+                elif not remote['exists']:
+                    item['status'] = 'missing_on_new'
+                elif item['changed'] or item['only_backup']:
+                    item['status'] = 'different'
+                else:
+                    item['status'] = 'same'
+                text_diff_allowed = profile.get('sensitivity') == 'normal' and set(backup_files) == {''}
+                if text_diff_allowed and item['status'] in ('different', 'missing_on_new'):
+                    old_bytes = archive_member_bytes(mctx.archive_path, archive_name_for_path(path), limit=64 * 1024) or b''
+                    new_text = ''
+                    if remote['exists']:
+                        new_text = host.try_run(f'head -c 65536 {shlex.quote(path)}')[0] or ''
+                    diff = difflib.unified_diff(new_text.splitlines(), old_bytes.decode('utf-8', errors='replace').splitlines(),
+                                                f'nový host: {path}', f'záloha: {path}', lineterm='')
+                    item['diff'] = '\n'.join(list(diff)[:200])
+            ctx.log(f'{path}: {item["status"]}')
+            items.append(item)
+    return {'items': items, 'archive': mctx.entry.get('filename'), 'generated_at': migration_now()}
+
+def run_migration_files_apply(ctx, mctx, paths):
+    ctx.progress('Prenášam súbory na nový host (pred prepisom sa zálohujú)')
+    service = RemoteSshRestoreService({'mode': 'remote_ssh', 'ssh': {
+        'host': mctx.target['host'], 'port': mctx.target['port'], 'username': 'root', 'password': mctx.target['password']}})
+    available = {item['path'] for item in preview_restore_archive(mctx.archive_path)}
+    missing = [path for path in paths if path not in available]
+    if missing:
+        raise ValueError(f'Archív neobsahuje: {", ".join(missing)}')
+    result = service.restore(mctx.archive_path, paths, [])
+    for item in result.get('applied', []):
+        ctx.log(f'Prenesené: {item["path"]}')
+    for item in result.get('skipped', []):
+        ctx.log(f'Preskočené: {item["path"]} ({item.get("reason")})')
+    timers_enabled, timers_disabled = [], []
+    if '/etc/systemd/system' in paths:
+        timers = sorted(posixpath.basename(name) for name in mctx.facts['members']
+                        if name.startswith('etc/systemd/system/') and name.count('/') == 3 and name.endswith('.timer'))
+        wanted = {posixpath.basename(name) for name in mctx.facts['members']
+                  if name.startswith('etc/systemd/system/timers.target.wants/')}
+        with MigrationHost(mctx.target) as host:
+            host.try_run('systemctl daemon-reload', 60)
+            for timer in timers:
+                if timer in wanted:
+                    timers_enabled.append(timer)
+                output, _err = host.try_run(f'systemctl disable --now {shlex.quote(timer)}', 60)
+                if output is not None:
+                    timers_disabled.append(timer)
+            ctx.log(f'Timery na novom hoste vypnuté do prepnutia: {", ".join(timers_disabled) or "žiadne"}')
+    summary = {'applied_at': migration_now(), 'paths': [item['path'] for item in result.get('applied', [])],
+               'skipped': result.get('skipped', []), 'backup_dir': result.get('backup_dir'),
+               'timers_to_enable': timers_enabled}
+
+    def mutate(transfer):
+        previous = transfer['files'] or {}
+        summary['paths'] = sorted(set(previous.get('paths', [])) | set(summary['paths']))
+        summary['timers_to_enable'] = sorted(set(previous.get('timers_to_enable', [])) | set(timers_enabled))
+        transfer['files'] = summary
+    update_migration_transfer(mutate)
+    return summary
+
+# --- Fáza 3: návrh siete ---------------------------------------------------
+
+PHYSICAL_NIC_PATTERN = re.compile(r'^(en|eth|eno|ens|enp|enx|wl)[a-z0-9]+$')
+
+def old_physical_nics(facts):
+    stanzas = parse_interfaces_stanzas(facts['files'].get('etc/network/interfaces', ''))
+    names = set()
+    for stanza in stanzas:
+        if PHYSICAL_NIC_PATTERN.match(stanza['name']):
+            names.add(stanza['name'])
+        for key in ('bridge-ports', 'bond-slaves', 'slaves', 'bridge_ports'):
+            for port in stanza['options'].get(key, '').split():
+                if PHYSICAL_NIC_PATTERN.match(port):
+                    names.add(port)
+    return sorted(names)
+
+def new_physical_nics(links_text):
+    nics = []
+    for line in (links_text or '').splitlines():
+        parts = line.split()
+        if parts and PHYSICAL_NIC_PATTERN.match(parts[0].split('@')[0]):
+            nics.append({'name': parts[0].split('@')[0], 'state': parts[1] if len(parts) > 1 else '',
+                         'mac': parts[2] if len(parts) > 2 else ''})
+    return nics
+
+def run_migration_network(ctx, mctx, mapping):
+    old_text = mctx.facts['files'].get('etc/network/interfaces', '')
+    if not old_text:
+        raise ValueError('Archív neobsahuje /etc/network/interfaces.')
+    old_nics = old_physical_nics(mctx.facts)
+    with MigrationHost(mctx.target) as host:
+        new_nics = new_physical_nics(require_ok(host, 'LC_ALL=C ip -br link', 'ip -br link zlyhal'))
+        new_names = {nic['name'] for nic in new_nics}
+        clean = {}
+        for old, new in (mapping or {}).items():
+            if old not in old_nics:
+                raise ValueError(f'Neznáma pôvodná sieťovka: {old}')
+            if new and new not in new_names:
+                raise ValueError(f'Sieťovka {new} na novom hoste neexistuje.')
+            clean[old] = new
+        proposed = old_text
+        for old, new in clean.items():
+            if new:
+                proposed = re.sub(rf'(?<![\w.-]){re.escape(old)}(?![\w-])', new, proposed)
+        unmapped = [old for old in old_nics if not clean.get(old)]
+        header = (f'# Návrh /etc/network/interfaces pre nový HW – Proxmox Backup Manager {migration_now()}\n'
+                  f'# Mapovanie: {", ".join(f"{o} -> {n}" for o, n in clean.items() if n) or "žiadne"}\n'
+                  + (f'# POZOR: bez mapovania ostali {", ".join(unmapped)} – uprav ručne.\n' if unmapped else '')
+                  + '# Aplikuj až pri prepnutí z konzoly: cp do /etc/network/interfaces && ifreload -a\n')
+        proposed = header + proposed
+        hosts_text = mctx.facts['files'].get('etc/hosts', '')
+        require_ok(host, f'mkdir -p {MIGRATION_WORKDIR} && chmod 700 {MIGRATION_WORKDIR}', 'Pracovný adresár sa nedá vytvoriť')
+        sftp_put_bytes(host, f'{MIGRATION_WORKDIR}/interfaces.proposed', proposed.encode('utf-8'), 0o644)
+        if hosts_text:
+            sftp_put_bytes(host, f'{MIGRATION_WORKDIR}/hosts.proposed', hosts_text.encode('utf-8'), 0o644)
+        ctx.log(f'Návrh siete uložený na novom hoste: {MIGRATION_WORKDIR}/interfaces.proposed')
+    result = {'generated_at': migration_now(), 'mapping': clean, 'unmapped': unmapped,
+              'proposed_path': f'{MIGRATION_WORKDIR}/interfaces.proposed',
+              'hosts_path': f'{MIGRATION_WORKDIR}/hosts.proposed' if hosts_text else '',
+              'interfaces': proposed, 'new_nics': new_nics}
+    update_migration_transfer(lambda transfer: transfer.update(network={k: v for k, v in result.items() if k != 'interfaces'}))
+    return result
+
+# --- Fáza 4: presun hostí --------------------------------------------------
+
+def run_migration_guest_move(ctx, mctx, vmid, dump_dir, target_storage):
+    guest = mctx.guest_info(vmid)
+    cli = guest_cli(guest['type'])
+    kind = 'qemu' if guest['type'] == 'VM' else 'lxc'
+    with MigrationHost(mctx.old_ssh) as old, MigrationHost(mctx.target) as new:
+        ctx.progress('Kontrolujem zdieľaný adresár záloh')
+        require_ok(old, f'test -d {shlex.quote(dump_dir)} && test -w {shlex.quote(dump_dir)}',
+                   f'Adresár {dump_dir} nie je na starom hoste dostupný na zápis')
+        require_ok(new, f'test -d {shlex.quote(dump_dir)}', f'Adresár {dump_dir} nie je dostupný na novom hoste (autofs/NAS?)')
+        if guest_status(new, guest['type'], vmid) == 'running':
+            raise ValueError(f'{guest["type"]} {vmid} už beží na novom hoste.')
+        config_text = old.try_run(f'{cli} config {vmid}')[0] or ''
+        original_onboot = bool(re.search(r'^onboot:\s*1\s*$', config_text, re.MULTILINE))
+        update_migration_transfer(lambda t: t['guests'].setdefault(str(vmid), {}).update(original_onboot=original_onboot))
+        require_ok(old, f'{cli} set {vmid} --onboot 0', 'Vypnutie autostartu na starom zlyhalo', 60)
+        ctx.log(f'Starý host: autostart {guest["type"]} {vmid} vypnutý (pôvodne {"zapnutý" if original_onboot else "vypnutý"})')
+        if guest_status(old, guest['type'], vmid) == 'running':
+            ctx.progress(f'Vypínam {guest["type"]} {vmid} na starom hoste')
+            old.try_run(f'{cli} shutdown {vmid} --timeout 600', 660)
+        if guest_status(old, guest['type'], vmid) != 'stopped':
+            raise RuntimeError(f'{guest["type"]} {vmid} sa na starom hoste nevypol. Vypni ho ručne a skús znova.')
+        ctx.log(f'Starý host: {guest["type"]} {vmid} je vypnutý')
+        set_migration_guest_status(vmid, 'stopped_on_old', force=True)
+
+        ctx.progress(f'vzdump {vmid} na starom hoste')
+        code, tail = migration_stream(old, f'vzdump {vmid} --mode stop --compress zstd --dumpdir {shlex.quote(dump_dir)} --remove 0',
+                                      ctx, label='vzdump: ')
+        if code != 0:
+            raise RuntimeError(f'vzdump skončil s chybou (exit {code}): {" | ".join(tail[-3:])}')
+        archive = next((m.group(1) for line in tail for m in [VZDUMP_ARCHIVE_PATTERN.search(line)] if m), '')
+        if not archive:
+            archive = (old.try_run(f'ls -1t {shlex.quote(dump_dir)}/vzdump-{kind}-{vmid}-* 2>/dev/null | grep -v "\\.log$" | head -1')[0] or '').strip()
+        if not archive or not archive.startswith(dump_dir):
+            raise RuntimeError('Nepodarilo sa zistiť súbor zálohy z vzdump.')
+        if guest_status(old, guest['type'], vmid) != 'stopped':
+            old.try_run(f'{cli} shutdown {vmid} --timeout 300', 360)
+            raise RuntimeError(f'{guest["type"]} {vmid} sa po vzdump znova spustil na starom hoste; bol vypnutý, skontroluj a skús znova.')
+        ctx.log(f'Záloha: {archive}')
+
+        require_ok(new, f'test -f {shlex.quote(archive)}', 'Súbor zálohy nie je viditeľný na novom hoste')
+        ctx.progress(f'Obnova {vmid} na novom hoste')
+        restore = (f'qmrestore {shlex.quote(archive)} {vmid} --storage {shlex.quote(target_storage)} --force' if cli == 'qm'
+                   else f'pct restore {vmid} {shlex.quote(archive)} --storage {shlex.quote(target_storage)} --force')
+        code, tail = migration_stream(new, restore, ctx, label='restore: ')
+        if code != 0:
+            raise RuntimeError(f'Obnova na novom hoste zlyhala (exit {code}): {" | ".join(tail[-3:])}. Hosť ostáva vypnutý na starom – '
+                               'môžeš ho tam znova spustiť (Vrátiť na starý).')
+        new.try_run(f'{cli} set {vmid} --onboot 0', 60)
+        set_migration_guest_status(vmid, 'restored_on_new', force=True)
+    result = {'vmid': vmid, 'type': guest['type'], 'dump_file': archive, 'target_storage': target_storage,
+              'original_onboot': original_onboot, 'moved_at': migration_now()}
+    update_migration_transfer(lambda t: t['guests'].setdefault(str(vmid), {}).update(result))
+    ctx.progress(f'{guest["type"]} {vmid} je obnovený na novom hoste (vypnutý)')
+    return result
+
+def run_migration_guest_start(ctx, mctx, vmid):
+    guest = mctx.guest_info(vmid)
+    cli = guest_cli(guest['type'])
+    with MigrationHost(mctx.old_ssh) as old, MigrationHost(mctx.target) as new:
+        if guest_status(old, guest['type'], vmid) != 'stopped':
+            raise ValueError(f'{guest["type"]} {vmid} nie je vypnutý na starom hoste – na novom ho nespustím.')
+        require_ok(new, f'{cli} start {vmid}', f'Štart {guest["type"]} {vmid} na novom hoste zlyhal', 300)
+        status = guest_status(new, guest['type'], vmid)
+    ctx.log(f'{guest["type"]} {vmid} na novom hoste: {status}')
+    return {'vmid': vmid, 'status': status}
+
+def run_migration_guest_rollback(ctx, mctx, vmid):
+    guest = mctx.guest_info(vmid)
+    cli = guest_cli(guest['type'])
+    original = (mctx.transfer['guests'].get(str(vmid)) or {}).get('original_onboot', False)
+    with MigrationHost(mctx.target) as new, MigrationHost(mctx.old_ssh) as old:
+        if guest_status(new, guest['type'], vmid) == 'running':
+            ctx.progress(f'Vypínam {vmid} na novom hoste')
+            new.try_run(f'{cli} shutdown {vmid} --timeout 600', 660)
+            if guest_status(new, guest['type'], vmid) != 'stopped':
+                raise RuntimeError(f'{guest["type"]} {vmid} sa na novom hoste nevypol; na starom ho nespustím.')
+        new.try_run(f'{cli} set {vmid} --onboot 0', 60)
+        if original:
+            old.try_run(f'{cli} set {vmid} --onboot 1', 60)
+        require_ok(old, f'{cli} start {vmid}', f'Štart {vmid} na starom hoste zlyhal', 300)
+        status = guest_status(old, guest['type'], vmid)
+    set_migration_guest_status(vmid, 'skipped', note=f'{migration_now()}: vrátený na starý host (beží tam).', force=True)
+    ctx.log(f'{guest["type"]} {vmid} beží znova na starom hoste ({status})')
+    return {'vmid': vmid, 'status_old': status}
+
+# --- Fáza 5: prepnutie -----------------------------------------------------
+
+def migration_final_steps(mctx):
+    """Ručné kroky po automatickom prepnutí: presun LXC s appkou, vypnutie starého, IP nového hosta."""
+    transfer = mctx.transfer
+    dump_dir = migration_default_dump_dir(mctx.facts) or '/CESTA/dump'
+    app = mctx.app_guest
+    app_id = app['vmid'] if app else None
+    storage = (transfer['guests'].get(str(app_id), {}) if app_id else {}).get('target_storage') \
+        or (migration_guest_storages(mctx.facts)[0])
+    old_ip = mctx.old_ssh['host']
+    temp_ip = mctx.target['host'] if mctx.target else '<dočasná IP>'
+    network = transfer.get('network') or {}
+    steps = []
+    if app_id:
+        steps.append({'where': f'STARÝ host ({old_ip}) – konzola alebo SSH', 'title': f'Zálohuj LXC {app_id} s appkou (appka sa tým vypne)',
+                      'commands': [f'pct set {app_id} --onboot 0', f'pct shutdown {app_id} --timeout 300',
+                                   f'vzdump {app_id} --mode stop --compress zstd --dumpdir {dump_dir} --remove 0']})
+    steps.append({'where': f'STARÝ host ({old_ip})', 'title': 'Vypni starý server (uvoľní IP a SSH identitu)', 'commands': ['poweroff']})
+    net_cmds = []
+    if network.get('proposed_path'):
+        net_cmds += ['cp /etc/network/interfaces /root/pbm-migration/interfaces.before-cutover',
+                     f'cp {network["proposed_path"]} /etc/network/interfaces']
+        if network.get('hosts_path'):
+            net_cmds += ['cp /etc/hosts /root/pbm-migration/hosts.before-cutover', f'cp {network["hosts_path"]} /etc/hosts']
+    else:
+        net_cmds += [f'# Návrh siete nie je vytvorený – v /etc/network/interfaces a /etc/hosts zmeň {temp_ip} na {old_ip}',
+                     'nano /etc/network/interfaces', 'nano /etc/hosts']
+    net_cmds += ['ifreload -a', 'ip -br addr', 'pvecm updatecerts --force && systemctl restart pveproxy']
+    steps.append({'where': f'NOVÝ host – KONZOLA (nie SSH na {temp_ip})', 'title': f'Nový host prevezme pôvodnú IP {old_ip}', 'commands': net_cmds})
+    if app_id:
+        steps.append({'where': 'NOVÝ host – konzola', 'title': f'Obnov a spusti LXC {app_id} s appkou',
+                      'commands': [f'pct restore {app_id} $(ls -1t {dump_dir}/vzdump-lxc-{app_id}-*.tar.zst | head -1) --storage {storage} --force',
+                                   f'pct set {app_id} --onboot 1', f'pct start {app_id}']})
+    if (transfer.get('config_db') or {}).get('firewall_was_enabled'):
+        steps.append({'where': 'NOVÝ host – konzola', 'title': 'Zapni firewall datacentra (bol dočasne vypnutý)',
+                      'commands': ["sed -i 's/^enable: 0$/enable: 1/' /etc/pve/firewall/cluster.fw", 'pve-firewall status']})
+    steps.append({'where': 'Appka (po spustení na novom hoste)', 'title': 'Overenie',
+                  'commands': [f'Nastavenia → SSH host {old_ip} (teraz nový server) + root heslo nového hosta → Test SSH',
+                               'Vytvoriť zálohu teraz → Obnova na novom HW → stav READY',
+                               'Migrácia → krok Overenie a cesta späť']})
+    return steps
+
+def run_migration_cutover(ctx, mctx):
+    transfer = mctx.transfer
+    config_db = transfer.get('config_db') or {}
+    timers = (transfer.get('files') or {}).get('timers_to_enable', [])
+    jobs = config_db.get('jobs_disabled', [])
+    app_id = mctx.app_guest['vmid'] if mctx.app_guest else None
+    restored = {vmid: info for vmid, info in transfer['guests'].items() if info.get('moved_at')}
+    with MigrationHost(mctx.old_ssh) as old:
+        ctx.progress('Starý host: vypínam zálohovanie')
+        for timer in timers:
+            output, error = old.try_run(f'systemctl disable --now {shlex.quote(timer)}', 60)
+            ctx.log(f'Starý host: timer {timer} vypnutý' if output is not None else f'Starý host: timer {timer}: {error}')
+        for job_id in jobs:
+            output, error = old.try_run(f'pvesh set /cluster/backup/{shlex.quote(job_id)} --enabled 0', 60)
+            ctx.log(f'Starý host: vzdump job {job_id} vypnutý' if output is not None else f'Starý host: job {job_id}: {error}')
+    with MigrationHost(mctx.target) as new:
+        ctx.progress('Nový host: zapínam zálohovanie a autostart')
+        for job_id in jobs:
+            output, error = new.try_run(f'pvesh set /cluster/backup/{shlex.quote(job_id)} --enabled 1', 60)
+            ctx.log(f'Nový host: vzdump job {job_id} zapnutý' if output is not None else f'Nový host: job {job_id}: {error}')
+        new.try_run('systemctl daemon-reload', 60)
+        for timer in timers:
+            output, error = new.try_run(f'systemctl enable --now {shlex.quote(timer)}', 60)
+            ctx.log(f'Nový host: timer {timer} zapnutý' if output is not None else f'Nový host: timer {timer}: {error}')
+        for vmid, info in sorted(restored.items(), key=lambda pair: int(pair[0])):
+            if info.get('original_onboot') and int(vmid) != app_id:
+                output, error = new.try_run(f'{guest_cli(info.get("type", "VM"))} set {int(vmid)} --onboot 1', 60)
+                ctx.log(f'Nový host: autostart {vmid} zapnutý' if output is not None else f'Nový host: autostart {vmid}: {error}')
+    result = {'applied_at': migration_now(), 'timers': timers, 'jobs': jobs,
+              'autostart': [vmid for vmid, info in restored.items() if info.get('original_onboot') and int(vmid) != app_id]}
+    update_migration_transfer(lambda t: t.update(cutover=result))
+    ctx.progress('Zálohovanie a autostart prepnuté – pokračuj ručnými krokmi nižšie')
+    return result
+
+def public_migration_transfer(mctx_or_none=None):
+    transfer = safe_migration_transfer()
+    if transfer is None:
+        return None, 'Stav prenosu sa nedá načítať.'
+    return transfer, None
+
+def migration_transfer_info():
+    """Údaje pre UI krokov prenosu (bez hesiel)."""
+    info = {'transfer': safe_migration_transfer(), 'file_items': [], 'old_nics': [], 'new_nics': [],
+            'dump_dir': '', 'storages': [], 'app_guest': None, 'node': '', 'archive': None, 'final_steps': [], 'error': None}
+    try:
+        mctx = MigrationContext(require_target=False)
+    except (ValueError, RuntimeError, OSError) as exc:
+        info['error'] = str(exc)
+        return info
+    info.update(node=mctx.node, dump_dir=migration_default_dump_dir(mctx.facts), storages=migration_guest_storages(mctx.facts),
+                old_nics=old_physical_nics(mctx.facts),
+                archive={'filename': mctx.entry.get('filename'), 'timestamp': mctx.archive_time.isoformat() if mctx.archive_time else None,
+                         'fresh': bool(mctx.archive_time and datetime.now() - mctx.archive_time <= timedelta(hours=MIGRATION_SOURCE_MAX_AGE_HOURS))},
+                app_guest={k: mctx.app_guest[k] for k in ('vmid', 'type')} if mctx.app_guest else None)
+    profiles = {item['path']: item for item in MIGRATION_FILE_ITEMS}
+    info['file_items'] = [{**profiles[path], 'name': next((d['name'] for d in DEFAULT_BACKUP_FILES if d['path'] == path), path),
+                           'badge': recovery_profile_for_path(path)['badge']} for path in [i['path'] for i in MIGRATION_FILE_ITEMS]]
+    target = mctx.target
+    if target and target.get('last_check'):
+        info['new_nics'] = target['last_check'].get('facts', {}).get('links', [])
+    if mctx.target:
+        info['final_steps'] = migration_final_steps(mctx)
+    return info
+
+def start_migration_operation(kind, title, runner, require_fresh=False):
+    mctx = MigrationContext(require_target=True, require_fresh=require_fresh)
+    return start_migration_job(kind, title, lambda ctx: runner(ctx, mctx), mctx.secrets)
+
 def migration_json_body(allowed):
     data = request.get_json(silent=True)
     if not isinstance(data, dict) or set(data) - set(allowed):
@@ -2148,7 +3315,10 @@ def migration_api_response(update=None, reset=False):
                 state['finished_at'] = (state['finished_at'] or state['updated_at']) if complete else None
             if update or reset:
                 save_migration_state(state)
-            payload = build_migration_payload(state)
+        if update and state['finished_at']:
+            forget_migration_target(keep_host=True)
+        with migration_state_lock():
+            payload = build_migration_payload(load_migration_state())
         response = jsonify(payload)
         response.headers['Cache-Control'] = 'no-store'
         return response
@@ -4930,12 +6100,9 @@ def recovery_migration_api():
             raise ValueError('Pred zmenou spôsobu resetuj existujúcu migráciu.')
         old_host = validate_migration_host(data.get('old_host', state['old_host']))
         new_host = validate_migration_host(data.get('new_host', state['new_host']))
-        if method == 'side_by_side':
-            same_ip = old_host['ip'] and old_host['ip'] == new_host['ip']
-            same_name = old_host['hostname'] and new_host['hostname'] and (
-                old_host['hostname'].split('.')[0] == new_host['hostname'].split('.')[0])
-            if same_ip or same_name:
-                raise ValueError('Pri súbežnej prevádzke musí mať nový host inú IP aj hostname (názov nodu).')
+        if method == 'side_by_side' and old_host['ip'] and old_host['ip'] == new_host['ip']:
+            # Rovnaký hostname je pri prenose 1:1 žiaduci; súbeh rozlišuje dočasná IP nového hosta.
+            raise ValueError('Pri súbežnej prevádzke musí mať nový host inú IP ako starý (dočasnú adresu).')
         state.update(method=method, old_host=old_host, new_host=new_host)
         state['started_at'] = state['started_at'] or migration_now()
         if method == 'side_by_side':
@@ -4981,9 +6148,224 @@ def recovery_migration_guest_api(vmid):
 def recovery_migration_reset_api():
     try:
         migration_json_body(set())
+        running = running_migration_job()
+        if running:
+            raise ValueError(f'Počas operácie „{running.get("title")}“ nemožno resetovať migráciu. Počkaj na jej dokončenie.')
+        forget_migration_target()
+        forget_migration_transfer()
     except ValueError as exc:
         return json_error(str(exc))
+    except (OSError, RuntimeError):
+        return json_error('Stav operácií alebo nového hosta sa nedá načítať; reset nebol vykonaný.', 503)
     return migration_api_response(reset=True)
+
+def migration_operation_response(starter):
+    try:
+        job = starter()
+        return no_store(jsonify({'success': True, 'job': public_migration_job(job)}))
+    except ValueError as exc:
+        return no_store(*json_error(str(exc)))
+    except (OSError, RuntimeError, tarfile.TarError) as exc:
+        message = str(exc) if isinstance(exc, RuntimeError) else 'Operáciu nemožno spustiť.'
+        return no_store(*json_error(message, 503))
+
+def migration_guest_for_operation(vmid, allowed_statuses):
+    guest_id = validate_migration_vmid(vmid)
+    state = load_migration_state()
+    guest = state['guests'].get(guest_id)
+    if not guest:
+        raise ValueError('Hosť nie je v zozname migrácie. Ulož spôsob migrácie s dostupným inventárom.')
+    if guest['status'] not in allowed_statuses:
+        raise ValueError(f'Hosť je v stave „{guest["status"]}“; táto operácia sa v ňom nedá spustiť.')
+    return int(guest_id)
+
+@app.route('/api/recovery/migration/transfer')
+def recovery_migration_transfer_api():
+    return no_store(jsonify({'success': True, **migration_transfer_info()}))
+
+@app.route('/api/recovery/migration/transfer/config-db', methods=['POST'])
+def recovery_migration_config_db_api():
+    def starter():
+        data = migration_json_body({'confirm'})
+        if data.get('confirm') != 'KOPIA':
+            raise ValueError('Potvrď prenos config.db textom KOPIA.')
+        transfer = load_migration_transfer()
+        if transfer['config_db']:
+            raise ValueError('config.db už bol prenesený. Opakovanie je možné iba po resete migrácie a novej inštalácii cieľa.')
+        return start_migration_operation('config-db', 'Kópia PVE konfigurácie (config.db)', run_migration_config_db, require_fresh=True)
+    return migration_operation_response(starter)
+
+def migration_file_paths(data):
+    paths = data.get('paths')
+    if not isinstance(paths, list) or not paths or len(paths) > len(MIGRATION_FILE_PATHS) \
+            or any(not isinstance(path, str) or path not in MIGRATION_FILE_PATHS for path in paths):
+        raise ValueError('Vyber aspoň jednu povolenú položku na prenos.')
+    return sorted(set(paths), key=[item['path'] for item in MIGRATION_FILE_ITEMS].index)
+
+@app.route('/api/recovery/migration/transfer/files-diff', methods=['POST'])
+def recovery_migration_files_diff_api():
+    def starter():
+        paths = migration_file_paths(migration_json_body({'paths'}))
+        return start_migration_operation('files-diff', 'Rozdiely súborov hosta',
+                                         lambda ctx, mctx: run_migration_files_diff(ctx, mctx, paths))
+    return migration_operation_response(starter)
+
+@app.route('/api/recovery/migration/transfer/files-apply', methods=['POST'])
+def recovery_migration_files_apply_api():
+    def starter():
+        data = migration_json_body({'paths', 'confirm'})
+        paths = migration_file_paths(data)
+        if data.get('confirm') is not True:
+            raise ValueError('Potvrď, že si skontroloval rozdiely vybraných položiek.')
+        return start_migration_operation('files-apply', 'Prenos súborov hosta',
+                                         lambda ctx, mctx: run_migration_files_apply(ctx, mctx, paths))
+    return migration_operation_response(starter)
+
+@app.route('/api/recovery/migration/transfer/network', methods=['POST'])
+def recovery_migration_network_api():
+    def starter():
+        mapping = migration_json_body({'mapping'}).get('mapping') or {}
+        if not isinstance(mapping, dict) or len(mapping) > 32 or any(
+                not isinstance(k, str) or not isinstance(v, str) or len(k) > 32 or len(v) > 32 for k, v in mapping.items()):
+            raise ValueError('Neplatné mapovanie sieťových kariet.')
+        return start_migration_operation('network', 'Návrh siete pre nový HW',
+                                         lambda ctx, mctx: run_migration_network(ctx, mctx, mapping))
+    return migration_operation_response(starter)
+
+@app.route('/api/recovery/migration/guests/<vmid>/move', methods=['POST'])
+def recovery_migration_guest_move_api(vmid):
+    def starter():
+        data = migration_json_body({'dump_dir', 'target_storage', 'confirm'})
+        guest_id = migration_guest_for_operation(vmid, ('pending', 'stopped_on_old'))
+        if data.get('confirm') is not True:
+            raise ValueError('Potvrď presun: hosť sa na starom hoste vypne.')
+        dump_dir = validate_remote_dir(data.get('dump_dir'))
+        storage = validate_storage_id(data.get('target_storage'))
+        mctx = MigrationContext(require_target=True)
+        if not mctx.transfer.get('config_db'):
+            raise ValueError('Najprv v kroku Prenos konfigurácie prenes config.db (definície hostí musia byť na novom hoste).')
+        if mctx.app_guest and mctx.app_guest['vmid'] == guest_id:
+            raise ValueError('Toto je LXC, v ktorom beží táto appka. Presúva sa ručne ako posledný pri prepnutí.')
+        if storage not in migration_guest_storages(mctx.facts):
+            raise ValueError('Cieľový storage nie je medzi storage pre disky hostí.')
+        guest = mctx.guest_info(guest_id)
+        return start_migration_job('guest-move', f'Presun {guest["type"]} {guest_id} {guest["name"]}'.strip(),
+                                   lambda ctx: run_migration_guest_move(ctx, mctx, guest_id, dump_dir, storage), mctx.secrets)
+    return migration_operation_response(starter)
+
+@app.route('/api/recovery/migration/guests/<vmid>/start', methods=['POST'])
+def recovery_migration_guest_start_api(vmid):
+    def starter():
+        migration_json_body(set())
+        guest_id = migration_guest_for_operation(vmid, ('restored_on_new',))
+        return start_migration_operation('guest-start', f'Štart hosťa {guest_id} na novom hoste',
+                                         lambda ctx, mctx: run_migration_guest_start(ctx, mctx, guest_id))
+    return migration_operation_response(starter)
+
+@app.route('/api/recovery/migration/guests/<vmid>/rollback', methods=['POST'])
+def recovery_migration_guest_rollback_api(vmid):
+    def starter():
+        data = migration_json_body({'confirm'})
+        guest_id = migration_guest_for_operation(vmid, ('stopped_on_old', 'restored_on_new'))
+        if data.get('confirm') is not True:
+            raise ValueError('Potvrď vrátenie hosťa na starý host.')
+        return start_migration_operation('guest-rollback', f'Vrátenie hosťa {guest_id} na starý host',
+                                         lambda ctx, mctx: run_migration_guest_rollback(ctx, mctx, guest_id))
+    return migration_operation_response(starter)
+
+@app.route('/api/recovery/migration/cutover', methods=['POST'])
+def recovery_migration_cutover_api():
+    def starter():
+        data = migration_json_body({'confirm'})
+        if data.get('confirm') != 'PREPNUT':
+            raise ValueError('Potvrď prepnutie textom PREPNUT.')
+        mctx = MigrationContext(require_target=True)
+        if not mctx.transfer.get('config_db'):
+            raise ValueError('Prepnutie vyžaduje prenesený config.db.')
+        payload = build_migration_payload(mctx.state)
+        if not payload['cutover_ready']:
+            raise ValueError('Najprv over alebo vedome vynechaj všetkých hostí (okrem LXC s appkou).')
+        return start_migration_job('cutover', 'Prepnutie zálohovania a autostartu', lambda ctx: run_migration_cutover(ctx, mctx), mctx.secrets)
+    return migration_operation_response(starter)
+
+@app.route('/api/recovery/migration/target', methods=['GET', 'POST', 'DELETE'])
+def recovery_migration_target_api():
+    """Pripojenie nového hosta (heslo sa nikdy nevracia) + spustenie kontroly cieľa."""
+    try:
+        if request.method == 'GET':
+            target, error = safe_public_migration_target()
+            return no_store(jsonify({'success': True, 'target': target, 'target_error': error,
+                                     'jobs': [public_migration_job(job) for job in list_migration_jobs()[:5]]}))
+        if request.method == 'DELETE':
+            running = running_migration_job()
+            if running:
+                raise ValueError('Počas bežiacej operácie nemožno zabudnúť pripojenie nového hosta.')
+            forget_migration_target()
+            return no_store(jsonify({'success': True, 'target': None}))
+
+        data = migration_json_body({'host', 'port', 'password'})
+        host = validate_migration_ssh_host(data.get('host'))
+        port = data.get('port', 22)
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError('SSH port musí byť celé číslo od 1 do 65535.')
+        password = data.get('password', '')
+        if not isinstance(password, str) or len(password) > 4096 or '\x00' in password:
+            raise ValueError('Root heslo môže mať najviac 4096 znakov.')
+        old_ssh = migration_old_ssh()
+        if old_ssh and old_ssh['host'] == host:
+            raise ValueError('Nový host musí mať inú adresu ako starý host uložený v Nastaveniach.')
+        with json_state_lock(MIGRATION_TARGET_FILE):
+            try:
+                existing = load_migration_target()
+            except RuntimeError:
+                existing = None
+            if not password:
+                if existing and existing['host'] == host and existing['port'] == port and existing['password']:
+                    password = existing['password']
+                else:
+                    raise ValueError('Zadaj root heslo nového hosta.')
+            target = {'host': host, 'port': port, 'username': 'root', 'password': password,
+                      'saved_at': migration_now(), 'last_check': None}
+            write_json_state(MIGRATION_TARGET_FILE, target)
+        job = start_migration_preflight(target)
+        return no_store(jsonify({'success': True, 'target': public_migration_target(target),
+                                 'job': public_migration_job(job)}))
+    except ValueError as exc:
+        return no_store(*json_error(str(exc)))
+    except (OSError, RuntimeError) as exc:
+        message = str(exc) if isinstance(exc, RuntimeError) else 'Pripojenie nového hosta sa nedá uložiť.'
+        return no_store(*json_error(message, 503))
+
+@app.route('/api/recovery/migration/target/check', methods=['POST'])
+def recovery_migration_target_check_api():
+    try:
+        migration_json_body(set())
+        target = load_migration_target()
+        if not target or not target['password']:
+            raise ValueError('Najprv ulož pripojenie nového hosta vrátane root hesla.')
+        job = start_migration_preflight(target)
+        return no_store(jsonify({'success': True, 'job': public_migration_job(job)}))
+    except ValueError as exc:
+        return no_store(*json_error(str(exc)))
+    except (OSError, RuntimeError) as exc:
+        return no_store(*json_error(str(exc) if isinstance(exc, RuntimeError) else 'Kontrolu nemožno spustiť.', 503))
+
+@app.route('/api/recovery/migration/jobs')
+def recovery_migration_jobs_api():
+    try:
+        return no_store(jsonify({'success': True, 'jobs': [public_migration_job(job) for job in list_migration_jobs()]}))
+    except (OSError, RuntimeError):
+        return no_store(*json_error('Záznam operácií sa nedá načítať.', 503))
+
+@app.route('/api/recovery/migration/jobs/<job_id>')
+def recovery_migration_job_api(job_id):
+    try:
+        job = next((job for job in list_migration_jobs() if job['id'] == job_id), None)
+    except (OSError, RuntimeError):
+        return no_store(*json_error('Záznam operácií sa nedá načítať.', 503))
+    if not job:
+        return no_store(*json_error('Operácia neexistuje.', 404))
+    return no_store(jsonify({'success': True, 'job': public_migration_job(job)}))
 
 def redact_migration_comparison(value, passwords):
     """Poistka aj pre nečakané tajomstvo v parsovanom názve, nie iba SSH chybe."""
@@ -5047,8 +6429,26 @@ def recovery_migration_compare_api():
 
 @app.route('/api/recovery/checklist')
 def recovery_checklist_api():
-    """Krokový postup obnovy Proxmox hosta na novom HW."""
-    return jsonify({'success': True, 'steps': RECOVERY_CHECKLIST})
+    """Krokový postup obnovy Proxmox hosta na novom HW + uložený postup."""
+    return recovery_progress_response()
+
+@app.route('/api/recovery/checklist/steps/<step_id>', methods=['POST'])
+def recovery_checklist_step_api(step_id):
+    def update(state):
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or set(data) != {'completed'} or type(data['completed']) is not bool:
+            raise ValueError('Očakáva sa JSON {"completed": true|false}.')
+        if step_id not in {step['id'] for step in RECOVERY_CHECKLIST}:
+            raise ValueError('Krok postupu obnovy neexistuje.')
+        if data['completed']:
+            state['steps'][step_id] = {'completed': True, 'updated_at': migration_now()}
+        else:
+            state['steps'].pop(step_id, None)
+    return recovery_progress_response(update)
+
+@app.route('/api/recovery/checklist/reset', methods=['POST'])
+def recovery_checklist_reset_api():
+    return recovery_progress_response(reset=True)
 
 @app.route('/api/recovery/wiki')
 def recovery_wiki_index_api():

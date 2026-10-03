@@ -167,7 +167,24 @@ Na záložke Zálohovanie sú filtre (Critical, Recommended, Optional, New HW �
 
 DR metadáta položiek sú definované v `recovery_data.py` (kľúč = cesta z `DEFAULT_BACKUP_FILES`). Neklasifikovaná vlastná položka dostane bezpečný fallback REVIEW FIRST. Metadáta sa pripájajú iba k API odpovediam (`recovery` objekt), do `backup_config.json` sa neukladajú, preto sa `CONFIG_VERSION` nemení.
 
-Nové API endpointy: `GET /api/recovery/overview` (vrátane `risks`), `GET /api/recovery/checklist`, `GET /api/recovery/wiki`, `GET /api/recovery/wiki/<slug>`, `GET /api/recovery/snapshot/<backup_id>`, `GET /api/recovery/handbook` (`?inline=1` na zobrazenie v prehliadači). `POST /api/restore` po novom prijíma aj `stage_paths` a `acknowledged_paths`.
+Záložka **Obnova na novom HW** začína rozcestníkom **„Čo chceš urobiť?“** (Server zomrel – obnova · Plánovaná migrácia na nový HW · Obnoviť súbory na tom istom serveri). Obnova po havárii aj migrácia sú **sprievodcovia krok za krokom**: rozbalený je iba aktuálny krok s tlačidlami Späť / Hotovo, ďalší krok / Preskočiť, zoznam všetkých krokov je zbalený a obsah viazaný na krok (zoznam hostí iba v kroku Presun hostí, porovnanie hostov v Príprave a Overení). Referencie (Položky, Snapshot hosta, Wiki) sú v samostatnom riadku. Záložka *Obnova* sa volá **Obnova súborov**.
+
+**Pripojenie nového hosta (migrácia vedľa starého, krok „Nový host“):** zadáš dočasnú IP, SSH port a root heslo nového Proxmoxu. Appka ich uloží do `migration_target.json` (0600, nikdy do `migration_state.json`) a na pozadí spustí **kontrolu nového hosta** (iba čítanie): SSH prihlásenie, beží Proxmox VE, **nie je to ten istý stroj ako starý** (`/etc/machine-id`), iná adresa ako starý host, beží `pve-cluster`, na novom hoste nebežia ani neexistujú hostia (pred prenosom konfigurácie 1:1 musí byť prázdny), verzia PVE nie je staršia. Operácie bežia na pozadí s priebehom a logom (`migration_jobs.json`); naraz smie bežať iba jedna, počas nej nejde reset migrácie ani zabudnutie hosta, a operácia bez heartbeatu (napr. po reštarte služby) sa označí ako prerušená. Heslá sa v logoch maskujú.
+
+**Prenos 1:1, presun hostí a prepnutie (migrácia vedľa starého hosta).** Stratégia: nový Proxmox sa nainštaluje s **pôvodným hostname** (názov nodu) a **dočasnou IP**; starý host sa počas prenosu nemení a zostáva cestou späť.
+
+1. **Prenos konfigurácie 1:1** (krok *Prenos konfigurácie 1:1*):
+   - **config.db** – appka nahrá `config.db` z čerstvého archívu (max. 24 h) na nový host, overí `PRAGMA integrity_check`, zálohuje pôvodný config.db nového hosta do `/root/pbm-migration/`, krátko zastaví `pve-cluster` a nahradí databázu. Pri chybe automaticky vráti pôvodnú. Podmienky: rovnaký hostname, nový host prázdny (bez VM/LXC), nie je v clustri; potvrdenie textom `KOPIA`. Na novom hoste potom **vypne vzdump joby, autostart hostí a firewall datacentra** (zapnú sa pri prepnutí).
+   - **Súbory hosta** – náhľad rozdielov (hash súborov, pri malých necitlivých textových súboroch aj unified diff) a prenos vybraných položiek cez restore engine s pre-apply zálohou na novom hoste. Skopírované systemd timery sa na novom hoste vypnú a zapnú až pri prepnutí. Ponúkajú sa iba položky z `MIGRATION_FILE_ITEMS` (autofs, skripty, systemd, sysctl, vzdump.conf; HW-závislé a cron/`/root` predvolene nevybraté).
+   - **Návrh siete** – pôvodný `/etc/network/interfaces` s premapovanými sieťovkami (starý NIC → nový NIC) a pôvodný `/etc/hosts` sa uložia na nový host do `/root/pbm-migration/*.proposed`; neaplikujú sa (zmena siete by prerušila SSH), použijú sa pri prepnutí z konzoly.
+2. **Presun hostí** – „Presunúť automaticky“ pri každom hosťovi: na starom vypne autostart, korektne vypne hosťa (bez násilného vypnutia), `vzdump --mode stop` do zdieľaného adresára dostupného z oboch hostov, overí, že hosť ostal vypnutý, a na novom `qmrestore`/`pct restore --force` (config už prišiel s config.db); hosť ostane vypnutý. „Spustiť na novom“ ho spustí iba ak je na starom vypnutý. „Vrátiť na starý“ ho na novom vypne a na starom spustí (stav Vynechaný s poznámkou). **LXC s touto appkou** (zistený podľa IP appky) sa automaticky nepresúva.
+3. **Prepnutie** – automaticky (potvrdenie `PREPNUT`, iba keď sú všetci hostia okrem appky overení alebo vynechaní): na starom vypne backup timery a vzdump joby, na novom ich zapne a vráti autostart presunutým hosťom. Potom sprievodca vypíše **ručné kroky z konzoly** s konkrétnymi hodnotami: vzdump LXC s appkou na starom → `poweroff` starého → nový host prevezme pôvodnú IP (návrh siete + hosts, `ifreload -a`, `pvecm updatecerts`) → obnova a štart LXC s appkou → zapnutie firewallu → v appke Test SSH a nová záloha.
+
+Stav prenosu je v `migration_transfer.json` (0600; config.db, súbory, sieť, presunutí hostia, prepnutie). Všetky príkazy na hostoch sú pevné buildery s `shlex.quote`; API neprijíma ľubovoľné príkazy. Dlhé operácie (vzdump/restore) bežia na pozadí s priebežným logom. Reset migrácie zmaže aj stav prenosu (hostov nemení). Spôsob „Presun systémového disku“ zostáva ručný.
+
+Postup obnovy po havárii sa ukladá na serveri v `recovery_progress.json` (0600, mimo git; pomocný `.lock`), takže v ňom pokračuješ z mobilu aj z PC. Starý postup uložený v prehliadači sa pri prvom načítaní jednorazovo prenesie na server. Aktuálne otvorený krok si pamätá iba prehliadač.
+
+Nové API endpointy: `GET /api/recovery/overview` (vrátane `risks` a `checklist_progress`), `GET /api/recovery/checklist` (kroky + uložený postup), `POST /api/recovery/checklist/steps/<id>` (`{"completed": bool}`), `POST /api/recovery/checklist/reset`, `GET|POST|DELETE /api/recovery/migration/target` (pripojenie nového hosta; POST spustí kontrolu), `POST /api/recovery/migration/target/check`, `GET /api/recovery/migration/jobs`, `GET /api/recovery/migration/jobs/<id>`, `GET /api/recovery/migration/transfer`, `POST /api/recovery/migration/transfer/{config-db,files-diff,files-apply,network}`, `POST /api/recovery/migration/guests/<vmid>/{move,start,rollback}`, `POST /api/recovery/migration/cutover`, `GET /api/recovery/wiki`, `GET /api/recovery/wiki/<slug>`, `GET /api/recovery/snapshot/<backup_id>`, `GET /api/recovery/handbook` (`?inline=1` na zobrazenie v prehliadači). `POST /api/restore` po novom prijíma aj `stage_paths` a `acknowledged_paths`.
 
 ### 💾 Ukladanie archívov
 
@@ -266,6 +283,10 @@ journalctl -u proxmox-backup.service -f
 - `backup_config.json` - Konfigurácia (vytvorí sa automaticky)
 - `backup_history.json` - História záloh (vytvorí sa automaticky)
 - `migration_state.json` - Lokálny postup plánovanej migrácie (0600; pomocný `.lock`, bez prihlasovacích údajov)
+- `recovery_progress.json` - Lokálny postup obnovy po havárii (0600; pomocný `.lock`)
+- `migration_target.json` - Pripojenie nového hosta počas migrácie: adresa, port, root heslo a výsledok kontroly (0600; pomocný `.lock`). Heslo sa nikdy nevracia cez API, pri dokončení migrácie sa zmaže, pri resete sa zmaže celý súbor
+- `migration_jobs.json` - Posledných 20 operácií migrácie na pozadí so stavom a logom, bez hesiel (0600; pomocný `.lock`)
+- `migration_transfer.json` - Stav prenosu 1:1, presunutých hostí a prepnutia (0600; pomocný `.lock`)
 - `backups/` - Lokálne archívy v LXC (vytvorí sa automaticky)
 
 ## 📝 Poznámky

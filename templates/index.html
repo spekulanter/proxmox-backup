@@ -295,7 +295,7 @@
                         Zálohovanie
                     </button>
                     <button onclick="showTab('restore')" id="tab-restore" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-4 sm:px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
-                        Obnova
+                        Obnova súborov
                     </button>
                     <button onclick="showTab('recovery')" id="tab-recovery" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-4 sm:px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
                         Obnova na novom HW
@@ -763,13 +763,18 @@
                             </div>
                         </div>
                         <div class="px-4 sm:px-6">
-                            <div id="recovery-subnav" class="flex flex-wrap gap-2" role="group" aria-label="Sekcie obnovy">
-                                <button type="button" class="filter-chip" data-rsec="overview" onclick="showRecoverySection('overview')">Prehľad</button>
-                                <button type="button" class="filter-chip" data-rsec="migration" onclick="showRecoverySection('migration')">Migrácia</button>
-                                <button type="button" class="filter-chip" data-rsec="checklist" onclick="showRecoverySection('checklist')">Postup obnovy</button>
-                                <button type="button" class="filter-chip" data-rsec="items" onclick="showRecoverySection('items')">Položky</button>
-                                <button type="button" class="filter-chip" data-rsec="snapshot" onclick="showRecoverySection('snapshot')">Snapshot hosta</button>
-                                <button type="button" class="filter-chip" data-rsec="wiki" onclick="showRecoverySection('wiki')">Wiki</button>
+                            <div id="recovery-subnav" class="space-y-2" role="group" aria-label="Sekcie obnovy">
+                                <div class="flex flex-wrap gap-2">
+                                    <button type="button" class="filter-chip" data-rsec="overview" onclick="showRecoverySection('overview')">Prehľad</button>
+                                    <button type="button" class="filter-chip" data-rsec="checklist" onclick="showRecoverySection('checklist')">Obnova po havárii</button>
+                                    <button type="button" class="filter-chip" data-rsec="migration" onclick="showRecoverySection('migration')">Migrácia na nový HW</button>
+                                </div>
+                                <div class="flex flex-wrap items-center gap-1.5 text-xs">
+                                    <span class="text-muted-foreground">Referencie:</span>
+                                    <button type="button" class="filter-chip !min-h-0 !px-2.5 !py-1 !text-xs" data-rsec="items" onclick="showRecoverySection('items')">Položky</button>
+                                    <button type="button" class="filter-chip !min-h-0 !px-2.5 !py-1 !text-xs" data-rsec="snapshot" onclick="showRecoverySection('snapshot')">Snapshot hosta</button>
+                                    <button type="button" class="filter-chip !min-h-0 !px-2.5 !py-1 !text-xs" data-rsec="wiki" onclick="showRecoverySection('wiki')">Wiki</button>
+                                </div>
                             </div>
                         </div>
                         <div class="px-4 sm:px-6 min-w-0">
@@ -777,6 +782,7 @@
                             <div id="rsec-migration" class="recovery-section hidden min-w-0 space-y-4">
                                 <div id="migration-status" role="status" aria-live="polite" class="hidden"></div>
                                 <div id="migration-body" class="min-w-0"><p class="text-sm text-muted-foreground">Načítavam sprievodcu migráciou…</p></div>
+                                <div id="migration-compare-holder" class="hidden">
                                 <section id="migration-compare" class="min-w-0 space-y-4 rounded-lg border p-3 sm:p-4" aria-labelledby="migration-compare-title">
                                     <div class="space-y-1">
                                         <h3 id="migration-compare-title" class="text-base font-semibold">Porovnanie starého a nového hosta</h3>
@@ -800,6 +806,7 @@
                                     <div id="migration-compare-status" role="status" aria-live="polite" class="hidden"></div>
                                     <div id="migration-compare-result" class="min-w-0 space-y-3"></div>
                                 </section>
+                                </div>
 
                             </div>
                             <div id="rsec-checklist" class="recovery-section hidden space-y-4"></div>
@@ -2723,6 +2730,7 @@
                     throw new Error(data.error || 'Prehľad obnovy sa nepodarilo načítať');
                 }
                 recoveryOverview = data;
+                await migrateLegacyChecklist();
                 if (Array.isArray(data.categories) && data.categories.length) {
                     restoreCategories = data.categories;
                 }
@@ -2792,6 +2800,12 @@
                 const data = await response.json();
                 if (!response.ok || !data.success) throw new Error(data.error || 'Migráciu sa nepodarilo načítať');
                 migrationData = data;
+                if (data.state?.method === 'side_by_side') {
+                    const info = await fetch('/api/recovery/migration/transfer').then(r => r.json()).catch(() => null);
+                    migrationTransferInfo = info?.success ? info : null;
+                } else {
+                    migrationTransferInfo = null;
+                }
                 renderMigration();
                 migrationMessage('');
             } catch (error) {
@@ -2806,7 +2820,9 @@
             if (migrationBusy) return;
             migrationBusy = true;
             const body = document.getElementById('migration-body');
+            // Porovnanie hostov má vlastný stav (migrationCompareBusy); pri ukladaní krokov ho neblokuj.
             body.querySelectorAll('button, input, select, textarea').forEach(el => {
+                if (el.closest('#migration-compare')) return;
                 el.dataset.wasDisabled = String(el.disabled);
                 el.disabled = true;
             });
@@ -2820,6 +2836,7 @@
                 if (path === '' || path === '/reset') clearMigrationComparison();
                 renderMigration();
                 migrationMessage('Stav migrácie bol uložený.');
+                return true;
             } catch (error) {
                 body.querySelectorAll('[data-was-disabled]').forEach(el => {
                     el.disabled = el.dataset.wasDisabled === 'true';
@@ -2834,6 +2851,7 @@
                     });
                 }
                 migrationMessage(error.message, true);
+                return false;
             } finally {
                 migrationBusy = false;
             }
@@ -2981,67 +2999,437 @@
             }
         });
 
+        // --- Pripojenie nového hosta a operácie na pozadí ---
+        let migrationTargetBusy = false;
+        let migrationJobTimer = null;
+        const MIGRATION_CHECK_STYLES = { ok: 'readiness-READY', warning: 'dr-flag-warn', error: 'dr-flag-danger', unknown: 'dr-flag-muted' };
+        const MIGRATION_CHECK_LABELS = { ok: 'OK', warning: 'Pozor', error: 'Chyba', unknown: 'Neoverené' };
+        const MIGRATION_JOB_LABELS = { running: 'Beží', success: 'Dokončené', failed: 'Zlyhalo', interrupted: 'Prerušené' };
+
+        function runningMigrationJob() {
+            return (migrationData?.jobs || []).find(job => job.status === 'running') || null;
+        }
+
+        async function migrationTargetRequest(method, path, body) {
+            if (migrationTargetBusy) return;
+            migrationTargetBusy = true;
+            document.querySelectorAll('#migration-target button, #migration-target input').forEach(el => { el.disabled = true; });
+            try {
+                const response = await fetch(`/api/recovery/migration${path}`, {
+                    method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body)
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !data.success) throw new Error(data.error || 'Operácia s novým hostom zlyhala');
+                migrationMessage(data.job ? 'Kontrola nového hosta beží…' : 'Pripojenie nového hosta bolo zabudnuté.');
+            } catch (error) {
+                migrationMessage(error.message, true);
+            } finally {
+                migrationTargetBusy = false;
+                await loadMigration();
+            }
+        }
+
+        function scheduleMigrationJobPolling() {
+            clearTimeout(migrationJobTimer);
+            if (!runningMigrationJob()) return;
+            migrationJobTimer = setTimeout(async () => {
+                if (document.getElementById('rsec-migration')?.classList.contains('hidden')) return;
+                await loadMigration();
+            }, 2000);
+        }
+
+        function migrationJobPanel(job) {
+            if (!job) return '';
+            const style = job.status === 'success' ? 'border-green-200' : (job.status === 'running' ? 'border-sky-200' : 'border-red-200');
+            return `<div class="min-w-0 space-y-2 rounded-lg border ${style} p-3 text-sm" data-migration-job="${escapeHtml(job.id)}">
+                <div class="flex flex-wrap items-center justify-between gap-2"><span class="font-medium">${escapeHtml(job.title)}</span><span class="dr-flag ${job.status === 'success' ? 'readiness-READY' : (job.status === 'running' ? 'dr-flag-muted' : 'dr-flag-danger')}">${escapeHtml(MIGRATION_JOB_LABELS[job.status] || job.status)}${job.status === 'running' ? '…' : ''}</span></div>
+                ${job.progress && job.status === 'running' ? `<p class="text-muted-foreground">${escapeHtml(job.progress)}</p>` : ''}
+                ${job.error ? `<p class="text-destructive">${escapeHtml(job.error)}</p>` : ''}
+                ${(job.log || []).length ? `<details><summary class="min-h-9 cursor-pointer text-xs font-medium">Log operácie (${job.log.length})</summary><pre class="dr-pre mt-1 max-h-60 overflow-y-auto text-[11px]">${escapeHtml(job.log.join('\n'))}</pre></details>` : ''}
+            </div>`;
+        }
+
+        function renderMigrationJobBanner() {
+            const job = runningMigrationJob();
+            if (!job) return '';
+            return `<div class="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900" role="status">Prebieha operácia: <strong>${escapeHtml(job.title)}</strong>${job.progress ? ` – ${escapeHtml(job.progress)}` : ''}. Ďalšiu operáciu spustíš po jej dokončení.</div>`;
+        }
+
+        function renderMigrationTarget() {
+            const target = migrationData?.target;
+            const check = target?.last_check;
+            const running = runningMigrationJob();
+            const lastPreflight = (migrationData?.jobs || []).find(job => job.kind === 'preflight');
+            const inputClass = 'mt-1 h-11 w-full min-w-0 rounded-md border border-input bg-background px-3 text-base md:text-sm';
+            const buttonClass = 'min-h-11 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50';
+            const suggestedHost = target?.host || migrationData?.state?.new_host?.ip || '';
+            const checks = (check?.checks || []).map(item => `<li class="flex min-w-0 items-start gap-2" data-target-check="${escapeHtml(item.id)}">
+                    <span class="dr-flag shrink-0 ${MIGRATION_CHECK_STYLES[item.level] || 'dr-flag-muted'}">${escapeHtml(MIGRATION_CHECK_LABELS[item.level] || item.level)}</span>
+                    <span class="min-w-0 break-words"><span class="font-medium">${escapeHtml(item.title)}</span> – ${escapeHtml(item.detail)}</span></li>`).join('');
+            return `<section id="migration-target" class="min-w-0 space-y-3 rounded-lg border p-3 sm:p-4">
+                <div class="space-y-1">
+                    <h4 class="text-sm font-semibold">Pripojenie nového hosta</h4>
+                    <p class="text-sm text-muted-foreground">Appka sa na nový host pripája ako root cez SSH, aby ho skontrolovala a v ďalších krokoch na neho preniesla konfiguráciu. Heslo sa uloží iba na server (súbor 0600), nikdy sa nezobrazí a zmaže sa pri resete alebo dokončení migrácie.</p>
+                </div>
+                ${migrationData?.target_error ? `<p class="text-sm text-destructive">${escapeHtml(migrationData.target_error)}</p>` : ''}
+                <form id="migration-target-form" class="min-w-0 space-y-3" autocomplete="off">
+                    <div class="grid min-w-0 gap-3 sm:grid-cols-[1fr_8rem]">
+                        <label class="min-w-0 text-sm" for="migration-target-host">Dočasná IP nového hosta<input id="migration-target-host" type="text" required maxlength="253" value="${escapeHtml(suggestedHost)}" autocomplete="off" class="${inputClass}"></label>
+                        <label class="min-w-0 text-sm" for="migration-target-port">SSH port<input id="migration-target-port" type="number" min="1" max="65535" value="${escapeHtml(target?.port || 22)}" class="${inputClass}"></label>
+                    </div>
+                    <label class="block text-sm" for="migration-target-password">Root heslo nového hosta<input id="migration-target-password" type="password" autocomplete="new-password" placeholder="${target?.has_password ? 'uložené – nechaj prázdne' : ''}" class="${inputClass}"></label>
+                    <div class="flex flex-wrap gap-2">
+                        <button type="submit" id="migration-target-save" class="min-h-11 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50" ${running ? 'disabled' : ''}>Uložiť a skontrolovať</button>
+                        ${target?.has_password ? `<button type="button" data-migration-action="target-check" class="${buttonClass}" ${running ? 'disabled' : ''}>Skontrolovať znova</button>` : ''}
+                        ${target ? `<button type="button" data-migration-action="target-forget" class="${buttonClass} text-destructive" ${running ? 'disabled' : ''}>Zabudnúť pripojenie</button>` : ''}
+                    </div>
+                </form>
+                ${target ? `<p class="break-words text-xs text-muted-foreground">Uložené: root@${escapeHtml(target.host)}:${escapeHtml(target.port)} · ${target.has_password ? 'heslo uložené' : 'bez hesla'} · ${escapeHtml(formatDateTime(target.saved_at))}</p>` : ''}
+                ${check ? `<div class="space-y-2" id="migration-target-checks">
+                    <p class="text-sm font-medium">${check.ok ? 'Kontrola nového hosta: v poriadku' : 'Kontrola nového hosta našla problémy'} <span class="text-xs font-normal text-muted-foreground">(${escapeHtml(formatDateTime(check.checked_at))})</span></p>
+                    <ul class="space-y-1.5 text-sm">${checks}</ul></div>` : ''}
+                ${lastPreflight && (lastPreflight.status !== 'success' || running) ? migrationJobPanel(lastPreflight) : ''}
+            </section>`;
+        }
+
+        // --- Prenos konfigurácie 1:1, presun hostí a prepnutie ---
+        let migrationTransferInfo = null;
+        let migrationOperationBusy = false;
+        const MIGRATION_FILE_STATUS = {
+            same: ['Rovnaké', 'readiness-READY'], different: ['Líši sa', 'dr-flag-warn'], missing_on_new: ['Chýba na novom', 'dr-flag-warn'],
+            not_in_backup: ['Nie je v zálohe', 'dr-flag-muted'], unknown: ['Neoverené', 'dr-flag-muted']
+        };
+
+        function latestMigrationJob(kind) {
+            return (migrationData?.jobs || []).find(job => job.kind === kind) || null;
+        }
+
+        async function migrationOperation(path, body) {
+            if (migrationOperationBusy) return;
+            migrationOperationBusy = true;
+            try {
+                const response = await fetch(`/api/recovery/migration${path}`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !data.success) throw new Error(data.error || 'Operáciu sa nepodarilo spustiť');
+                migrationMessage(`Spustené: ${data.job?.title || 'operácia'}. Priebeh sa zobrazuje nižšie.`);
+            } catch (error) {
+                migrationMessage(error.message, true);
+            } finally {
+                migrationOperationBusy = false;
+                await loadMigration();
+            }
+        }
+
+        function selectedMigrationFiles() {
+            return Array.from(document.querySelectorAll('[data-migration-file]:checked')).map(box => box.value);
+        }
+
+        function migrationTransferBlocked() {
+            if (runningMigrationJob()) return 'Prebieha iná operácia – počkaj na jej dokončenie.';
+            if (!migrationData?.target?.has_password) return 'Najprv v kroku „Nový host“ ulož pripojenie nového hosta.';
+            return '';
+        }
+
+        function renderMigrationTransfer() {
+            const info = migrationTransferInfo;
+            const button = 'min-h-11 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50';
+            const primary = 'min-h-11 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50';
+            if (!info) return '<p class="text-sm text-muted-foreground">Údaje pre prenos sa načítavajú…</p>';
+            if (info.error) return `<p class="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">${escapeHtml(info.error)}</p>`;
+            const blocked = migrationTransferBlocked();
+            const disabled = blocked ? 'disabled' : '';
+            const transfer = info.transfer || {};
+            const configDb = transfer.config_db;
+            const archive = info.archive || {};
+            const configJob = latestMigrationJob('config-db');
+            const diffJob = latestMigrationJob('files-diff');
+            const diffItems = Object.fromEntries((diffJob?.result?.items || []).map(item => [item.path, item]));
+            const applyJob = latestMigrationJob('files-apply');
+            const networkJob = latestMigrationJob('network');
+            const network = transfer.network;
+            const fileRows = (info.file_items || []).map(item => {
+                const diff = diffItems[item.path];
+                const [label, style] = diff ? (MIGRATION_FILE_STATUS[diff.status] || MIGRATION_FILE_STATUS.unknown) : [null, null];
+                const applied = (transfer.files?.paths || []).includes(item.path);
+                const details = diff && (diff.diff || diff.changed.length || diff.only_backup.length) ? `<details class="mt-1"><summary class="cursor-pointer text-xs font-medium">Rozdiel</summary>
+                    ${diff.diff ? `<pre class="dr-pre mt-1 max-h-60 overflow-y-auto text-[11px]">${escapeHtml(diff.diff)}</pre>` : ''}
+                    ${diff.changed.length ? `<p class="mt-1 text-xs">Zmenené: <span class="font-mono break-all">${escapeHtml(diff.changed.slice(0, 20).join(', '))}</span></p>` : ''}
+                    ${diff.only_backup.length ? `<p class="mt-1 text-xs">Iba v zálohe: <span class="font-mono break-all">${escapeHtml(diff.only_backup.slice(0, 20).join(', '))}</span></p>` : ''}
+                    ${diff.only_new.length ? `<p class="mt-1 text-xs">Iba na novom (ostane): <span class="font-mono break-all">${escapeHtml(diff.only_new.slice(0, 20).join(', '))}</span></p>` : ''}
+                </details>` : '';
+                return `<li class="min-w-0 rounded-md border p-2">
+                    <label class="flex min-w-0 cursor-pointer items-start gap-2">
+                        <input type="checkbox" class="mt-1 h-4 w-4 shrink-0" data-migration-file value="${escapeHtml(item.path)}" ${item.default ? 'checked' : ''}>
+                        <span class="min-w-0 text-sm"><span class="font-mono break-all">${escapeHtml(item.path)}</span>
+                            ${label ? `<span class="dr-flag ${style} ml-1">${escapeHtml(label)}</span>` : ''}${applied ? '<span class="dr-flag readiness-READY ml-1">Prenesené</span>' : ''}
+                            ${item.note ? `<span class="block text-xs text-muted-foreground">${escapeHtml(item.note)}</span>` : ''}</span>
+                    </label>${details}
+                </li>`;
+            }).join('');
+            const newNics = info.new_nics || [];
+            const nicRows = (info.old_nics || []).map(old => {
+                const current = network?.mapping?.[old] || (newNics.find(nic => nic.state === 'UP') || newNics[0] || {}).name || '';
+                return `<label class="flex min-w-0 flex-wrap items-center gap-2 text-sm"><span class="font-mono">${escapeHtml(old)}</span> →
+                    <select data-nic-map="${escapeHtml(old)}" class="h-10 min-w-0 rounded-md border border-input bg-background px-2 text-sm">
+                        <option value="">(nemapovať)</option>${newNics.map(nic => `<option value="${escapeHtml(nic.name)}" ${nic.name === current ? 'selected' : ''}>${escapeHtml(nic.name)} ${escapeHtml(nic.state)} ${escapeHtml(nic.mac)}</option>`).join('')}
+                    </select></label>`;
+            }).join('');
+            return `<section id="migration-transfer" class="min-w-0 space-y-4">
+                ${blocked ? `<p class="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">${escapeHtml(blocked)}</p>` : ''}
+                <div class="min-w-0 space-y-2 rounded-lg border p-3 sm:p-4" id="migration-config-db">
+                    <h4 class="text-sm font-semibold">1. Kópia PVE konfigurácie 1:1 (config.db)</h4>
+                    <p class="text-sm text-muted-foreground">Prenesie VM/LXC configy, storage, používateľov, ACL, tokeny, firewall a joby. Podmienky: nový host má hostname <strong>${escapeHtml(info.node || '?')}</strong>, je prázdny a archív je čerstvý. Na novom hoste sa potom <strong>vypnú vzdump joby, autostart hostí a firewall</strong> (zapnú sa pri prepnutí). Pôvodný config.db nového hosta sa zálohuje a pri chybe sa vráti.</p>
+                    <p class="break-words text-xs ${archive.fresh ? 'text-muted-foreground' : 'text-destructive'}">Archív: ${escapeHtml(archive.filename || '?')} · ${escapeHtml(formatDateTime(archive.timestamp))}${archive.fresh ? '' : ' – starší ako 24 h, vytvor čerstvú zálohu v kroku Čerstvé zálohy'}</p>
+                    ${configDb ? `<div class="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-900"><strong>Prenesené ${escapeHtml(formatDateTime(configDb.applied_at))}</strong> – node ${escapeHtml(configDb.node)}, definície ${escapeHtml(configDb.guest_definitions)} hostí; vypnuté joby: ${escapeHtml((configDb.jobs_disabled || []).join(', ') || 'žiadne')}; autostart vypnutý: ${escapeHtml((configDb.onboot_guests || []).map(g => g.vmid).join(', ') || 'žiadny')}; firewall ${configDb.firewall_was_enabled ? 'dočasne vypnutý' : 'bol vypnutý'}. Záloha pôvodného: <span class="font-mono break-all">${escapeHtml(configDb.backup_path)}</span></div>`
+                        : `<button type="button" data-migration-action="config-db" class="${primary}" ${disabled}>Preniesť config.db na nový host</button>`}
+                    ${configJob && configJob.status !== 'success' ? migrationJobPanel(configJob) : ''}
+                </div>
+                <div class="min-w-0 space-y-2 rounded-lg border p-3 sm:p-4" id="migration-files">
+                    <h4 class="text-sm font-semibold">2. Súbory hosta</h4>
+                    <p class="text-sm text-muted-foreground">Najprv načítaj rozdiely, skontroluj ich a prenes vybrané. Pred prepisom sa existujúce súbory na novom hoste zálohujú do /root/proxmox-backup-restore-preapply-*.</p>
+                    <ul class="space-y-1.5">${fileRows}</ul>
+                    <div class="flex flex-wrap gap-2"><button type="button" data-migration-action="files-diff" class="${button}" ${disabled}>Načítať rozdiely</button></div>
+                    ${diffJob && diffJob.status !== 'success' ? migrationJobPanel(diffJob) : ''}
+                    <label class="flex items-start gap-2 text-sm"><input type="checkbox" id="migration-files-ack" class="mt-0.5 h-4 w-4 shrink-0"><span>Rozdiely vybraných položiek som skontroloval a chcem ich preniesť na nový host.</span></label>
+                    <button type="button" data-migration-action="files-apply" class="${primary}" ${disabled}>Preniesť vybrané</button>
+                    ${transfer.files ? `<p class="break-words text-xs text-muted-foreground">Prenesené: ${escapeHtml((transfer.files.paths || []).join(', '))} · záloha pôvodných: ${escapeHtml(transfer.files.backup_dir || '–')}${(transfer.files.timers_to_enable || []).length ? ` · timery zapnuté až pri prepnutí: ${escapeHtml(transfer.files.timers_to_enable.join(', '))}` : ''}</p>` : ''}
+                    ${applyJob && applyJob.status !== 'success' ? migrationJobPanel(applyJob) : ''}
+                </div>
+                <div class="min-w-0 space-y-2 rounded-lg border p-3 sm:p-4" id="migration-network">
+                    <h4 class="text-sm font-semibold">3. Návrh siete pre nový HW</h4>
+                    <p class="text-sm text-muted-foreground">Pôvodný /etc/network/interfaces s premenovanými sieťovkami. Uloží sa na nový host do /root/pbm-migration/ – aplikuje sa až pri prepnutí z konzoly (zmena siete by odstrihla SSH).</p>
+                    ${nicRows || '<p class="text-sm text-muted-foreground">V archíve sa nenašli fyzické sieťovky.</p>'}
+                    ${newNics.length ? '' : '<p class="text-xs text-muted-foreground">Sieťovky nového hosta sa načítajú pri kontrole v kroku Nový host.</p>'}
+                    <button type="button" data-migration-action="network" class="${button}" ${disabled}>Vytvoriť návrh siete</button>
+                    ${network ? `<p class="break-words text-xs text-muted-foreground">Návrh: ${escapeHtml(network.proposed_path)} (${escapeHtml(formatDateTime(network.generated_at))})${(network.unmapped || []).length ? ` · bez mapovania: ${escapeHtml(network.unmapped.join(', '))}` : ''}</p>` : ''}
+                    ${networkJob?.result?.interfaces ? `<details><summary class="cursor-pointer text-xs font-medium">Zobraziť návrh</summary><pre class="dr-pre mt-1 max-h-72 overflow-y-auto text-[11px]">${escapeHtml(networkJob.result.interfaces)}</pre></details>` : ''}
+                    ${networkJob && networkJob.status !== 'success' ? migrationJobPanel(networkJob) : ''}
+                </div>
+            </section>`;
+        }
+
+        function renderMigrationMoveSettings() {
+            const info = migrationTransferInfo;
+            if (!info || info.error) return '';
+            const configDb = info.transfer?.config_db;
+            return `<div class="min-w-0 space-y-2 rounded-lg border p-3 sm:p-4" id="migration-move-settings">
+                <h4 class="text-sm font-semibold">Automatický presun</h4>
+                ${configDb ? '' : '<p class="rounded-md border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900">Automatický presun je dostupný po prenose config.db v kroku Prenos konfigurácie.</p>'}
+                <p class="text-sm text-muted-foreground">Appka hosťa na starom vypne (najprv autostart), urobí vzdump do zdieľaného adresára a obnoví ho na novom (ostane vypnutý). Spustenie na novom potvrdíš zvlášť – iba ak je na starom vypnutý.</p>
+                <div class="grid min-w-0 gap-2 sm:grid-cols-2">
+                    <label class="min-w-0 text-sm" for="migration-dump-dir">Zdieľaný adresár záloh (dostupný z oboch hostov)<input id="migration-dump-dir" value="${escapeHtml(info.dump_dir || '')}" class="mt-1 h-11 w-full min-w-0 rounded-md border border-input bg-background px-3 font-mono text-sm"></label>
+                    <label class="min-w-0 text-sm" for="migration-target-storage">Storage pre disky na novom<select id="migration-target-storage" class="mt-1 h-11 w-full min-w-0 rounded-md border border-input bg-background px-3 text-sm">${(info.storages || []).map(id => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`).join('')}</select></label>
+                </div>
+            </div>`;
+        }
+
+        function renderMigrationGuestActions(guest) {
+            const info = migrationTransferInfo;
+            if (!info || info.error) return '';
+            const button = 'min-h-11 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50';
+            const label = `${String(guest.type).toUpperCase()} ${guest.vmid}`;
+            if (info.app_guest && info.app_guest.vmid === guest.vmid) {
+                return '<p class="rounded-md border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900"><strong>LXC s touto appkou.</strong> Presúva sa ručne ako posledný v kroku Prepnutie (appka by sa inak vypla počas vlastného presunu).</p>';
+            }
+            const busy = runningMigrationJob() || !info.transfer?.config_db || !migrationData?.target?.has_password ? 'disabled' : '';
+            const moved = info.transfer?.guests?.[String(guest.vmid)];
+            const actions = [];
+            if (['pending', 'stopped_on_old'].includes(guest.status)) actions.push(`<button type="button" data-migration-action="guest-move" data-vmid="${guest.vmid}" data-label="${escapeHtml(label)}" class="min-h-11 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50" ${busy}>Presunúť automaticky</button>`);
+            if (guest.status === 'restored_on_new') actions.push(`<button type="button" data-migration-action="guest-start" data-vmid="${guest.vmid}" class="${button}" ${busy}>Spustiť na novom</button>`);
+            if (['stopped_on_old', 'restored_on_new'].includes(guest.status)) actions.push(`<button type="button" data-migration-action="guest-rollback" data-vmid="${guest.vmid}" data-label="${escapeHtml(label)}" class="${button}" ${busy}>Vrátiť na starý</button>`);
+            const job = (migrationData?.jobs || []).find(item => new RegExp('\\b' + Number(guest.vmid) + '\\b').test(item.title || '') && ['guest-move', 'guest-start', 'guest-rollback'].includes(item.kind));
+            return `<div class="space-y-2">
+                ${actions.length ? `<div class="flex flex-wrap gap-2">${actions.join('')}</div>` : ''}
+                ${moved?.dump_file ? `<p class="break-words text-xs text-muted-foreground">Záloha: <span class="font-mono">${escapeHtml(moved.dump_file)}</span> · storage ${escapeHtml(moved.target_storage || '')} · pôvodný autostart: ${moved.original_onboot ? 'áno' : 'nie'}</p>` : ''}
+                ${job && (job.status === 'running' || job.status !== 'success') ? migrationJobPanel(job) : ''}
+            </div>`;
+        }
+
+        function renderMigrationCutover() {
+            const info = migrationTransferInfo;
+            if (!info || info.error) return '';
+            const cutover = info.transfer?.cutover;
+            const blocked = migrationTransferBlocked() || (!info.transfer?.config_db ? 'Prepnutie vyžaduje prenesený config.db.' : '')
+                || (!migrationData?.cutover_ready ? 'Najprv over alebo vedome vynechaj všetkých hostí (okrem LXC s appkou).' : '');
+            const job = latestMigrationJob('cutover');
+            const steps = (info.final_steps || []).map((step, index) => `<li class="min-w-0 space-y-1 rounded-md border p-3">
+                <p class="text-sm font-semibold">${index + 1}. ${escapeHtml(step.title)}</p>
+                <p class="text-xs text-muted-foreground">${escapeHtml(step.where)}</p>
+                <pre class="dr-pre text-[11px]">${escapeHtml(step.commands.join('\n'))}</pre></li>`).join('');
+            return `<section id="migration-cutover" class="min-w-0 space-y-3">
+                <div class="min-w-0 space-y-2 rounded-lg border p-3 sm:p-4">
+                    <h4 class="text-sm font-semibold">A. Automaticky: prepnutie zálohovania a autostartu</h4>
+                    <p class="text-sm text-muted-foreground">Na STAROM hoste vypne backup timery a vzdump joby. Na NOVOM ich zapne a vráti autostart presunutým hosťom, ktoré ho mali.</p>
+                    ${cutover ? `<div class="rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-900"><strong>Prepnuté ${escapeHtml(formatDateTime(cutover.applied_at))}</strong> – timery: ${escapeHtml((cutover.timers || []).join(', ') || 'žiadne')}; joby: ${escapeHtml((cutover.jobs || []).join(', ') || 'žiadne')}; autostart: ${escapeHtml((cutover.autostart || []).join(', ') || 'žiadny')}.</div>`
+                        : `${blocked ? `<p class="text-sm text-destructive">${escapeHtml(blocked)}</p>` : ''}<button type="button" data-migration-action="cutover" class="min-h-11 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50" ${blocked ? 'disabled' : ''}>Prepnúť zálohovanie a autostart</button>`}
+                    ${job && job.status !== 'success' ? migrationJobPanel(job) : ''}
+                </div>
+                <div class="min-w-0 space-y-2 rounded-lg border border-amber-300 p-3 sm:p-4">
+                    <h4 class="text-sm font-semibold">B. Ručne z konzoly: presun appky a prevzatie IP</h4>
+                    <p class="text-sm text-muted-foreground">Appka beží na starom hoste, preto tieto kroky robíš ty – v tomto poradí. Po kroku 1 appka nebude dostupná, kým ju v kroku 4 nespustíš na novom hoste (rovnaká IP aj nastavenia). Odporúčanie: maj tento postup otvorený na mobile alebo v offline príručke.</p>
+                    <ol class="space-y-2">${steps}</ol>
+                </div>
+            </section>`;
+        }
+
+        function migrationStepKey() {
+            return `pbm-migration-step-${migrationData?.state?.method || 'none'}`;
+        }
+
+        function migrationVisibleSteps() {
+            const { state, steps = [] } = migrationData || {};
+            return steps.filter(step => (step.methods || []).includes(state?.method));
+        }
+
+        async function handleMigrationStepper(go, doneBtn, undo) {
+            if (!migrationData || migrationBusy) return;
+            const steps = migrationVisibleSteps();
+            if (go) {
+                storeStep(migrationStepKey(), go.dataset.stepperGo);
+                renderMigration();
+            }
+            if (doneBtn) {
+                const stepId = doneBtn.dataset.stepperDone;
+                if (stepId === 'cutover' && !migrationData.cutover_ready) {
+                    migrationMessage('Najprv over alebo vynechaj všetkých hostí.', true);
+                    return;
+                }
+                const index = steps.findIndex(step => step.id === stepId);
+                if (await saveMigration(`/steps/${encodeURIComponent(stepId)}`, { completed: true }) && steps[index + 1]) {
+                    storeStep(migrationStepKey(), steps[index + 1].id);
+                    renderMigration();
+                }
+            }
+            if (undo) await saveMigration(`/steps/${encodeURIComponent(undo.dataset.stepperUndo)}`, { completed: false });
+            document.getElementById('migration-current-step')?.scrollIntoView({ block: 'nearest' });
+        }
+
         function renderMigration() {
             if (!migrationData) return;
             refreshMigrationCompareTarget();
-            const { state, methods = [], steps = [], guests = [], inventory = {} } = migrationData;
+            const { state, methods = [], guests = [], inventory = {} } = migrationData;
             const container = document.getElementById('migration-body');
-            const openDetails = new Set(Array.from(container.querySelectorAll('details[open]')).map(el => el.dataset.migrationDetail));
+            const holder = document.getElementById('migration-compare-holder');
+            const compare = document.getElementById('migration-compare');
+            if (compare && container.contains(compare)) holder.appendChild(compare);
+            const openDetails = new Set(Array.from(container.querySelectorAll('details[open]')).map(el => el.dataset.migrationDetail).filter(Boolean));
+            // Po prvom uložení spôsobu zbaľ nastavenie aj poistky; ďalej rešpektuj, čo si používateľ otvoril.
+            const methodJustSet = Boolean(state.method) && !renderMigration.lastMethod;
+            renderMigration.lastMethod = state.method;
+            const setupOpen = !methodJustSet && (container.querySelector('#migration-setup') ? container.querySelector('#migration-setup').open : !state.method);
             const inputClass = 'mt-1 h-11 w-full min-w-0 rounded-md border border-input bg-background px-3 text-base md:text-sm';
             const buttonClass = 'min-h-11 rounded-md border border-input bg-background px-3 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50';
             const hostFields = (key, title) => `<fieldset class="min-w-0 space-y-2 rounded-lg border p-3"><legend class="px-1 text-sm font-semibold">${title}</legend>
                 <label class="block text-sm" for="migration-${key}-ip">IP adresa<input id="migration-${key}-ip" name="${key}-ip" value="${escapeHtml(state[key]?.ip || '')}" maxlength="45" autocomplete="off" class="${inputClass}"></label>
                 <label class="block text-sm" for="migration-${key}-hostname">Hostname<input id="migration-${key}-hostname" name="${key}-hostname" value="${escapeHtml(state[key]?.hostname || '')}" maxlength="253" autocomplete="off" class="${inputClass}"></label></fieldset>`;
             const sideBySide = state.method === 'side_by_side';
-            const stepCards = steps.filter(step => (step.methods || []).includes(state.method)).map((step, index) => {
-                const completed = Boolean(state.steps[step.id]?.completed);
-                const cutoverBlocked = step.id === 'cutover' && !completed && !migrationData.cutover_ready;
-                const stepId = `migration-step-${step.id}`;
-                return `<section class="min-w-0 rounded-lg border p-3 sm:p-4">
-                    <label for="${escapeHtml(stepId)}" class="flex min-h-11 cursor-pointer items-start gap-3 py-2">
-                        <input type="checkbox" id="${escapeHtml(stepId)}" data-migration-step="${escapeHtml(step.id)}" class="step-check mt-0.5" ${completed ? 'checked' : ''} ${cutoverBlocked ? 'disabled' : ''}>
-                        <span class="min-w-0"><span class="block text-sm font-semibold">${index + 1}. ${escapeHtml(step.title)}</span><span class="mt-1 block text-sm text-muted-foreground">${formatInline(step.goal)}</span></span>
-                    </label>
-                    ${cutoverBlocked ? '<p class="mb-2 text-sm text-destructive" role="status">Prepnutie označ až po overení alebo vedomom vynechaní všetkých hostí. Pri nedostupnom inventári najprv doplň a skontroluj zálohu.</p>' : ''}
-                    <details data-migration-detail="${escapeHtml(step.id)}" ${openDetails.has(step.id) ? 'open' : ''}><summary class="min-h-11 cursor-pointer py-2 text-sm font-medium">Úlohy, príkazy a varovania</summary><div class="min-w-0 space-y-3 pt-2 text-sm">
-                        <ul class="list-disc space-y-1 pl-5">${(step.tasks || []).map(task => `<li class="break-words">${formatInline(task)}</li>`).join('')}</ul>
-                        ${migrationCommands(step.commands, 'Príkazy na ručné vykonanie – cieľový host je uvedený v pokyne')}
-                        ${(step.warnings || []).map(warning => `<p class="rounded-md border border-amber-300 bg-amber-50 p-3 text-amber-900">${formatInline(warning)}</p>`).join('')}
-                        ${step.id === 'fresh-backups' ? `${renderRecoveryRisks(migrationData.risks)}<button type="button" data-migration-action="backup" class="${buttonClass}">Vytvoriť čerstvú zálohu hosta</button><p class="text-xs text-muted-foreground">Záloha hosta obsahuje konfiguráciu. Disky VM/LXC zálohuj osobitne cez vzdump.</p>` : ''}
-                        ${step.id === 'cutover' ? `<p>Zmeň SSH hosta v Nastaveniach appky, ulož nastavenia a vykonaj Test SSH. Pred testom skontroluj IP cieľového servera.</p><button type="button" data-migration-action="settings" class="${buttonClass}">Nastavenia a Test SSH</button>` : ''}
-                        ${step.wiki_slug ? `<button type="button" data-migration-action="wiki" data-slug="${escapeHtml(step.wiki_slug)}" class="${buttonClass}">Wiki k tomuto kroku</button>` : ''}
-                    </div></details>
-                </section>`;
-            }).join('');
-            const guestCards = guests.map(guest => {
-                const vmid = String(guest.vmid);
-                const statuses = [...new Set([guest.status, ...(guest.allowed_transitions || [])])];
-                return `<article class="min-w-0 space-y-3 rounded-lg border p-3 sm:p-4" data-migration-guest="${escapeHtml(vmid)}">
-                    <div class="flex flex-wrap items-center justify-between gap-2"><h4 class="min-w-0 break-words text-sm font-semibold">${escapeHtml(String(guest.type).toUpperCase())} ${escapeHtml(vmid)} · ${escapeHtml(guest.name || 'bez názvu')}</h4><span class="dr-flag ${guest.status === 'verified' ? 'readiness-READY' : 'dr-flag-warn'}">${escapeHtml(MIGRATION_GUEST_LABELS[guest.status] || guest.status)}</span></div>
-                    ${!guest.backed_up ? '<p class="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"><strong>Bez vzdump jobu.</strong> Pred presunom je nutný ručný vzdump.</p>' : ''}
-                    <p class="text-sm text-destructive">Hosť nesmie bežať na oboch serveroch naraz. Na starom hoste vypni onboot, zastav hosťa a over stav stopped pred aj po vzdump. Režim --mode stop môže pôvodne bežiaceho hosťa opäť spustiť; pred štartom na novom to ručne skontroluj.</p>
-                    <label class="block text-sm" for="migration-guest-status-${escapeHtml(vmid)}">Stav presunu<select id="migration-guest-status-${escapeHtml(vmid)}" data-migration-guest-status="${escapeHtml(vmid)}" class="${inputClass}">${statuses.map(status => `<option value="${escapeHtml(status)}" ${status === guest.status ? 'selected' : ''}>${escapeHtml(MIGRATION_GUEST_LABELS[status] || status)}</option>`).join('')}</select></label>
-                    <label class="block text-sm" for="migration-guest-note-${escapeHtml(vmid)}">Poznámka (bez hesiel)<textarea id="migration-guest-note-${escapeHtml(vmid)}" maxlength="2000" rows="2" class="mt-1 w-full min-w-0 rounded-md border border-input bg-background p-3 text-base md:text-sm">${escapeHtml(guest.note || '')}</textarea></label>
-                    <div class="flex flex-wrap items-center gap-2"><button type="button" data-migration-action="guest-note" data-vmid="${escapeHtml(vmid)}" class="${buttonClass}">Uložiť poznámku</button><span class="break-words text-xs text-muted-foreground">Zmena: ${escapeHtml(formatDateTime(guest.updated_at))}</span></div>
-                    <details data-migration-detail="guest-${escapeHtml(vmid)}" ${openDetails.has(`guest-${vmid}`) ? 'open' : ''}><summary class="min-h-11 cursor-pointer py-2 text-sm font-medium">Príkazy pre tohto hosťa</summary><div class="min-w-0 space-y-3 pt-2">${migrationCommands(guest.commands?.old_host, 'STARÝ HOST – vypnutie onboot a vzdump')}${migrationCommands(guest.commands?.new_host, 'NOVÝ HOST – obnova; pred štartom over zastavenie na starom')}</div></details>
-                </article>`;
-            }).join('');
-            container.innerHTML = `<div class="space-y-4">
-                <div class="flex flex-wrap items-start justify-between gap-3"><div class="min-w-0"><h2 class="text-lg font-semibold">Plánovaná migrácia na nový HW</h2><p class="text-sm text-muted-foreground">Starý server ešte žije. Sprievodca ukladá postup, príkazy vykonávaš ručne.</p></div><button type="button" data-migration-action="refresh" class="${buttonClass}">Obnoviť stav</button></div>
-                <div class="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900"><strong>Bezpečnostné poistky</strong><ul class="list-disc space-y-1 pl-5"><li>Nikdy dva zapnuté hosty s rovnakou IP, hostname alebo SSH identitou. Pri migrácii vedľa seba má nový host dočasnú IP, vlastný hostname a nové SSH kľúče.</li><li>Nikdy ten istý hosť bežiaci na oboch serveroch.</li><li>Vzdump joby a backup timery zapni iba na jednom hoste. Súbežné prune-backups môže mazať zálohy na NAS.</li><li>Kým starý host beží, neprenášaj celý config.db; konfiguráciu prenášaj selektívne.</li></ul></div>
-                <form id="migration-form" class="min-w-0 space-y-4 rounded-lg border p-3 sm:p-4">
-                    <fieldset class="space-y-2"><legend class="mb-2 text-sm font-semibold">1. Vyber spôsob migrácie</legend><div class="grid gap-2 md:grid-cols-2">${methods.map(method => `<label class="flex min-w-0 cursor-pointer items-start gap-3 rounded-lg border p-3 has-[:checked]:border-primary has-[:checked]:bg-muted/50"><input type="radio" name="migration-method" value="${escapeHtml(method.id)}" required class="mt-1 h-5 w-5 shrink-0" ${state.method === method.id ? 'checked' : ''}><span class="min-w-0"><span class="block text-sm font-semibold">${escapeHtml(method.title)}</span><span class="mt-1 block text-sm text-muted-foreground">${escapeHtml(method.description)}</span></span></label>`).join('')}</div></fieldset>
+            const methodTitle = methods.find(method => method.id === state.method)?.title || '';
+            const hostLabel = host => escapeHtml([host?.hostname, host?.ip].filter(Boolean).join(' · ') || 'nezadané');
+
+            const form = `<form id="migration-form" class="min-w-0 space-y-4 ${state.method ? 'pt-3' : ''}">
+                    <fieldset class="space-y-2"><legend class="mb-2 text-sm font-semibold">Spôsob migrácie</legend><div class="grid gap-2 md:grid-cols-2">${methods.map(method => `<label class="flex min-w-0 cursor-pointer items-start gap-3 rounded-lg border p-3 has-[:checked]:border-primary has-[:checked]:bg-muted/50"><input type="radio" name="migration-method" value="${escapeHtml(method.id)}" required class="mt-1 h-5 w-5 shrink-0" ${state.method === method.id ? 'checked' : ''}><span class="min-w-0"><span class="block text-sm font-semibold">${escapeHtml(method.title)}</span><span class="mt-1 block text-sm text-muted-foreground">${escapeHtml(method.description)}</span></span></label>`).join('')}</div></fieldset>
                     <div class="grid min-w-0 gap-3 md:grid-cols-2">${hostFields('old_host', 'Starý host')}${hostFields('new_host', 'Nový host (pri súbehu dočasné údaje)')}</div>
                     <div class="flex flex-wrap gap-2"><button type="submit" id="migration-save-btn" class="${buttonClass}">Uložiť spôsob a hosty</button><button type="button" data-migration-action="wiki" data-slug="hw-migration" class="${buttonClass}">Wiki: migrácia a pokročilé spôsoby</button></div>
                     <p class="text-xs text-muted-foreground">Cluster a qm remote-migrate sú popísané vo wiki. Zmena spôsobu počas migrácie vyžaduje najprv reset.</p>
-                </form>
-                ${state.method ? `<p class="break-words text-xs text-muted-foreground">Začiatok: ${escapeHtml(formatDateTime(state.started_at))} · Posledná zmena: ${escapeHtml(formatDateTime(state.updated_at))}${state.finished_at ? ` · Dokončené: ${escapeHtml(formatDateTime(state.finished_at))}` : ''}</p><div class="space-y-3" id="migration-steps">${stepCards}</div>` : '<p class="rounded-lg border p-3 text-sm text-muted-foreground">Vyber a ulož spôsob; zobrazia sa príslušné kroky migrácie.</p>'}
-                ${sideBySide ? `<section class="min-w-0 space-y-3" id="migration-guests"><h3 class="text-base font-semibold">Hostia na presun</h3><p class="break-words text-xs text-muted-foreground">${inventory.available ? `Inventár z archívu: ${escapeHtml(inventory.archive?.filename || '')}` : `Inventár nie je dostupný: ${escapeHtml(inventory.error || 'Vytvor čerstvú zálohu hosta.')}`}</p>${guestCards || '<p class="rounded-lg border p-3 text-sm text-muted-foreground">V archíve sa nenašli hostia. Pred prepnutím ručne over zoznam VM/LXC a čerstvosť inventára.</p>'}</section>` : ''}
+                </form>`;
+            const setup = state.method
+                ? `<details id="migration-setup" class="rounded-lg border p-3 sm:p-4" ${setupOpen ? 'open' : ''}>
+                        <summary class="min-h-11 cursor-pointer select-none py-1 text-sm"><span class="font-semibold">${escapeHtml(methodTitle)}</span><span class="block break-words text-muted-foreground">Starý: ${hostLabel(state.old_host)} → nový: ${hostLabel(state.new_host)} · Upraviť</span></summary>
+                        ${form}
+                   </details>`
+                : `<div class="rounded-lg border p-3 sm:p-4"><p class="mb-3 text-sm font-semibold">Krok 0: Vyber spôsob a zadaj hosty</p>${form}</div>`;
+
+            const guestCards = guests.map((guest, index) => {
+                const vmid = String(guest.vmid);
+                const statuses = [...new Set([guest.status, ...(guest.allowed_transitions || [])])];
+                const firstOpen = guests.findIndex(item => !['verified', 'skipped'].includes(item.status));
+                const open = openDetails.has(`guest-${vmid}`) || (!openDetails.size && index === firstOpen);
+                return `<details class="min-w-0 rounded-lg border" data-migration-guest="${escapeHtml(vmid)}" data-migration-detail="guest-${escapeHtml(vmid)}" ${open ? 'open' : ''}>
+                    <summary class="flex min-h-11 cursor-pointer flex-wrap items-center justify-between gap-2 px-3 py-2"><span class="min-w-0 break-words text-sm font-semibold">${escapeHtml(String(guest.type).toUpperCase())} ${escapeHtml(vmid)} · ${escapeHtml(guest.name || 'bez názvu')}</span><span class="flex flex-wrap gap-1">${!guest.backed_up ? '<span class="dr-flag dr-flag-warn">Bez vzdump jobu</span>' : ''}<span class="dr-flag ${guest.status === 'verified' ? 'readiness-READY' : (guest.status === 'skipped' ? 'dr-flag-muted' : 'dr-flag-warn')}">${escapeHtml(MIGRATION_GUEST_LABELS[guest.status] || guest.status)}</span></span></summary>
+                    <div class="min-w-0 space-y-3 border-t p-3 sm:p-4">
+                        ${!guest.backed_up ? '<p class="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"><strong>Bez vzdump jobu.</strong> Pred presunom je nutný ručný vzdump.</p>' : ''}
+                        ${renderMigrationGuestActions(guest)}
+                        <p class="text-sm text-destructive">Hosť nesmie bežať na oboch serveroch naraz. Na starom hoste vypni onboot, zastav hosťa a over stav stopped pred aj po vzdump. Režim --mode stop môže pôvodne bežiaceho hosťa opäť spustiť; pred štartom na novom to ručne skontroluj.</p>
+                        <label class="block text-sm" for="migration-guest-status-${escapeHtml(vmid)}">Stav presunu<select id="migration-guest-status-${escapeHtml(vmid)}" data-migration-guest-status="${escapeHtml(vmid)}" class="${inputClass}">${statuses.map(status => `<option value="${escapeHtml(status)}" ${status === guest.status ? 'selected' : ''}>${escapeHtml(MIGRATION_GUEST_LABELS[status] || status)}</option>`).join('')}</select></label>
+                        <label class="block text-sm" for="migration-guest-note-${escapeHtml(vmid)}">Poznámka (bez hesiel)<textarea id="migration-guest-note-${escapeHtml(vmid)}" maxlength="2000" rows="2" class="mt-1 w-full min-w-0 rounded-md border border-input bg-background p-3 text-base md:text-sm">${escapeHtml(guest.note || '')}</textarea></label>
+                        <div class="flex flex-wrap items-center gap-2"><button type="button" data-migration-action="guest-note" data-vmid="${escapeHtml(vmid)}" class="${buttonClass}">Uložiť poznámku</button><span class="break-words text-xs text-muted-foreground">Zmena: ${escapeHtml(formatDateTime(guest.updated_at))}</span></div>
+                        <details data-migration-detail="guestcmd-${escapeHtml(vmid)}" ${openDetails.has(`guestcmd-${vmid}`) ? 'open' : ''}><summary class="min-h-11 cursor-pointer py-2 text-sm font-medium">Príkazy pre tohto hosťa</summary><div class="min-w-0 space-y-3 pt-2">${migrationCommands(guest.commands?.old_host, 'STARÝ HOST – vypnutie onboot a vzdump')}${migrationCommands(guest.commands?.new_host, 'NOVÝ HOST – obnova; pred štartom over zastavenie na starom')}</div></details>
+                    </div>
+                </details>`;
+            }).join('');
+            const doneGuests = guests.filter(guest => ['verified', 'skipped'].includes(guest.status)).length;
+            const guestsSection = sideBySide ? `<section class="min-w-0 space-y-3" id="migration-guests">
+                    <div class="flex flex-wrap items-baseline justify-between gap-2"><h4 class="text-sm font-semibold">Hostia na presun</h4><span class="text-xs text-muted-foreground">${doneGuests} z ${guests.length} overených alebo vynechaných</span></div>
+                    <p class="break-words text-xs text-muted-foreground">${inventory.available ? `Inventár z archívu: ${escapeHtml(inventory.archive?.filename || '')}` : `Inventár nie je dostupný: ${escapeHtml(inventory.error || 'Vytvor čerstvú zálohu hosta.')}`}</p>
+                    ${guestCards || '<p class="rounded-lg border p-3 text-sm text-muted-foreground">V archíve sa nenašli hostia. Pred prepnutím ručne over zoznam VM/LXC a čerstvosť inventára.</p>'}
+                </section>` : '';
+
+            let wizard = '<p class="rounded-lg border p-3 text-sm text-muted-foreground">Vyber a ulož spôsob; zobrazia sa príslušné kroky migrácie.</p>';
+            if (state.method) {
+                const steps = migrationVisibleSteps();
+                const isDone = step => Boolean(state.steps[step.id]?.completed);
+                const currentId = readStoredStep(migrationStepKey(), steps, isDone);
+                const currentIndex = Math.max(0, steps.findIndex(step => step.id === currentId));
+                const step = steps[currentIndex];
+                const cutoverBlocked = step.id === 'cutover' && !isDone(step) && !migrationData.cutover_ready;
+                const checkbox = item => {
+                    const blocked = item.id === 'cutover' && !isDone(item) && !migrationData.cutover_ready;
+                    return `<input type="checkbox" id="migration-step-${escapeHtml(item.id)}" data-migration-step="${escapeHtml(item.id)}" class="step-check" aria-label="${escapeHtml(item.title)} hotový" ${isDone(item) ? 'checked' : ''} ${blocked ? 'disabled' : ''}>`;
+                };
+                const extras = {
+                    'new-host': sideBySide ? renderMigrationTarget() : '',
+                    'selective-config': sideBySide ? renderMigrationTransfer() : '',
+                    'prepare': sideBySide ? '<div id="migration-compare-slot"></div>' : '',
+                    'fresh-backups': `${renderRecoveryRisks(migrationData.risks)}<button type="button" data-migration-action="backup" class="${buttonClass}">Vytvoriť čerstvú zálohu hosta</button><p class="text-xs text-muted-foreground">Záloha hosta obsahuje konfiguráciu. Disky VM/LXC zálohuj osobitne cez vzdump.</p>`,
+                    'move-guests': `${sideBySide ? renderMigrationMoveSettings() : ''}${guestsSection}`,
+                    'cutover': sideBySide ? renderMigrationCutover() : `<p class="text-sm">Zmeň SSH hosta v Nastaveniach appky, ulož nastavenia a vykonaj Test SSH. Pred testom skontroluj IP cieľového servera.</p><button type="button" data-migration-action="settings" class="${buttonClass}">Nastavenia a Test SSH</button>`,
+                    'verify-rollback': sideBySide ? '<div id="migration-compare-slot"></div>' : '',
+                };
+                wizard = `
+                    <p class="break-words text-xs text-muted-foreground">Začiatok: ${escapeHtml(formatDateTime(state.started_at))} · Posledná zmena: ${escapeHtml(formatDateTime(state.updated_at))}${state.finished_at ? ` · Dokončené: ${escapeHtml(formatDateTime(state.finished_at))}` : ''}</p>
+                    ${stepperHeader(steps, currentIndex, steps.filter(isDone).length, 'Migrácia')}
+                    <div id="migration-steps">${stepperNav('migration', steps, step.id, isDone, checkbox)}</div>
+                    <section id="migration-current-step" data-step-id="${escapeHtml(step.id)}" class="min-w-0 space-y-3 rounded-lg border p-3 sm:p-4 ${isDone(step) ? 'border-green-200' : ''}">
+                        <div class="space-y-1">
+                            <div class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Krok ${currentIndex + 1}${isDone(step) ? ' · hotový' : ''}</div>
+                            <h3 class="text-base font-semibold">${escapeHtml(step.title)}</h3>
+                            <p class="text-sm text-muted-foreground">${formatInline(step.goal)}</p>
+                        </div>
+                        <ul class="list-disc space-y-1 pl-5 text-sm">${(step.tasks || []).map(task => `<li class="break-words">${formatInline(task)}</li>`).join('')}</ul>
+                        ${migrationCommands(step.commands, 'Príkazy na ručné vykonanie – cieľový host je uvedený v pokyne')}
+                        ${(step.warnings || []).map(warning => `<p class="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">${formatInline(warning)}</p>`).join('')}
+                        ${extras[step.id] || ''}
+                        ${step.wiki_slug ? `<button type="button" data-migration-action="wiki" data-slug="${escapeHtml(step.wiki_slug)}" class="${buttonClass}">Wiki k tomuto kroku</button>` : ''}
+                        ${stepperFooter('migration', steps, currentIndex, isDone(step), cutoverBlocked ? 'Prepnutie označ až po overení alebo vedomom vynechaní všetkých hostí. Pri nedostupnom inventári najprv doplň a skontroluj zálohu.' : '')}
+                    </section>`;
+            }
+
+            container.innerHTML = `<div class="space-y-4">
+                <div class="flex flex-wrap items-start justify-between gap-3"><div class="min-w-0"><h2 class="text-lg font-semibold">Plánovaná migrácia na nový HW</h2><p class="text-sm text-muted-foreground">Starý server ešte žije. Sprievodca ukladá postup, príkazy vykonávaš ručne.</p></div><button type="button" data-migration-action="refresh" class="${buttonClass}">Obnoviť stav</button></div>
+                <details class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900" data-migration-detail="safety" ${!state.method || (!methodJustSet && openDetails.has('safety')) ? 'open' : ''}><summary class="min-h-9 cursor-pointer font-semibold">Bezpečnostné poistky</summary><ul class="mt-2 list-disc space-y-1 pl-5"><li>Nikdy dva zapnuté hosty s rovnakou IP, hostname alebo SSH identitou. Pri migrácii vedľa seba má nový host dočasnú IP, vlastný hostname a nové SSH kľúče.</li><li>Nikdy ten istý hosť bežiaci na oboch serveroch.</li><li>Vzdump joby a backup timery zapni iba na jednom hoste. Súbežné prune-backups môže mazať zálohy na NAS.</li><li>Kým starý host beží, neprenášaj celý config.db; konfiguráciu prenášaj selektívne.</li></ul></details>
+                ${renderMigrationJobBanner()}
+                ${setup}
+                ${wizard}
                 ${state.method ? `<div class="flex flex-wrap items-center gap-3 border-t pt-4"><button type="button" id="migration-reset-btn" data-migration-action="reset" class="${buttonClass} text-destructive">Resetovať migráciu</button><span class="text-xs text-muted-foreground">Reset vymaže iba uložený postup sprievodcu.</span></div>` : ''}
             </div>`;
+            const slot = container.querySelector('#migration-compare-slot');
+            if (slot && compare) slot.appendChild(compare);
+            scheduleMigrationJobPolling();
         }
 
         document.getElementById('migration-body').addEventListener('submit', event => {
+            if (event.target.id === 'migration-target-form') {
+                event.preventDefault();
+                const form = event.target;
+                const password = form.querySelector('#migration-target-password');
+                const body = { host: form.querySelector('#migration-target-host').value.trim(), port: parseInt(form.querySelector('#migration-target-port').value, 10) || 22 };
+                if (password.value) body.password = password.value;
+                password.value = '';
+                migrationTargetRequest('POST', '/target', body);
+                return;
+            }
             if (event.target.id !== 'migration-form') return;
             event.preventDefault();
             const form = new FormData(event.target);
@@ -3071,6 +3459,49 @@
             if (!button || migrationBusy) return;
             switch (button.dataset.migrationAction) {
                 case 'refresh': loadMigration(); break;
+                case 'target-check': migrationTargetRequest('POST', '/target/check', {}); break;
+                case 'config-db': {
+                    const typed = window.prompt('Prenos config.db nahradí celú PVE konfiguráciu NOVÉHO hosta konfiguráciou starého (1:1). Starý host sa nemení. Pre potvrdenie napíš KOPIA:');
+                    if (typed !== null) migrationOperation('/transfer/config-db', { confirm: typed.trim() });
+                    break;
+                }
+                case 'files-diff': migrationOperation('/transfer/files-diff', { paths: selectedMigrationFiles() }); break;
+                case 'files-apply': {
+                    const ack = document.getElementById('migration-files-ack');
+                    if (!ack?.checked) { migrationMessage('Najprv potvrď, že si skontroloval rozdiely.', true); break; }
+                    migrationOperation('/transfer/files-apply', { paths: selectedMigrationFiles(), confirm: true });
+                    break;
+                }
+                case 'network': {
+                    const mapping = {};
+                    document.querySelectorAll('[data-nic-map]').forEach(select => { mapping[select.dataset.nicMap] = select.value; });
+                    migrationOperation('/transfer/network', { mapping });
+                    break;
+                }
+                case 'guest-move': {
+                    const vmid = button.dataset.vmid;
+                    if (window.confirm(`Presunúť ${button.dataset.label}? Na STAROM hoste sa vypne autostart, hosť sa vypne a zálohuje; na NOVOM sa obnoví (ostane vypnutý).`)) {
+                        migrationOperation(`/guests/${encodeURIComponent(vmid)}/move`, {
+                            dump_dir: document.getElementById('migration-dump-dir').value.trim(),
+                            target_storage: document.getElementById('migration-target-storage').value, confirm: true
+                        });
+                    }
+                    break;
+                }
+                case 'guest-start': migrationOperation(`/guests/${encodeURIComponent(button.dataset.vmid)}/start`, {}); break;
+                case 'guest-rollback':
+                    if (window.confirm(`Vrátiť ${button.dataset.label} na starý host? Na novom sa vypne, na starom sa spustí.`)) {
+                        migrationOperation(`/guests/${encodeURIComponent(button.dataset.vmid)}/rollback`, { confirm: true });
+                    }
+                    break;
+                case 'cutover': {
+                    const typed = window.prompt('Prepnutie: na STAROM hoste sa vypnú backup timery a joby, na NOVOM sa zapnú a obnoví sa autostart hostí. Pre potvrdenie napíš PREPNUT:');
+                    if (typed !== null) migrationOperation('/cutover', { confirm: typed.trim() });
+                    break;
+                }
+                case 'target-forget':
+                    if (window.confirm('Zabudnúť pripojenie nového hosta? Uložené root heslo sa zmaže.')) migrationTargetRequest('DELETE', '/target');
+                    break;
                 case 'wiki': openWikiArticle(button.dataset.slug); break;
                 case 'backup':
                     button.disabled = true;
@@ -3100,22 +3531,34 @@
                     <span class="min-w-0"><span class="font-medium">${escapeHtml(issue.name)}</span> <span class="font-mono text-xs break-all">${escapeHtml(issue.path)}</span> – ${escapeHtml(issue.message)}</span>
                 </li>
             `).join('');
-            const categoryCards = (recoveryOverview.categories || []).map(category => `
-                <button type="button" onclick="showRecoverySection('items'); document.getElementById('rgroup-${escapeHtml(category.id)}')?.scrollIntoView({ behavior: 'smooth', block: 'start' })" class="flex min-w-0 flex-col items-start gap-1.5 rounded-lg border p-3 text-left hover:bg-accent/50">
-                    <span class="dr-badge ${RESTORE_CATEGORY_CLASSES[category.id] || ''}">${escapeHtml(category.badge)}</span>
-                    <span class="text-sm font-medium">${escapeHtml(category.label)}</span>
-                    <span class="text-sm"><span class="font-semibold">${category.backed_up}/${category.total}</span> <span class="text-muted-foreground">aktuálne zálohované</span></span>
-                    <span class="text-xs text-muted-foreground">${escapeHtml(category.description)}</span>
-                </button>
-            `).join('');
+            const steps = recoveryOverview.checklist || [];
+            const progress = recoveryChecklistProgress();
+            const doneSteps = steps.filter(step => progress[step.id]?.completed).length;
+            const migrationHint = migrationData?.state?.method
+                ? `Rozpracovaná: ${escapeHtml(migrationData.methods?.find(method => method.id === migrationData.state.method)?.title || migrationData.state.method)}`
+                : 'Starý server ešte beží';
+            const choice = (title, text, meta, action, primary = false) => `
+                <button type="button" onclick="${action}" class="flex min-w-0 flex-col items-start gap-1.5 rounded-xl border p-4 text-left transition-colors ${primary ? 'border-primary/60 bg-muted/40' : ''} hover:bg-accent/50">
+                    <span class="text-base font-semibold">${title}</span>
+                    <span class="text-sm text-muted-foreground">${text}</span>
+                    <span class="mt-1 text-xs font-medium">${meta}</span>
+                </button>`;
 
             container.innerHTML = `
+                <div class="space-y-2">
+                    <h2 class="text-base font-semibold">Čo chceš urobiť?</h2>
+                    <div class="grid gap-3 md:grid-cols-3" id="recovery-chooser">
+                        ${choice('Server zomrel – obnova', 'Nový Proxmox, sieť, prístup k NAS, PVE konfigurácia, hostia. Krok za krokom.', `Postup: ${doneSteps} z ${steps.length} krokov →`, "showRecoverySection('checklist')", doneSteps > 0)}
+                        ${choice('Plánovaná migrácia na nový HW', 'Presun disku alebo nový host vedľa starého, hostia po jednom, prepnutie a cesta späť.', `${migrationHint} →`, "showRecoverySection('migration')", Boolean(migrationData?.state?.method))}
+                        ${choice('Obnoviť súbory na tom istom serveri', 'Vybrané konfiguračné cesty z archívu – pripraviť na kontrolu alebo aplikovať.', 'Obnova súborov →', "showTab('restore')")}
+                    </div>
+                </div>
+
                 <div class="rounded-xl border p-4 readiness-${readiness.status}">
                     <div class="flex flex-wrap items-start justify-between gap-3">
                         <div class="min-w-0">
-                            <div class="text-xs font-semibold uppercase tracking-wide">New HW recovery readiness</div>
-                            <div class="text-2xl font-bold leading-tight">${escapeHtml(readiness.status)}</div>
-                            <div class="text-sm">${escapeHtml(readiness.label)}</div>
+                            <div class="text-xs font-semibold uppercase tracking-wide">Pripravenosť na obnovu</div>
+                            <div class="text-xl font-bold leading-tight">${escapeHtml(readiness.status)} <span class="text-sm font-medium">· ${escapeHtml(readiness.label)}</span></div>
                         </div>
                         <div class="text-sm sm:text-right">
                             <div><span class="font-semibold">REQUIRED ${readiness.required_ok}/${readiness.required_total}</span> aktuálne mimo hosta</div>
@@ -3123,7 +3566,7 @@
                         </div>
                     </div>
                     ${issues ? `<ul class="mt-3 space-y-1 text-sm">${issues}</ul>` : ''}
-                    <details class="mt-3 text-sm">
+                    <details class="mt-2 text-sm">
                         <summary class="cursor-pointer font-medium">Ako sa stav počíta</summary>
                         <ul class="mt-2 list-disc space-y-1 pl-5">${(readiness.rules || []).map(rule => `<li>${escapeHtml(rule)}</li>`).join('')}</ul>
                     </details>
@@ -3134,32 +3577,20 @@
                 <div class="flex flex-col gap-3 rounded-lg border p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
                     <div class="min-w-0">
                         <div class="font-semibold">Offline príručka obnovy</div>
-                        <p class="text-muted-foreground">Jeden HTML súbor s postupom od A po Z, hodnotami tvojho hosta (sieť, VLAN, NAS, joby, hostia), wiki a checklistom. Ulož si ho na PC – funguje aj keď server ani táto appka nebežia.</p>
+                        <p class="text-muted-foreground">Jeden HTML súbor s postupom od A po Z a hodnotami tvojho hosta. Ulož si ho na PC – funguje aj keď server ani táto appka nebežia.</p>
                     </div>
                     <a href="/api/recovery/handbook" download class="inline-flex h-9 shrink-0 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90">Stiahnuť offline príručku</a>
                 </div>
 
-                <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">${categoryCards}</div>
-
-                <div class="grid gap-3 md:grid-cols-2">
-                    <div class="space-y-2 rounded-lg border p-4 text-sm">
-                        <div class="font-semibold">Čo aplikácia obnovuje a čo nie</div>
-                        <ul class="list-disc space-y-1 pl-5 text-muted-foreground">
-                            <li>Nič sa neobnovuje samo – vyberáš konkrétne cesty a potvrdzuješ textom OBNOVIT.</li>
-                            <li>Režim „Iba pripraviť na kontrolu“ rozbalí súbory do <code>/root</code> bez zásahu do systému.</li>
-                            <li>/etc/pve, config.db, passwd, group, shadow a /etc/apt sa nikdy priamo neprepisujú.</li>
-                            <li>REVIEW / SELECTIVE / REFERENCE položky vyžadujú pred aplikovaním potvrdenie kontroly.</li>
-                        </ul>
-                    </div>
-                    <div class="space-y-2 rounded-lg border p-4 text-sm">
-                        <div class="font-semibold">Pôvodný server zomrel?</div>
-                        <p class="text-muted-foreground">Choď krok po kroku: čistá inštalácia → minimálna sieť → prístup k NAS → porovnanie HW → PVE konfigurácia → selektívne veci → VM/LXC → kontrola.</p>
-                        <div class="flex flex-wrap gap-2 pt-1">
-                            <button type="button" onclick="showRecoverySection('checklist')" class="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90">Začať postup obnovy</button>
-                            <button type="button" onclick="openWikiArticle('new-hardware')" class="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 text-sm font-medium hover:bg-accent">Wiki: obnova na novom HW</button>
-                        </div>
-                    </div>
-                </div>
+                <details class="rounded-lg border p-4 text-sm">
+                    <summary class="cursor-pointer font-semibold">Čo aplikácia obnovuje a čo nie</summary>
+                    <ul class="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
+                        <li>Nič sa neobnovuje samo – vyberáš konkrétne cesty a potvrdzuješ textom OBNOVIT.</li>
+                        <li>Režim „Iba pripraviť na kontrolu“ rozbalí súbory do <code>/root</code> bez zásahu do systému.</li>
+                        <li>/etc/pve, config.db, passwd, group, shadow a /etc/apt sa nikdy priamo neprepisujú.</li>
+                        <li>REVIEW / SELECTIVE / REFERENCE položky vyžadujú pred aplikovaním potvrdenie kontroly.</li>
+                    </ul>
+                </details>
             `;
         }
 
@@ -3198,7 +3629,14 @@
             const container = document.getElementById('rsec-items');
             if (!container || !recoveryOverview) return;
             const items = recoveryOverview.items || [];
-            container.innerHTML = (recoveryOverview.categories || []).map(category => {
+            const summaryCards = (recoveryOverview.categories || []).map(category => `
+                <button type="button" onclick="document.getElementById('rgroup-${escapeHtml(category.id)}')?.scrollIntoView({ behavior: 'smooth', block: 'start' })" class="flex min-w-0 flex-col items-start gap-1 rounded-lg border p-3 text-left hover:bg-accent/50">
+                    <span class="dr-badge ${RESTORE_CATEGORY_CLASSES[category.id] || ''}">${escapeHtml(category.badge)}</span>
+                    <span class="text-sm"><span class="font-semibold">${category.backed_up}/${category.total}</span> <span class="text-muted-foreground">aktuálne zálohované</span></span>
+                </button>
+            `).join('');
+            container.innerHTML = `<p class="text-sm text-muted-foreground">Čo appka zálohuje, prečo a ako bezpečné je to obnoviť na nový HW. Detail každej položky vysvetľuje obnovu na rovnakom aj inom HW.</p>
+                <div class="grid gap-2 sm:grid-cols-3 xl:grid-cols-5">${summaryCards}</div>` + (recoveryOverview.categories || []).map(category => {
                 const inCategory = items.filter(item => item.recovery?.restore_category === category.id);
                 if (!inCategory.length) return '';
                 const cards = inCategory.map(item => {
@@ -3247,103 +3685,227 @@
             `;
         }
 
-        function loadChecklistState() {
+        // --- Spoločný sprievodca krok za krokom (obnova po havárii aj migrácia) ---
+        const stepperNavOpen = {};
+
+        function readStoredStep(key, steps, isDone) {
+            let stored = '';
+            try { stored = localStorage.getItem(key) || ''; } catch (error) { stored = ''; }
+            if (steps.some(step => step.id === stored)) return stored;
+            return (steps.find(step => !isDone(step)) || steps[steps.length - 1] || {}).id || '';
+        }
+
+        function storeStep(key, stepId) {
+            try { localStorage.setItem(key, stepId); } catch (error) { /* iba UI pohodlie */ }
+        }
+
+        function stepperHeader(steps, currentIndex, done, label) {
+            const percent = steps.length ? Math.round((done / steps.length) * 100) : 0;
+            return `
+                <div class="space-y-2">
+                    <div class="flex flex-wrap items-baseline justify-between gap-2">
+                        <span class="text-sm font-semibold">${escapeHtml(label)} – krok ${currentIndex + 1} z ${steps.length}</span>
+                        <span class="text-xs text-muted-foreground">${done} z ${steps.length} hotových</span>
+                    </div>
+                    <div class="relative h-2 w-full overflow-hidden rounded-full bg-secondary" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}">
+                        <div class="h-full bg-primary transition-all" style="width:${percent}%"></div>
+                    </div>
+                </div>`;
+        }
+
+        // Zoznam krokov: checkbox = potvrdenie kroku, názov = prejdi na krok.
+        function stepperNav(kind, steps, currentId, isDone, checkboxFor) {
+            const open = stepperNavOpen[kind] ?? window.matchMedia('(min-width: 768px)').matches;
+            const done = steps.filter(isDone).length;
+            const rows = steps.map((step, index) => {
+                const current = step.id === currentId;
+                return `<li class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1 ${current ? 'bg-muted' : ''}">
+                    ${checkboxFor(step, index)}
+                    <button type="button" data-stepper-go="${escapeHtml(step.id)}" data-stepper="${kind}" class="min-h-9 min-w-0 flex-1 text-left text-sm ${current ? 'font-semibold' : ''} ${isDone(step) ? 'text-muted-foreground' : ''}" ${current ? 'aria-current="step"' : ''}>
+                        <span class="break-words">${index + 1}. ${escapeHtml(step.title)}</span>
+                    </button>
+                </li>`;
+            }).join('');
+            return `<details class="rounded-lg border" data-stepper-nav="${kind}" ${open ? 'open' : ''}>
+                <summary class="min-h-11 cursor-pointer select-none px-3 py-2.5 text-sm font-medium">Všetky kroky (${done}/${steps.length})</summary>
+                <ol class="space-y-0.5 px-1 pb-2">${rows}</ol>
+            </details>`;
+        }
+
+        function stepperFooter(kind, steps, currentIndex, currentDone, blockedMessage = '') {
+            const prev = steps[currentIndex - 1];
+            const next = steps[currentIndex + 1];
+            const id = escapeHtml(steps[currentIndex].id);
+            const button = 'inline-flex min-h-11 items-center justify-center rounded-md px-4 py-2 text-sm font-medium';
+            const primary = currentDone
+                ? (next ? `<button type="button" data-stepper-go="${escapeHtml(next.id)}" data-stepper="${kind}" class="${button} bg-primary text-primary-foreground hover:bg-primary/90">Ďalší krok →</button>` : '')
+                : `<button type="button" data-stepper-done="${id}" data-stepper="${kind}" class="${button} bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50" ${blockedMessage ? 'disabled' : ''}>${next ? 'Hotovo, ďalší krok →' : 'Hotovo – dokončiť'}</button>`;
+            return `<div class="space-y-2 border-t pt-3">
+                ${blockedMessage ? `<p class="text-sm text-destructive" role="status">${escapeHtml(blockedMessage)}</p>` : ''}
+                <div class="flex flex-wrap items-center gap-2">
+                    ${prev ? `<button type="button" data-stepper-go="${escapeHtml(prev.id)}" data-stepper="${kind}" class="${button} border border-input bg-background hover:bg-accent">← Späť</button>` : ''}
+                    ${primary}
+                    ${currentDone ? `<button type="button" data-stepper-undo="${id}" data-stepper="${kind}" class="${button} border border-input bg-background text-muted-foreground hover:bg-accent">Zrušiť označenie</button>` : (next ? `<button type="button" data-stepper-go="${escapeHtml(next.id)}" data-stepper="${kind}" class="${button} text-muted-foreground hover:bg-accent">Preskočiť</button>` : '')}
+                </div>
+            </div>`;
+        }
+
+        // --- Obnova po havárii: postup uložený na serveri ---
+        let recoveryProgressBusy = false;
+        const DR_STEP_KEY = 'pbm-dr-current-step';
+
+        function recoveryChecklistProgress() {
+            return recoveryOverview?.checklist_progress?.steps || {};
+        }
+
+        async function postRecoveryProgress(path, payload) {
+            const response = await fetch(`/api/recovery/checklist${path}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.success) throw new Error(data.error || 'Postup obnovy sa nepodarilo uložiť');
+            if (recoveryOverview) recoveryOverview.checklist_progress = data.progress;
+            return data;
+        }
+
+        async function setRecoveryStep(stepId, completed, nextId = '') {
+            if (recoveryProgressBusy) return;
+            recoveryProgressBusy = true;
             try {
-                return JSON.parse(localStorage.getItem(CHECKLIST_STORAGE_KEY) || '{}') || {};
+                await postRecoveryProgress(`/steps/${encodeURIComponent(stepId)}`, { completed });
+                if (nextId) storeStep(DR_STEP_KEY, nextId);
             } catch (error) {
-                return {};
+                showToast(error.message, 'error');
+            } finally {
+                recoveryProgressBusy = false;
+                renderRecoveryChecklist();
+                renderRecoveryOverview();
             }
         }
 
-        function saveChecklistState(state) {
-            try {
-                localStorage.setItem(CHECKLIST_STORAGE_KEY, JSON.stringify(state));
-            } catch (error) {
-                // localStorage môže byť zablokovaný; postup potom platí iba pre aktuálnu stránku.
+        // Jednorazový prenos starého postupu z prehliadača (localStorage) na server.
+        async function migrateLegacyChecklist() {
+            let legacy = {};
+            try { legacy = JSON.parse(localStorage.getItem(CHECKLIST_STORAGE_KEY) || '{}') || {}; } catch (error) { return; }
+            const ids = Object.keys(legacy).filter(id => legacy[id] && (recoveryOverview?.checklist || []).some(step => step.id === id));
+            if (!ids.length || Object.keys(recoveryChecklistProgress()).length) {
+                try { localStorage.removeItem(CHECKLIST_STORAGE_KEY); } catch (error) { /* nič */ }
+                return;
             }
-        }
-
-        function toggleChecklistStep(stepId, checked) {
-            const state = loadChecklistState();
-            if (checked) state[stepId] = true; else delete state[stepId];
-            saveChecklistState(state);
-            renderRecoveryChecklist();
+            try {
+                for (const id of ids) await postRecoveryProgress(`/steps/${encodeURIComponent(id)}`, { completed: true });
+                localStorage.removeItem(CHECKLIST_STORAGE_KEY);
+            } catch (error) {
+                console.error('Legacy checklist migration failed:', error);
+            }
         }
 
         async function resetChecklist() {
             const confirmed = await showConfirmModal({
                 title: 'Resetovať postup obnovy',
-                message: 'Odznačia sa všetky kroky checklistu v tomto prehliadači.',
+                message: 'Odznačia sa všetky kroky postupu obnovy (uložené na serveri).',
                 confirmText: 'Resetovať'
             });
             if (!confirmed) return;
-            saveChecklistState({});
+            try {
+                await postRecoveryProgress('/reset', {});
+                storeStep(DR_STEP_KEY, '');
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
             renderRecoveryChecklist();
+            renderRecoveryOverview();
         }
+
+        const DR_STEP_ACTIONS = {
+            'load-host-backup': [['Snapshot pôvodného hosta', "showRecoverySection('snapshot')"], ['Obnova súborov – pripraviť na kontrolu', "showTab('restore')"]],
+            'compare-hw-config': [['Snapshot pôvodného hosta', "showRecoverySection('snapshot')"]],
+            'restore-pve-config': [['Obnova súborov – pripraviť config.db a /etc/pve', "showTab('restore')"]],
+            'selective-host-config': [['Obnova súborov – vybrané položky', "showTab('restore')"]],
+            'post-recovery': [['Vytvoriť novú zálohu hosta', "showTab('backup')"]],
+        };
 
         function renderRecoveryChecklist() {
             const container = document.getElementById('rsec-checklist');
             if (!container || !recoveryOverview) return;
             const steps = recoveryOverview.checklist || [];
-            const state = loadChecklistState();
-            const done = steps.filter(step => state[step.id]).length;
-            const percent = steps.length ? Math.round((done / steps.length) * 100) : 0;
+            if (!steps.length) return;
+            const progress = recoveryChecklistProgress();
+            const isDone = step => Boolean(progress[step.id]?.completed);
+            const currentId = readStoredStep(DR_STEP_KEY, steps, isDone);
+            const currentIndex = Math.max(0, steps.findIndex(step => step.id === currentId));
+            const step = steps[currentIndex];
             const items = recoveryOverview.items || [];
-
-            const stepCards = steps.map(step => {
-                const checked = Boolean(state[step.id]);
-                const related = items.filter(item => item.recovery?.restore_order === step.step);
-                const relatedHtml = related.length ? `
-                    <div class="space-y-1.5">
-                        <div class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Položky zálohy v tomto kroku</div>
-                        <div class="flex flex-wrap gap-1.5">${related.map(item => `
-                            <button type="button" data-path="${escapeHtml(item.path)}" onclick="openItemDetail(this.dataset.path)" class="inline-flex max-w-full items-center gap-1.5 rounded-md border border-input bg-background px-2 py-1 text-left text-xs hover:bg-accent">
-                                <span class="dr-badge ${RESTORE_CATEGORY_CLASSES[item.recovery.restore_category] || ''} !px-1 !py-0" aria-hidden="true"></span>
-                                <span class="min-w-0 break-all font-mono">${escapeHtml(item.path)}</span>
-                            </button>
-                        `).join('')}</div>
-                    </div>
-                ` : '';
-                return `
-                    <div class="rounded-lg border p-3 sm:p-4 ${checked ? 'bg-muted/40' : ''}">
-                        <div class="flex items-start gap-3">
-                            <input type="checkbox" class="step-check mt-0.5" id="step-check-${step.step}" ${checked ? 'checked' : ''} onchange="toggleChecklistStep('${escapeHtml(step.id)}', this.checked)">
-                            <div class="min-w-0 flex-1 space-y-2">
-                                <label for="step-check-${step.step}" class="block cursor-pointer">
-                                    <span class="block text-xs font-semibold uppercase tracking-wide text-muted-foreground">Krok ${step.step}</span>
-                                    <span class="block font-medium ${checked ? 'line-through opacity-70' : ''}">${escapeHtml(step.title)}</span>
-                                </label>
-                                <p class="text-sm text-muted-foreground">${formatInline(step.goal)}</p>
-                                ${step.danger ? `<div class="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">${formatInline(step.danger)}</div>` : ''}
-                                <details>
-                                    <summary class="cursor-pointer select-none py-1 text-sm font-medium">Úlohy a príkazy</summary>
-                                    <div class="mt-2 space-y-3">
-                                        <ul class="list-disc space-y-1 pl-5 text-sm">${(step.tasks || []).map(task => `<li>${formatInline(task)}</li>`).join('')}</ul>
-                                        ${(step.commands || []).length ? `<pre class="dr-pre">${escapeHtml(step.commands.join('\n'))}</pre>` : ''}
-                                        ${relatedHtml}
-                                        ${step.wiki_slug ? `<button type="button" onclick="openWikiArticle('${escapeHtml(step.wiki_slug)}')" class="inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent">Wiki k tomuto kroku</button>` : ''}
-                                    </div>
-                                </details>
-                            </div>
-                        </div>
-                    </div>
-                `;
-            }).join('');
+            const related = items.filter(item => item.recovery?.restore_order === step.step);
+            const relatedHtml = related.length ? `
+                <div class="space-y-1.5">
+                    <div class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Položky zálohy v tomto kroku</div>
+                    <div class="flex flex-wrap gap-1.5">${related.map(item => `
+                        <button type="button" data-path="${escapeHtml(item.path)}" onclick="openItemDetail(this.dataset.path)" class="inline-flex max-w-full items-center gap-1.5 rounded-md border border-input bg-background px-2 py-1 text-left text-xs hover:bg-accent">
+                            <span class="dr-badge ${RESTORE_CATEGORY_CLASSES[item.recovery.restore_category] || ''} !px-1 !py-0" aria-hidden="true"></span>
+                            <span class="min-w-0 break-all font-mono">${escapeHtml(item.path)}</span>
+                        </button>
+                    `).join('')}</div>
+                </div>` : '';
+            const actions = (DR_STEP_ACTIONS[step.id] || []).map(([label, action]) =>
+                `<button type="button" onclick="${action}" class="inline-flex min-h-9 items-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent">${escapeHtml(label)}</button>`).join('');
+            const done = steps.filter(isDone).length;
+            const checkbox = (item) => `<input type="checkbox" class="step-check" id="step-check-${item.step}" aria-label="Krok ${item.step} hotový" ${isDone(item) ? 'checked' : ''} onchange="setRecoveryStep('${escapeHtml(item.id)}', this.checked)">`;
 
             container.innerHTML = `
-                <div class="space-y-2">
-                    <div class="flex flex-wrap items-center justify-between gap-2 text-sm">
-                        <span><span class="font-semibold">${done} z ${steps.length}</span> krokov hotových</span>
-                        <button type="button" onclick="resetChecklist()" class="inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent">Resetovať postup</button>
+                <div class="flex flex-wrap items-start justify-between gap-2">
+                    <div class="min-w-0">
+                        <h2 class="text-base font-semibold">Obnova po havárii</h2>
+                        <p class="text-sm text-muted-foreground">Pôvodný server zomrel. Choď krok po kroku; postup sa ukladá na serveri (pokračuješ z mobilu aj z PC).</p>
                     </div>
-                    <div class="relative h-2 w-full overflow-hidden rounded-full bg-secondary" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}">
-                        <div class="h-full bg-primary transition-all" style="width:${percent}%"></div>
-                    </div>
-                    <p class="text-xs text-muted-foreground">Postup sa ukladá iba v tomto prehliadači. Odporúčanie: počas obnovy maj aplikáciu otvorenú na mobile a pracuj na konzole servera.</p>
+                    <button type="button" onclick="resetChecklist()" class="inline-flex min-h-9 items-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent">Resetovať postup</button>
                 </div>
-                ${stepCards}
+                ${stepperHeader(steps, currentIndex, done, 'Obnova po havárii')}
+                ${stepperNav('dr', steps, step.id, isDone, checkbox)}
+                <section class="space-y-3 rounded-lg border p-3 sm:p-4 ${isDone(step) ? 'border-green-200' : ''}" id="dr-current-step" data-step-id="${escapeHtml(step.id)}">
+                    <div class="space-y-1">
+                        <div class="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Krok ${step.step}${isDone(step) ? ' · hotový' : ''}</div>
+                        <h3 class="text-base font-semibold">${escapeHtml(step.title)}</h3>
+                        <p class="text-sm text-muted-foreground">${formatInline(step.goal)}</p>
+                    </div>
+                    ${step.danger ? `<div class="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">${formatInline(step.danger)}</div>` : ''}
+                    <ul class="list-disc space-y-1 pl-5 text-sm">${(step.tasks || []).map(task => `<li class="break-words">${formatInline(task)}</li>`).join('')}</ul>
+                    ${(step.commands || []).length ? `<pre class="dr-pre">${escapeHtml(step.commands.join('\n'))}</pre>` : ''}
+                    ${relatedHtml}
+                    <div class="flex flex-wrap gap-2">
+                        ${actions}
+                        ${step.wiki_slug ? `<button type="button" onclick="openWikiArticle('${escapeHtml(step.wiki_slug)}')" class="inline-flex min-h-9 items-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent">Wiki k tomuto kroku</button>` : ''}
+                    </div>
+                    ${stepperFooter('dr', steps, currentIndex, isDone(step))}
+                </section>
             `;
         }
+
+        // Navigácia sprievodcov – delegované kliky (DR aj migrácia).
+        document.addEventListener('toggle', event => {
+            const nav = event.target.closest?.('[data-stepper-nav]');
+            if (nav) stepperNavOpen[nav.dataset.stepperNav] = nav.open;
+        }, true);
+        document.addEventListener('click', event => {
+            const go = event.target.closest('[data-stepper-go]');
+            const doneBtn = event.target.closest('[data-stepper-done]');
+            const undo = event.target.closest('[data-stepper-undo]');
+            const target = go || doneBtn || undo;
+            if (!target) return;
+            const kind = target.dataset.stepper;
+            if (kind === 'dr') {
+                const steps = recoveryOverview?.checklist || [];
+                if (go) { storeStep(DR_STEP_KEY, go.dataset.stepperGo); renderRecoveryChecklist(); }
+                if (doneBtn) {
+                    const index = steps.findIndex(step => step.id === doneBtn.dataset.stepperDone);
+                    setRecoveryStep(doneBtn.dataset.stepperDone, true, steps[index + 1]?.id || '');
+                }
+                if (undo) setRecoveryStep(undo.dataset.stepperUndo, false);
+                document.getElementById('dr-current-step')?.scrollIntoView({ block: 'nearest' });
+            } else if (kind === 'migration') {
+                handleMigrationStepper(go, doneBtn, undo);
+            }
+        });
 
         function findItemForDetail(path) {
             const pools = [recoveryOverview?.items || [], backupFiles, autoBackupFiles, restorePreviewItems];

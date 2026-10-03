@@ -6,6 +6,7 @@ import re
 import json
 import sys
 import tarfile
+import threading
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -390,7 +391,7 @@ def info_file(stdout, command='cmd', exit_code=0):
     return f'$ {command}\nexit_code={exit_code}\n\n--- stdout ---\n{stdout}\n--- stderr ---\n\n'
 
 
-def build_host_archive(path, jobs_json=True, hook_report=None, node_in_jobs='nuc'):
+def build_host_archive(path, jobs_json=True, hook_report=None, node_in_jobs='nuc', extra=None):
     """Syntetický archív hosta s backup-info, sieťou, NAS mapami a configmi hostí."""
     jobs = [
         {'id': 'backup-qnap', 'vmid': '100,113', 'node': node_in_jobs, 'enabled': 0, 'storage': 'qnap.autofs',
@@ -445,6 +446,8 @@ def build_host_archive(path, jobs_json=True, hook_report=None, node_in_jobs='nuc
             add_member(tar, 'backup-info/pve-backup-jobs.json', info_file(json.dumps(jobs), 'pvesh get /cluster/backup'))
         if hook_report is not None:
             add_member(tar, 'backup-info/hook-scripts.txt', info_file(hook_report, 'sh -c ...'))
+        for name, payload in (extra or {}).items():
+            add_member(tar, name, payload)
 
 
 def test_wiki_additions():
@@ -606,12 +609,17 @@ def test_migration_api():
     """Migrácia iba eviduje stav; testy používajú archív a nikdy nepripájajú SSH."""
     with tempfile.TemporaryDirectory(prefix='pve-migration-', dir=str(ROOT)) as workdir:
         workdir = Path(workdir)
-        globals_to_patch = ('CONFIG_FILE', 'BACKUP_HISTORY_FILE', 'BACKUP_STORAGE_DIR', 'MIGRATION_STATE_FILE', 'list_ftp_backups')
+        globals_to_patch = ('CONFIG_FILE', 'BACKUP_HISTORY_FILE', 'BACKUP_STORAGE_DIR', 'MIGRATION_STATE_FILE',
+                            'MIGRATION_TARGET_FILE', 'MIGRATION_JOBS_FILE', 'MIGRATION_TRANSFER_FILE', 'RECOVERY_PROGRESS_FILE', 'list_ftp_backups')
         originals = {name: getattr(app_module, name) for name in globals_to_patch}
         app_module.CONFIG_FILE = str(workdir / 'backup_config.json')
         app_module.BACKUP_HISTORY_FILE = str(workdir / 'backup_history.json')
         app_module.BACKUP_STORAGE_DIR = str(workdir / 'backups')
         app_module.MIGRATION_STATE_FILE = str(workdir / 'migration_state.json')
+        app_module.MIGRATION_TARGET_FILE = str(workdir / 'migration_target.json')
+        app_module.MIGRATION_JOBS_FILE = str(workdir / 'migration_jobs.json')
+        app_module.MIGRATION_TRANSFER_FILE = str(workdir / 'migration_transfer.json')
+        app_module.RECOVERY_PROGRESS_FILE = str(workdir / 'recovery_progress.json')
         app_module.list_ftp_backups = lambda cfg: {'available': False, 'warning': 'test', 'archives': []}
         (workdir / 'backups').mkdir()
         original_auth, secret, _password = create_test_auth_config(workdir / 'auth_config.json')
@@ -666,8 +674,6 @@ def test_migration_api():
                 {**initial, 'old_host': []},
                 {**initial, 'new_host': {'ip': '192.0.2.3', 'hostname': 'new-pve', 'password': SECRET_MARKER}},
                 {**initial, 'new_host': {'ip': '192.0.2.2', 'hostname': 'new-pve'}},
-                {**initial, 'new_host': {'ip': '192.0.2.3', 'hostname': 'OLD-PVE.EXAMPLE'}},
-                {**initial, 'new_host': {'ip': '192.0.2.3', 'hostname': 'old-pve.other.example'}},
                 {**initial, 'old_host': {'ip': '2001:db8::2', 'hostname': 'old-pve'},
                  'new_host': {'ip': '2001:db8:0:0:0:0:0:2', 'hostname': 'new-pve'}},
             ]
@@ -834,7 +840,7 @@ def test_migration_api():
                 response = client.post(base + '/steps/prepare', json={'completed': True})
             assert response.status_code == 503 and response.is_json
             assert state_file.read_bytes() == before_failed_write
-            assert not list(workdir.glob('.migration-state-*.tmp'))
+            assert not list(workdir.glob('.migration-state-*.tmp')) and not list(workdir.glob('.state-*.tmp'))
             assert 'prepare' not in client.get(base).get_json()['state']['steps']
 
             # Poškodený/nepodporovaný stav sa nesmie ticho zahodiť ani vypísať do odpovede.
@@ -987,12 +993,17 @@ def test_migration_compare():
     assert len(commands) == len(expected_commands), 'duplicitný compare príkaz'
     with tempfile.TemporaryDirectory(prefix='pve-migration-compare-', dir=str(ROOT)) as workdir:
         workdir = Path(workdir)
-        names = ('CONFIG_FILE', 'BACKUP_HISTORY_FILE', 'BACKUP_STORAGE_DIR', 'MIGRATION_STATE_FILE', 'SSH_CLIENT_FACTORY', 'list_ftp_backups')
+        names = ('CONFIG_FILE', 'BACKUP_HISTORY_FILE', 'BACKUP_STORAGE_DIR', 'MIGRATION_STATE_FILE',
+                 'MIGRATION_TARGET_FILE', 'MIGRATION_JOBS_FILE', 'MIGRATION_TRANSFER_FILE', 'RECOVERY_PROGRESS_FILE', 'SSH_CLIENT_FACTORY', 'list_ftp_backups')
         originals = {name: getattr(app_module, name) for name in names}
         app_module.CONFIG_FILE = str(workdir / 'backup_config.json')
         app_module.BACKUP_HISTORY_FILE = str(workdir / 'backup_history.json')
         app_module.BACKUP_STORAGE_DIR = str(workdir / 'backups')
         app_module.MIGRATION_STATE_FILE = str(workdir / 'migration_state.json')
+        app_module.MIGRATION_TARGET_FILE = str(workdir / 'migration_target.json')
+        app_module.MIGRATION_JOBS_FILE = str(workdir / 'migration_jobs.json')
+        app_module.MIGRATION_TRANSFER_FILE = str(workdir / 'migration_transfer.json')
+        app_module.RECOVERY_PROGRESS_FILE = str(workdir / 'recovery_progress.json')
         app_module.list_ftp_backups = lambda cfg: {'available': False, 'warning': 'test', 'archives': []}
         (workdir / 'backups').mkdir()
         original_auth, secret, _password = create_test_auth_config(workdir / 'auth_config.json')
@@ -1097,11 +1108,11 @@ def test_migration_compare():
             same_hostname = migration_compare_outputs(True)
             same_hostname['hostname'] = 'old-pve\n'
             payload = compare(new=MigrationCompareSshClient(same_hostname))
-            assert next(row for row in payload['rows'] if row['id'] == 'identity')['level'] == 'error'
+            assert next(row for row in payload['rows'] if row['id'] == 'identity')['level'] == 'info', 'rovnaký node = prenos 1:1'
             old_fqdn, new_fqdn = migration_compare_outputs(), migration_compare_outputs(True)
             old_fqdn['hostname'], new_fqdn['hostname'] = 'same-pve.old.example\n', 'same-pve.new.example\n'
             payload = compare(old=MigrationCompareSshClient(old_fqdn), new=MigrationCompareSshClient(new_fqdn))
-            assert next(row for row in payload['rows'] if row['id'] == 'identity')['level'] == 'error'
+            assert next(row for row in payload['rows'] if row['id'] == 'identity')['level'] == 'info'
             # Slabé heslo zhodné s enumom nesmie zmeniť závažnosť bezpečnostného nálezu.
             assert app_module.redact_migration_comparison(
                 {'level': 'error', 'detail': 'credential: error'}, ['error']) == {
@@ -1189,6 +1200,559 @@ def test_migration_compare():
             app_module.sync_flask_secret()
 
 
+def test_recovery_progress_api():
+    with tempfile.TemporaryDirectory(prefix='pve-recovery-progress-', dir=str(ROOT)) as workdir:
+        workdir = Path(workdir)
+        originals = (app_module.CONFIG_FILE, app_module.BACKUP_HISTORY_FILE, app_module.BACKUP_STORAGE_DIR,
+                     app_module.RECOVERY_PROGRESS_FILE, app_module.list_ftp_backups)
+        app_module.CONFIG_FILE = str(workdir / 'backup_config.json')
+        app_module.BACKUP_HISTORY_FILE = str(workdir / 'backup_history.json')
+        app_module.BACKUP_STORAGE_DIR = str(workdir / 'backups')
+        app_module.RECOVERY_PROGRESS_FILE = str(workdir / 'recovery_progress.json')
+        app_module.list_ftp_backups = lambda cfg: {'available': False, 'warning': 'test', 'archives': []}
+        (workdir / 'backups').mkdir()
+        original_auth, secret, _password = create_test_auth_config(workdir / 'auth_config.json')
+        try:
+            anonymous = app_module.app.test_client()
+            assert anonymous.get('/api/recovery/checklist').status_code == 401
+            assert anonymous.post('/api/recovery/checklist/steps/install-pve', json={'completed': True}).status_code in (401, 403)
+
+            client = make_authed_client(secret)
+            data = client.get('/api/recovery/checklist').get_json()
+            assert data['progress']['steps'] == {} and len(data['steps']) == 11
+            assert not Path(app_module.RECOVERY_PROGRESS_FILE).exists(), 'GET nesmie vytvárať súbor'
+
+            response = client.post('/api/recovery/checklist/steps/install-pve', json={'completed': True})
+            assert response.status_code == 200, response.get_data(as_text=True)
+            assert response.get_json()['progress']['steps']['install-pve']['completed'] is True
+            assert (Path(app_module.RECOVERY_PROGRESS_FILE).stat().st_mode & 0o777) == 0o600
+            assert client.get('/api/recovery/overview').get_json()['checklist_progress']['steps']['install-pve']['completed']
+
+            for body in ({'completed': 'yes'}, {}, {'completed': True, 'extra': 1}, ['x']):
+                assert client.post('/api/recovery/checklist/steps/install-pve', json=body).status_code == 400
+            assert client.post('/api/recovery/checklist/steps/no-such-step', json={'completed': True}).status_code == 400
+
+            response = client.post('/api/recovery/checklist/steps/install-pve', json={'completed': False})
+            assert 'install-pve' not in response.get_json()['progress']['steps']
+
+            Path(app_module.RECOVERY_PROGRESS_FILE).write_text('{broken', encoding='utf-8')
+            assert client.get('/api/recovery/checklist').status_code == 503
+            assert client.get('/api/recovery/overview').get_json()['checklist_progress'] is None
+            response = client.post('/api/recovery/checklist/reset', json={})
+            assert response.status_code == 200 and response.get_json()['progress']['steps'] == {}
+            assert not list(workdir.glob('.state-*.tmp'))
+        finally:
+            (app_module.CONFIG_FILE, app_module.BACKUP_HISTORY_FILE, app_module.BACKUP_STORAGE_DIR,
+             app_module.RECOVERY_PROGRESS_FILE, app_module.list_ftp_backups) = originals
+            app_module.AUTH_CONFIG_FILE = original_auth
+            app_module.sync_flask_secret()
+
+
+class PreflightSshClient:
+    """Falošný SSH klient podľa hosta: {host: {príkaz: stdout | (stdout, stderr, exit)}}."""
+
+    def __init__(self, hosts, connect_errors=()):
+        self.hosts = hosts
+        self.connect_errors = set(connect_errors)
+        self.commands = []
+        self.outputs = None
+
+    def connect(self, **kwargs):
+        self.host = kwargs['hostname']
+        self.password = kwargs['password']
+        if self.host in self.connect_errors:
+            raise OSError('connection refused')
+        self.outputs = self.hosts[self.host]
+
+    def exec_command(self, command, timeout=None):
+        self.commands.append((self.host, command))
+        assert command in self.outputs, f'neočakávaný príkaz: {command}'
+        output = self.outputs[command]
+        stdout, stderr, exit_code = output if isinstance(output, tuple) else (output, '', 0)
+        channel = MigrationCompareChannel(stdout, stderr, exit_code)
+        return io.BytesIO(), MigrationCompareStream(channel), MigrationCompareStream(channel)
+
+    def open_sftp(self):
+        raise AssertionError('preflight nesmie zapisovať')
+
+    def close(self):
+        pass
+
+
+def preflight_hosts(new_machine='bbb', new_version='9.2.4', running=False, old_version='9.2.3'):
+    pct = 'VMID Status Lock Name\n' + ('200 running test-ct\n' if running else '')
+    return {
+        '192.0.2.2': {
+            'cat /etc/machine-id': 'aaa\n',
+            'LC_ALL=C pveversion': f'pve-manager/{old_version}/abc (running kernel: 7.0.6-2-pve)\n',
+        },
+        '192.0.2.3': {
+            'LC_ALL=C hostname': 'nuc\n',
+            'LC_ALL=C pveversion': f'pve-manager/{new_version}/def (running kernel: 7.0.6-2-pve)\n',
+            'cat /etc/machine-id': f'{new_machine}\n',
+            'systemctl is-active pve-cluster || true': 'active\n',
+            'LC_ALL=C qm list': 'VMID NAME STATUS MEM(MB) BOOTDISK(GB) PID\n',
+            'LC_ALL=C pct list': pct,
+            'LC_ALL=C ip -br link': 'lo UNKNOWN 00:00:00:00:00:00 <LOOPBACK,UP>\nenp1s0 UP 02:00:00:00:00:03 <BROADCAST,UP>\n'
+                                    'enp2s0 DOWN 02:00:00:00:00:04 <BROADCAST>\nvmbr0 UP 02:00:00:00:00:03 <BROADCAST,UP>\n',
+        },
+    }
+
+
+def wait_for_job(client, job_id, timeout=10):
+    thread = app_module.MIGRATION_JOB_THREADS.get(job_id)
+    if thread:
+        thread.join(timeout)
+    data = client.get(f'/api/recovery/migration/jobs/{job_id}').get_json()
+    assert data['job']['status'] != 'running', data
+    return data['job']
+
+
+def test_migration_target_and_jobs():
+    with tempfile.TemporaryDirectory(prefix='pve-migration-target-', dir=str(ROOT)) as workdir:
+        workdir = Path(workdir)
+        names = ('CONFIG_FILE', 'BACKUP_HISTORY_FILE', 'BACKUP_STORAGE_DIR', 'MIGRATION_STATE_FILE',
+                 'MIGRATION_TARGET_FILE', 'MIGRATION_JOBS_FILE', 'MIGRATION_TRANSFER_FILE', 'RECOVERY_PROGRESS_FILE', 'SSH_CLIENT_FACTORY', 'list_ftp_backups')
+        originals = {name: getattr(app_module, name) for name in names}
+        for name, filename in (('CONFIG_FILE', 'backup_config.json'), ('BACKUP_HISTORY_FILE', 'backup_history.json'),
+                               ('BACKUP_STORAGE_DIR', 'backups'), ('MIGRATION_STATE_FILE', 'migration_state.json'),
+                               ('MIGRATION_TARGET_FILE', 'migration_target.json'), ('MIGRATION_JOBS_FILE', 'migration_jobs.json'),
+                               ('MIGRATION_TRANSFER_FILE', 'migration_transfer.json'),
+                               ('RECOVERY_PROGRESS_FILE', 'recovery_progress.json')):
+            setattr(app_module, name, str(workdir / filename))
+        app_module.list_ftp_backups = lambda cfg: {'available': False, 'warning': 'test', 'archives': []}
+        (workdir / 'backups').mkdir()
+        original_auth, secret, _password = create_test_auth_config(workdir / 'auth_config.json')
+        old_password, new_password = 'OLD-' + SECRET_MARKER, 'NEW-' + SECRET_MARKER
+        hosts = {'value': preflight_hosts()}
+        app_module.SSH_CLIENT_FACTORY = lambda: PreflightSshClient(hosts['value'], hosts.get('errors', ()))
+        try:
+            config = app_module.default_config()
+            config['source_config']['ssh'].update({'host': '192.0.2.2', 'password': old_password})
+            app_module.save_config(config)
+            base = '/api/recovery/migration'
+            anonymous = app_module.app.test_client()
+            assert anonymous.get(f'{base}/target').status_code == 401
+            assert anonymous.get(f'{base}/jobs').status_code == 401
+
+            client = make_authed_client(secret)
+            assert client.get(f'{base}/target').get_json()['target'] is None
+            for body, needle in (
+                ({'host': '192.0.2.3', 'port': 22}, 'heslo'),
+                ({'host': '192.0.2.2', 'port': 22, 'password': new_password}, 'inú adresu'),
+                ({'host': '192.0.2.3', 'port': 0, 'password': new_password}, 'port'),
+                ({'host': '192.0.2.3', 'password': new_password, 'username': 'admin'}, 'povolenými'),
+            ):
+                response = client.post(f'{base}/target', json=body)
+                assert response.status_code == 400 and needle in response.get_json()['error'], (body, response.get_json())
+            assert not Path(app_module.MIGRATION_TARGET_FILE).exists()
+
+            response = client.post(f'{base}/target', json={'host': '192.0.2.3', 'port': 22, 'password': new_password})
+            assert response.status_code == 200, response.get_data(as_text=True)
+            data = response.get_json()
+            assert data['target']['has_password'] is True and 'password' not in data['target']
+            assert (Path(app_module.MIGRATION_TARGET_FILE).stat().st_mode & 0o777) == 0o600
+            job = wait_for_job(client, data['job']['id'])
+            assert job['status'] == 'success' and job['result']['ok'] is True, job
+            levels = {check['id']: check['level'] for check in job['result']['checks']}
+            assert levels == {'ssh': 'ok', 'pve': 'ok', 'identity': 'ok', 'address': 'ok',
+                              'pve-cluster': 'ok', 'guests': 'ok', 'version': 'ok'}, levels
+            assert job['log'] and all(new_password not in line and old_password not in line for line in job['log'])
+            target = client.get(f'{base}/target').get_json()['target']
+            assert target['last_check']['ok'] is True and target['last_check']['facts']['hostname'] == 'nuc'
+            migration = client.get(base).get_json()
+            assert migration['target']['host'] == '192.0.2.3' and migration['jobs'][0]['kind'] == 'preflight'
+            for path in (app_module.MIGRATION_STATE_FILE, app_module.MIGRATION_JOBS_FILE):
+                if Path(path).exists():
+                    assert new_password not in Path(path).read_text() and old_password not in Path(path).read_text()
+            for url in (f'{base}/target', base, f'{base}/jobs'):
+                assert new_password not in client.get(url).get_data(as_text=True)
+
+            # Rovnaký stroj, bežiaci hosť a staršia verzia = chyby; heslo sa pri opakovaní nemusí zadávať znova.
+            hosts['value'] = preflight_hosts(new_machine='aaa', new_version='8.4.1', running=True)
+            response = client.post(f'{base}/target', json={'host': '192.0.2.3', 'port': 22})
+            assert response.status_code == 200, response.get_json()
+            job = wait_for_job(client, response.get_json()['job']['id'])
+            levels = {check['id']: check['level'] for check in job['result']['checks']}
+            assert job['result']['ok'] is False
+            assert levels['identity'] == 'error' and levels['guests'] == 'error' and levels['version'] == 'error'
+
+            hosts['value'] = preflight_hosts()
+            hosts['errors'] = {'192.0.2.3'}
+            job = wait_for_job(client, client.post(f'{base}/target/check', json={}).get_json()['job']['id'])
+            assert job['result']['ok'] is False and job['result']['checks'][-1]['id'] == 'ssh'
+            hosts['errors'] = ()
+
+            # Iba jedna operácia naraz; počas nej nejde reset ani zabudnutie hosta.
+            release = threading.Event()
+            blocking = app_module.start_migration_job('test', 'Testovacia operácia', lambda ctx: release.wait(5) and {'done': True})
+            response = client.post(f'{base}/target/check', json={})
+            assert response.status_code == 400 and 'Už beží' in response.get_json()['error']
+            assert client.post(f'{base}/reset', json={}).status_code == 400
+            assert client.delete(f'{base}/target').status_code == 400
+            release.set()
+            assert wait_for_job(client, blocking['id'])['status'] == 'success'
+
+            # Bežiaca operácia bez heartbeatu (reštart služby) sa označí ako prerušená.
+            jobs = json.loads(Path(app_module.MIGRATION_JOBS_FILE).read_text())
+            jobs.append({'id': 'stale-1', 'kind': 'test', 'title': 'Stará', 'status': 'running', 'started_at': '2026-01-01T00:00:00+01:00',
+                         'finished_at': None, 'heartbeat_at': '2026-01-01T00:00:00+01:00', 'progress': '', 'log': [], 'result': None, 'error': None})
+            Path(app_module.MIGRATION_JOBS_FILE).write_text(json.dumps(jobs))
+            stale = client.get(f'{base}/jobs/stale-1').get_json()['job']
+            assert stale['status'] == 'interrupted' and 'prerušená' in stale['error']
+            assert client.get(f'{base}/jobs/neexistuje').status_code == 404
+
+            # Dokončenie migrácie zmaže heslo, reset celé pripojenie.
+            app_module.forget_migration_target(keep_host=True)
+            target = client.get(f'{base}/target').get_json()['target']
+            assert target['host'] == '192.0.2.3' and target['has_password'] is False
+            assert new_password not in Path(app_module.MIGRATION_TARGET_FILE).read_text()
+            assert client.post(f'{base}/target/check', json={}).status_code == 400
+            assert client.post(f'{base}/reset', json={}).status_code == 200
+            assert not Path(app_module.MIGRATION_TARGET_FILE).exists()
+
+            Path(app_module.MIGRATION_TARGET_FILE).write_text('{broken')
+            assert client.get(f'{base}/target').get_json()['target_error']
+            assert client.delete(f'{base}/target').status_code == 200
+            assert not list(workdir.glob('.state-*.tmp'))
+        finally:
+            for name, value in originals.items():
+                setattr(app_module, name, value)
+            app_module.AUTH_CONFIG_FILE = original_auth
+            app_module.sync_flask_secret()
+
+
+class ScenarioChannel:
+    def __init__(self, stdout='', stderr='', exit_code=0):
+        self.stdout = stdout.encode('utf-8') if isinstance(stdout, str) else stdout
+        self.stderr = stderr.encode('utf-8') if isinstance(stderr, str) else stderr
+        self.exit_code = exit_code
+
+    def recv_ready(self):
+        return bool(self.stdout)
+
+    def recv(self, size):
+        block, self.stdout = self.stdout[:size], self.stdout[size:]
+        return block
+
+    def recv_stderr_ready(self):
+        return bool(self.stderr)
+
+    def recv_stderr(self, size):
+        block, self.stderr = self.stderr[:size], self.stderr[size:]
+        return block
+
+    def exit_status_ready(self):
+        return True
+
+    def recv_exit_status(self):
+        return self.exit_code
+
+    def close(self):
+        pass
+
+
+class ScenarioStream:
+    def __init__(self, channel, attr):
+        self.channel, self.attr = channel, attr
+
+    def read(self, *_args):
+        data = getattr(self.channel, self.attr)
+        setattr(self.channel, self.attr, b'')
+        return data
+
+
+class ScenarioSftp:
+    def __init__(self, world, host):
+        self.world, self.host = world, host
+
+    def file(self, path, mode):
+        world, host = self.world, self.host
+
+        class Handle(io.BytesIO):
+            def write(handle, data):
+                return super().write(data.encode('utf-8') if isinstance(data, str) else data)
+
+            def __exit__(handle, *exc):
+                world['files'][(host, path)] = handle.getvalue()
+                return False
+        return Handle()
+
+    def put(self, local, remote):
+        self.world['files'][(self.host, remote)] = Path(local).read_bytes()
+
+    def chmod(self, path, mode):
+        self.world['modes'][(self.host, path)] = mode
+
+    def close(self):
+        pass
+
+
+class ScenarioSsh:
+    """Simulovaná dvojica Proxmox hostov: starý 192.0.2.2 a nový 192.0.2.3."""
+
+    def __init__(self, world):
+        self.world = world
+
+    def connect(self, **kwargs):
+        self.host = kwargs['hostname']
+        assert kwargs['password'] == self.world['passwords'][self.host], 'nesprávne heslo pre host'
+
+    def exec_command(self, command, timeout=None):
+        self.world['commands'].append((self.host, command))
+        stdout, stderr, code = self.world['respond'](self.host, command)
+        channel = ScenarioChannel(stdout, stderr, code)
+        return io.BytesIO(), ScenarioStream(channel, 'stdout'), ScenarioStream(channel, 'stderr')
+
+    def open_sftp(self):
+        return ScenarioSftp(self.world, self.host)
+
+    def close(self):
+        pass
+
+
+def migration_world(new_hostname='nuc'):
+    world = {'commands': [], 'files': {}, 'modes': {}, 'fail_once': set(),
+             'passwords': {'192.0.2.2': 'OLD-' + SECRET_MARKER, '192.0.2.3': 'NEW-' + SECRET_MARKER},
+             'running': {'192.0.2.2': {100, 113, 122}, '192.0.2.3': set()},
+             'defined_new': set(), 'new_hostname': new_hostname, 'dumps': set()}
+    old_conf = {100: 'name: home-assistant\nonboot: 1\n', 122: 'name: mikrotik-chr\n'}
+
+    def respond(host, command):
+        if command in world['fail_once']:
+            world['fail_once'].discard(command)
+            return '', 'simulovaná chyba', 1
+        new = host == '192.0.2.3'
+        if command == 'LC_ALL=C hostname':
+            return (world['new_hostname'] if new else 'nuc') + '\n', '', 0
+        if command == 'test -e /etc/pve/corosync.conf':
+            return '', '', 1
+        if command == 'cat /etc/machine-id':
+            return ('bbb' if new else 'aaa') + '\n', '', 0
+        if command == 'LC_ALL=C pveversion':
+            return 'pve-manager/9.2.3/abc (running kernel: 7.0.6-2-pve)\n', '', 0
+        if command == 'systemctl is-active pve-cluster || true':
+            return 'active\n', '', 0
+        if command == 'LC_ALL=C ip -br link':
+            return 'lo UNKNOWN 00:00 <LOOPBACK>\nenp1s0 UP 02:00:00:00:00:03 <UP>\nvmbr0 UP 02:00:00:00:00:03 <UP>\n', '', 0
+        if command == 'LC_ALL=C qm list':
+            ids = sorted(i for i in (world['defined_new'] if new else {100, 122}) if i in (100, 122))
+            rows = ''.join(f'{i} vm{i} {"running" if i in world["running"][host] else "stopped"} 512 8.00 0\n' for i in ids)
+            return 'VMID NAME STATUS MEM(MB) BOOTDISK(GB) PID\n' + rows, '', 0
+        if command == 'LC_ALL=C pct list':
+            ids = sorted(i for i in (world['defined_new'] if new else {113}) if i in (113, 124))
+            rows = ''.join(f'{i} {"running" if i in world["running"][host] else "stopped"} ct{i}\n' for i in ids)
+            return 'VMID Status Lock Name\n' + rows, '', 0
+        if command.startswith('python3 -c ') and 'integrity_check' in command:
+            return 'ok\n', '', 0
+        if command == 'systemctl start pve-cluster' and new:
+            world['defined_new'] = {100, 113, 122, 124}
+            return '', '', 0
+        if command.startswith('python3 -c ') and command.endswith(' /etc/auto.nfs'):
+            return json.dumps({'exists': True, 'files': {'': 'different-hash'}}), '', 0
+        if command.startswith('python3 -c '):
+            return json.dumps({'exists': False, 'files': {}}), '', 0
+        if command == 'head -c 65536 /etc/auto.nfs':
+            return 'qnap -fstype=nfs,rw,vers=4.0 198.51.100.99:/Old\n', '', 0
+        if command.startswith('mktemp -d /tmp/pve-restore'):
+            return '/tmp/pve-restore.TEST\n', '', 0
+        match = re.fullmatch(r'(qm|pct) status (\d+)', command)
+        if match:
+            vmid = int(match.group(2))
+            return f'status: {"running" if vmid in world["running"][host] else "stopped"}\n', '', 0
+        match = re.fullmatch(r'(qm|pct) config (\d+)', command)
+        if match:
+            return old_conf.get(int(match.group(2)), ''), '', 0
+        match = re.fullmatch(r'(qm|pct) shutdown (\d+) --timeout \d+', command)
+        if match:
+            world['running'][host].discard(int(match.group(2)))
+            return '', '', 0
+        match = re.fullmatch(r'(qm|pct) start (\d+)', command)
+        if match:
+            vmid = int(match.group(2))
+            other = '192.0.2.2' if new else '192.0.2.3'
+            assert vmid not in world['running'][other], f'hosť {vmid} by bežal na oboch hostoch'
+            world['running'][host].add(vmid)
+            return '', '', 0
+        match = re.match(r'vzdump (\d+) --mode stop', command)
+        if match:
+            vmid = int(match.group(1))
+            path = f'/autofs/qnap/dump/vzdump-qemu-{vmid}-2026_10_03-10_00_00.vma.zst'
+            world['dumps'].add(path)
+            return f"INFO: starting new backup job\nINFO: creating vzdump archive '{path}'\nINFO: 100% done\nINFO: Finished Backup\n", '', 0
+        match = re.match(r'test -f (\S+)', command)
+        if match:
+            return '', '', 0 if match.group(1) in world['dumps'] else 1
+        return '', '', 0
+
+    world['respond'] = respond
+    return world
+
+
+def test_migration_transfer_and_cutover():
+    with tempfile.TemporaryDirectory(prefix='pve-migration-transfer-', dir=str(ROOT)) as workdir:
+        workdir = Path(workdir)
+        names = ('CONFIG_FILE', 'BACKUP_HISTORY_FILE', 'BACKUP_STORAGE_DIR', 'MIGRATION_STATE_FILE', 'MIGRATION_TARGET_FILE',
+                 'MIGRATION_JOBS_FILE', 'MIGRATION_TRANSFER_FILE', 'RECOVERY_PROGRESS_FILE', 'SSH_CLIENT_FACTORY',
+                 'list_ftp_backups', 'detect_own_ip')
+        originals = {name: getattr(app_module, name) for name in names}
+        for name, filename in (('CONFIG_FILE', 'backup_config.json'), ('BACKUP_HISTORY_FILE', 'backup_history.json'),
+                               ('BACKUP_STORAGE_DIR', 'backups'), ('MIGRATION_STATE_FILE', 'migration_state.json'),
+                               ('MIGRATION_TARGET_FILE', 'migration_target.json'), ('MIGRATION_JOBS_FILE', 'migration_jobs.json'),
+                               ('MIGRATION_TRANSFER_FILE', 'migration_transfer.json'), ('RECOVERY_PROGRESS_FILE', 'recovery_progress.json')):
+            setattr(app_module, name, str(workdir / filename))
+        app_module.list_ftp_backups = lambda cfg: {'available': False, 'warning': 'test', 'archives': []}
+        app_module.detect_own_ip = lambda host, port=22: '127.0.0.1'
+        world = migration_world(new_hostname='pve-tmp')
+        app_module.SSH_CLIENT_FACTORY = lambda: ScenarioSsh(world)
+        (workdir / 'backups').mkdir()
+        original_auth, secret, _password = create_test_auth_config(workdir / 'auth_config.json')
+        try:
+            config = app_module.default_config()
+            config['source_config']['ssh'].update({'host': '192.0.2.2', 'password': world['passwords']['192.0.2.2']})
+            app_module.save_config(config)
+            archive = workdir / 'backups' / 'proxmox_backup_host.tar.gz'
+            db_bytes = 'SQLite format 3\x00 simulovaná pmxcfs databáza'
+            build_host_archive(archive, extra={
+                'var/lib/pve-cluster/config.db': db_bytes,
+                'etc/pve/nodes/nuc/qemu-server/100.conf': 'name: home-assistant\nonboot: 1\nnet0: virtio,bridge=vmbr0,tag=200\n',
+                'etc/pve/firewall/cluster.fw': '[OPTIONS]\nenable: 1\n\n[RULES]\nIN ACCEPT -p tcp -dport 22\n',
+                'etc/systemd/system/timers.target.wants/pve-backup-qnap.timer': '[Timer]\n',
+            })
+            app_module.save_backup_history([{
+                'id': 'mig1', 'filename': archive.name, 'local_path': str(archive), 'timestamp': datetime.now().isoformat(),
+                'ftp_status': 'success', 'files': sorted(REQUIRED_PATHS), 'skipped': [],
+            }])
+            client = make_authed_client(secret)
+            base = '/api/recovery/migration'
+
+            # Rovnaký hostname je pri prenose 1:1 povolený, rovnaká IP nie.
+            response = client.post(base, json={'method': 'side_by_side', 'old_host': {'ip': '192.0.2.2', 'hostname': 'nuc'},
+                                               'new_host': {'ip': '192.0.2.3', 'hostname': 'nuc'}})
+            assert response.status_code == 200, response.get_json()
+            payload = response.get_json()
+            assert payload['app_vmid'] == 113
+            response = client.post(f'{base}/target', json={'host': '192.0.2.3', 'port': 22, 'password': world['passwords']['192.0.2.3']})
+            assert wait_for_job(client, response.get_json()['job']['id'])['status'] == 'success'
+
+            info = client.get(f'{base}/transfer').get_json()
+            assert info['node'] == 'nuc' and info['dump_dir'] == '/autofs/qnap/dump' and info['storages'] == ['local-lvm']
+            assert info['old_nics'] == ['enp45s0'] and [nic['name'] for nic in info['new_nics']] == ['enp1s0']
+            assert info['app_guest'] == {'vmid': 113, 'type': 'LXC'} and info['archive']['fresh'] is True
+            assert {item['path'] for item in info['file_items']} == app_module.MIGRATION_FILE_PATHS
+
+            # config.db: potvrdenie, iný hostname cieľa, návrat pri chybe, úspech.
+            assert client.post(f'{base}/transfer/config-db', json={}).status_code == 400
+            job = wait_for_job(client, client.post(f'{base}/transfer/config-db', json={'confirm': 'KOPIA'}).get_json()['job']['id'])
+            assert job['status'] == 'failed' and 'pve-tmp' in job['error'] and 'nuc' in job['error']
+            assert ('192.0.2.3', 'systemctl stop pve-cluster') not in world['commands'], 'pri inom hostname sa nič nemení'
+            world['new_hostname'] = 'nuc'
+            world['fail_once'].add('systemctl start pve-cluster')
+            job = wait_for_job(client, client.post(f'{base}/transfer/config-db', json={'confirm': 'KOPIA'}).get_json()['job']['id'])
+            assert job['status'] == 'failed'
+            assert any(host == '192.0.2.3' and 'cp /root/pbm-migration/config.db.before-' in cmd and 'systemctl start pve-cluster' in cmd
+                       for host, cmd in world['commands']), 'pri chybe sa vráti pôvodný config.db'
+            assert client.get(f'{base}/transfer').get_json()['transfer']['config_db'] is None
+            job = wait_for_job(client, client.post(f'{base}/transfer/config-db', json={'confirm': 'KOPIA'}).get_json()['job']['id'])
+            assert job['status'] == 'success', job
+            assert world['files'][('192.0.2.3', '/root/pbm-migration/config.db.new')] == db_bytes.encode('utf-8')
+            assert world['modes'][('192.0.2.3', '/root/pbm-migration/config.db.new')] == 0o600
+            commands = [cmd for host, cmd in world['commands'] if host == '192.0.2.3']
+            assert commands.index('systemctl stop pve-cluster') < commands.index('systemctl start pve-cluster')
+            assert "sed -i 's/^enable: 1$/enable: 0/' /etc/pve/firewall/cluster.fw" in commands
+            assert 'qm set 100 --onboot 0' in commands
+            transfer = client.get(f'{base}/transfer').get_json()['transfer']
+            assert transfer['config_db']['firewall_was_enabled'] is True and transfer['config_db']['node'] == 'nuc'
+            assert transfer['config_db']['onboot_guests'] == [{'vmid': 100, 'type': 'VM'}]
+            response = client.post(f'{base}/transfer/config-db', json={'confirm': 'KOPIA'})
+            assert response.status_code == 400 and 'už bol prenesený' in response.get_json()['error']
+
+            # Súbory hosta: rozdiely a prenos iba povolených položiek s potvrdením.
+            job = wait_for_job(client, client.post(f'{base}/transfer/files-diff', json={'paths': ['/etc/auto.nfs', '/usr/local/bin']}).get_json()['job']['id'])
+            items = {item['path']: item for item in job['result']['items']}
+            assert items['/etc/auto.nfs']['status'] == 'different' and '198.51.100.99' in items['/etc/auto.nfs']['diff']
+            assert items['/usr/local/bin']['status'] == 'missing_on_new'
+            for body in ({'paths': ['/etc/shadow'], 'confirm': True}, {'paths': ['/etc/auto.nfs']}, {'paths': [], 'confirm': True}):
+                assert client.post(f'{base}/transfer/files-apply', json=body).status_code == 400, body
+            job = wait_for_job(client, client.post(f'{base}/transfer/files-apply', json={'paths': ['/etc/auto.nfs', '/etc/systemd/system'], 'confirm': True}).get_json()['job']['id'])
+            assert job['status'] == 'success', job
+            assert job['result']['timers_to_enable'] == ['pve-backup-qnap.timer']
+            assert ('192.0.2.3', 'systemctl disable --now pve-backup-qnap.timer') in world['commands']
+            assert any(host == '192.0.2.3' and cmd.startswith('cp -a /tmp/pve-restore.TEST/staging/etc/auto.nfs') for host, cmd in world['commands'])
+
+            # Návrh siete s mapovaním NIC; neplatná NIC operáciu zastaví.
+            job = wait_for_job(client, client.post(f'{base}/transfer/network', json={'mapping': {'enp45s0': 'eth9'}}).get_json()['job']['id'])
+            assert job['status'] == 'failed' and 'eth9' in job['error']
+            job = wait_for_job(client, client.post(f'{base}/transfer/network', json={'mapping': {'enp45s0': 'enp1s0'}}).get_json()['job']['id'])
+            proposed = world['files'][('192.0.2.3', '/root/pbm-migration/interfaces.proposed')].decode()
+            assert job['status'] == 'success' and 'bridge-ports enp1s0' in proposed
+            assert 'enp45s0' not in proposed.split('\n', 3)[-1] or proposed.count('enp45s0') == 1
+            assert ('192.0.2.3', '/root/pbm-migration/hosts.proposed') in world['files']
+
+            # Presun hostí: LXC s appkou sa automaticky nepresúva; VM 100 áno.
+            response = client.post(f'{base}/guests/113/move', json={'dump_dir': '/autofs/qnap/dump', 'target_storage': 'local-lvm', 'confirm': True})
+            assert response.status_code == 400 and 'appka' in response.get_json()['error']
+            for body in ({'dump_dir': '/autofs/qnap/dump', 'target_storage': 'local-lvm'},
+                         {'dump_dir': 'relative', 'target_storage': 'local-lvm', 'confirm': True},
+                         {'dump_dir': '/autofs/qnap/dump', 'target_storage': 'nope', 'confirm': True}):
+                assert client.post(f'{base}/guests/100/move', json=body).status_code == 400, body
+            job = wait_for_job(client, client.post(f'{base}/guests/100/move', json={'dump_dir': '/autofs/qnap/dump', 'target_storage': 'local-lvm', 'confirm': True}).get_json()['job']['id'])
+            assert job['status'] == 'success', job
+            assert job['result']['dump_file'].endswith('vzdump-qemu-100-2026_10_03-10_00_00.vma.zst') and job['result']['original_onboot'] is True
+            assert 100 not in world['running']['192.0.2.2'] and 100 not in world['running']['192.0.2.3']
+            old_cmds = [cmd for host, cmd in world['commands'] if host == '192.0.2.2']
+            assert old_cmds.index('qm set 100 --onboot 0') < old_cmds.index('qm shutdown 100 --timeout 600') < \
+                next(i for i, cmd in enumerate(old_cmds) if cmd.startswith('vzdump 100'))
+            assert any(host == '192.0.2.3' and cmd.startswith('qmrestore /autofs/qnap/dump/vzdump-qemu-100-') and '--force' in cmd
+                       for host, cmd in world['commands'])
+            guest = next(g for g in client.get(base).get_json()['guests'] if g['vmid'] == 100)
+            assert guest['status'] == 'restored_on_new'
+            job = wait_for_job(client, client.post(f'{base}/guests/100/start', json={}).get_json()['job']['id'])
+            assert job['status'] == 'success' and 100 in world['running']['192.0.2.3']
+            assert client.post(f'{base}/guests/100', json={'status': 'verified'}).status_code == 200
+
+            # Vrátenie VM 122 na starý host: na novom sa nespustí, na starom znova beží.
+            job = wait_for_job(client, client.post(f'{base}/guests/122/move', json={'dump_dir': '/autofs/qnap/dump', 'target_storage': 'local-lvm', 'confirm': True}).get_json()['job']['id'])
+            assert job['status'] == 'success'
+            assert client.post(f'{base}/guests/122/rollback', json={}).status_code == 400
+            job = wait_for_job(client, client.post(f'{base}/guests/122/rollback', json={'confirm': True}).get_json()['job']['id'])
+            assert job['status'] == 'success' and 122 in world['running']['192.0.2.2'] and 122 not in world['running']['192.0.2.3']
+            guest = next(g for g in client.get(base).get_json()['guests'] if g['vmid'] == 122)
+            assert guest['status'] == 'skipped' and 'vrátený na starý host' in guest['note']
+
+            # Prepnutie: potvrdenie a všetci hostia okrem LXC s appkou overení/vynechaní.
+            assert client.post(f'{base}/cutover', json={}).status_code == 400
+            response = client.post(f'{base}/cutover', json={'confirm': 'PREPNUT'})
+            assert response.status_code == 400 and 'over alebo' in response.get_json()['error']
+            assert client.post(f'{base}/guests/124', json={'status': 'skipped'}).status_code == 200
+            assert client.get(base).get_json()['cutover_ready'] is True, 'LXC 113 s appkou sa do podmienky neráta'
+            job = wait_for_job(client, client.post(f'{base}/cutover', json={'confirm': 'PREPNUT'}).get_json()['job']['id'])
+            assert job['status'] == 'success', job
+            assert ('192.0.2.2', 'systemctl disable --now pve-backup-qnap.timer') in world['commands']
+            assert ('192.0.2.3', 'systemctl enable --now pve-backup-qnap.timer') in world['commands']
+            assert ('192.0.2.3', 'qm set 100 --onboot 1') in world['commands']
+            assert ('192.0.2.3', 'qm set 122 --onboot 1') not in world['commands'], 'vrátený hosť nedostane autostart na novom'
+            final = client.get(f'{base}/transfer').get_json()['final_steps']
+            text = json.dumps(final, ensure_ascii=False)
+            assert 'vzdump 113' in text and 'poweroff' in text and 'pct restore 113' in text
+            assert '/root/pbm-migration/interfaces.proposed' in text and 'cluster.fw' in text
+
+            for url in (base, f'{base}/transfer', f'{base}/jobs', f'{base}/target'):
+                body = client.get(url).get_data(as_text=True)
+                assert SECRET_MARKER not in body, url
+            for path in (app_module.MIGRATION_STATE_FILE, app_module.MIGRATION_JOBS_FILE, app_module.MIGRATION_TRANSFER_FILE):
+                assert SECRET_MARKER not in Path(path).read_text(), path
+            assert (Path(app_module.MIGRATION_TRANSFER_FILE).stat().st_mode & 0o777) == 0o600
+
+            assert client.post(f'{base}/reset', json={}).status_code == 200
+            assert not Path(app_module.MIGRATION_TRANSFER_FILE).exists() and not Path(app_module.MIGRATION_TARGET_FILE).exists()
+        finally:
+            for name, value in originals.items():
+                setattr(app_module, name, value)
+            app_module.AUTH_CONFIG_FILE = original_auth
+            app_module.sync_flask_secret()
+
+
 def main():
     test_data_model()
     test_readiness()
@@ -1201,6 +1765,9 @@ def main():
     test_migration_data_model()
     test_migration_api()
     test_migration_compare()
+    test_recovery_progress_api()
+    test_migration_target_and_jobs()
+    test_migration_transfer_and_cutover()
     print('test_recovery: OK')
 
 

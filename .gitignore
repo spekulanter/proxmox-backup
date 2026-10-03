@@ -41,7 +41,16 @@ auth_config.json
 backup_history.json
 migration_state.json
 migration_state.json.lock
+recovery_progress.json
+recovery_progress.json.lock
+migration_target.json
+migration_target.json.lock
+migration_jobs.json
+migration_jobs.json.lock
+migration_transfer.json
+migration_transfer.json.lock
 .migration-state-*.tmp
+.state-*.tmp
 *.tar.gz
 *.log
 logs/

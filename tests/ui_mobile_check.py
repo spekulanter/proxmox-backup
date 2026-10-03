@@ -24,6 +24,7 @@ os.chdir(ROOT)
 
 import app as app_module  # noqa: E402
 from test_archive import create_test_auth_config  # noqa: E402
+from test_recovery import PreflightSshClient, preflight_hosts  # noqa: E402
 from werkzeug.serving import make_server  # noqa: E402
 try:
     from playwright.sync_api import sync_playwright  # noqa: E402
@@ -78,6 +79,13 @@ app_module.CONFIG_FILE = str(work / 'backup_config.json')
 app_module.BACKUP_HISTORY_FILE = str(work / 'backup_history.json')
 app_module.BACKUP_STORAGE_DIR = str(work / 'backups')
 app_module.MIGRATION_STATE_FILE = str(work / 'migration_state.json')
+app_module.MIGRATION_TARGET_FILE = str(work / 'migration_target.json')
+app_module.MIGRATION_JOBS_FILE = str(work / 'migration_jobs.json')
+app_module.MIGRATION_TRANSFER_FILE = str(work / 'migration_transfer.json')
+app_module.RECOVERY_PROGRESS_FILE = str(work / 'recovery_progress.json')
+# Kontrola nového hosta používa iba falošné SSH (nikdy sa nepripája na reálny server).
+app_module.SSH_CLIENT_FACTORY = lambda: PreflightSshClient(preflight_hosts())
+TARGET_PASSWORD_MARKER = 'TARGET_ROOT_PASSWORD_NOT_IN_UI'
 os.makedirs(app_module.BACKUP_STORAGE_DIR)
 _orig, totp_secret, password = create_test_auth_config(work / 'auth_config.json')
 
@@ -153,6 +161,13 @@ OVERFLOW_JS = """
 """
 
 
+def migration_go(page, step_id):
+    """Otvorí zoznam krokov sprievodcu migráciou a prejde na krok."""
+    page.evaluate("document.querySelector('[data-stepper-nav=migration]').open = true")
+    page.click(f"#migration-steps [data-stepper-go='{step_id}']")
+    page.wait_for_selector(f'#migration-current-step[data-step-id="{step_id}"]')
+
+
 def check(page, label, vp):
     data = page.evaluate(OVERFLOW_JS)
     ok = data['sw'] <= data['vw'] + 1 and not data['offenders']
@@ -190,13 +205,29 @@ with sync_playwright() as p:
         check(page, 'recovery-overview', vp)
         if width == 390:
             page.screenshot(path=str(OUT / 'm-recovery-overview.png'), full_page=True)
+        assert page.locator('#recovery-chooser button').count() == 3, 'rozcestník Čo chceš urobiť'
+        page.evaluate("localStorage.removeItem('pbm-dr-current-step'); postRecoveryProgress('/reset', {}).then(renderRecoveryChecklist)")
+        page.wait_for_function("() => recoveryOverview && Object.keys(recoveryOverview.checklist_progress.steps).length === 0")
         page.click("#recovery-subnav [data-rsec='checklist']")
-        page.locator('#rsec-checklist details').nth(6).evaluate('el => el.open = true')
+        page.wait_for_selector('#dr-current-step[data-step-id="install-pve"]')
+        page.evaluate("document.querySelector('[data-stepper-nav=dr]').open = true")
         page.locator('#step-check-1').check()
+        page.wait_for_function("() => !recoveryProgressBusy && recoveryOverview.checklist_progress.steps['install-pve']")
+        page.wait_for_selector('#dr-current-step[data-step-id="check-hardware"]')
+        page.click('#dr-current-step [data-stepper-done]')
+        page.wait_for_selector('#dr-current-step[data-step-id="mgmt-network"]')
+        page.click("#dr-current-step [data-stepper-go='check-hardware']")
+        page.wait_for_selector('#dr-current-step[data-step-id="check-hardware"]')
         check(page, 'recovery-checklist', vp)
         if width == 390:
-            page.locator('#rsec-checklist details').nth(6).scroll_into_view_if_needed()
+            page.locator('#dr-current-step').scroll_into_view_if_needed()
             page.screenshot(path=str(OUT / 'm-checklist.png'))
+        page.reload()
+        page.wait_for_selector('#readiness-mini:not(:has-text("Načítavam"))', timeout=20000)
+        page.click('#tab-recovery')
+        page.click("#recovery-subnav [data-rsec='checklist']")
+        page.wait_for_selector('#dr-current-step[data-step-id="check-hardware"]')
+        assert page.locator('#step-check-1').is_checked() and page.locator('#step-check-2').is_checked(), 'postup obnovy je uložený na serveri'
         if width == 360:
             Path(app_module.MIGRATION_STATE_FILE).write_text('{broken-json', encoding='utf-8')
         page.click("#recovery-subnav [data-rsec='migration']")
@@ -217,10 +248,43 @@ with sync_playwright() as p:
         page.fill('#migration-new_host-ip', '192.0.2.11')
         page.fill('#migration-new_host-hostname', 'new-pve.example')
         page.click('#migration-save-btn')
+        page.wait_for_selector('#migration-current-step')
+        assert page.locator('#migration-current-step').get_attribute('data-step-id') == 'prepare', 'sprievodca začína prvým krokom'
+        assert not page.locator('#migration-guests').count(), 'hostia sú iba v kroku Presun hostí'
+        migration_go(page, 'new-host')
+        page.fill('#migration-target-host', '192.0.2.3')
+        page.fill('#migration-target-password', TARGET_PASSWORD_MARKER)
+        page.click('#migration-target-save')
+        assert page.locator('#migration-target-password').input_value() == '', 'heslo nového hosta sa z formulára ihneď vymaže'
+        page.wait_for_selector("#migration-target-checks [data-target-check='identity']", timeout=20000)
+        assert 'OK' in page.locator("[data-target-check='pve']").inner_text()
+        assert page.locator('#migration-target-password').get_attribute('placeholder') == 'uložené – nechaj prázdne'
+        assert TARGET_PASSWORD_MARKER not in page.content()
+        assert page.evaluate('(secret) => !JSON.stringify(migrationData).includes(secret) && !Object.values(localStorage).some(v => v.includes(secret))', TARGET_PASSWORD_MARKER)
+        assert TARGET_PASSWORD_MARKER not in Path(app_module.MIGRATION_STATE_FILE).read_text()
+        check(page, 'migration-new-host', vp)
+        if width == 390:
+            page.locator('#migration-target').scroll_into_view_if_needed()
+            page.screenshot(path=str(OUT / 'm-migration-target.png'), full_page=True)
+        migration_go(page, 'selective-config')
+        page.wait_for_selector('#migration-transfer #migration-config-db', timeout=20000)
+        assert page.locator("#migration-files [data-migration-file][value='/etc/auto.nfs']").is_checked(), 'autofs mapy sú predvolene vybrané'
+        assert not page.locator("#migration-files [data-migration-file][value='/root']").is_checked(), '/root je predvolene nevybraný'
+        check(page, 'migration-transfer', vp)
+        if width == 390:
+            page.locator('#migration-transfer').scroll_into_view_if_needed()
+            page.screenshot(path=str(OUT / 'm-migration-transfer.png'), full_page=True)
+        migration_go(page, 'cutover')
+        page.wait_for_selector('#migration-cutover')
+        assert page.locator("#migration-cutover [data-migration-action='cutover']").is_disabled(), 'prepnutie bez config.db a overených hostí je zablokované'
+        check(page, 'migration-cutover', vp)
+        migration_go(page, 'move-guests')
+        page.wait_for_selector('#migration-move-settings')
         page.wait_for_selector("[data-migration-guest='100']")
         assert page.locator('#migration-step-cutover').is_disabled(), 'cutover pred overením hostí'
         assert page.locator("[data-migration-guest='113']").inner_text().find('Bez vzdump jobu') >= 0
         # Rekonfigurácia nesmie prepísať rozpracovaný spôsob ani zdieľať IP.
+        page.evaluate("document.getElementById('migration-setup').open = true")
         page.locator("input[name='migration-method'][value='disk_move']").check()
         page.click('#migration-save-btn')
         page.wait_for_function("() => !migrationBusy && document.querySelector('#migration-status').textContent.includes('resetuj')")
@@ -235,7 +299,6 @@ with sync_playwright() as p:
         page.fill('#migration-new_host-ip', '192.0.2.11')
         page.click('#migration-save-btn')
         page.wait_for_function("() => !migrationBusy && document.querySelector('#migration-status').textContent.includes('uložený')")
-        page.locator("[data-migration-detail='fresh-backups']").evaluate('el => el.open = true')
         page.locator("[data-migration-detail='guest-100']").evaluate('el => el.open = true')
         page.locator("[data-migration-detail='guest-113']").evaluate('el => el.open = true')
         check(page, 'migration-side-by-side', vp)
@@ -254,10 +317,12 @@ with sync_playwright() as p:
         page.click("#recovery-subnav [data-rsec='migration']")
         page.wait_for_selector("[data-migration-guest='100']")
         assert page.locator('#migration-step-prepare').is_checked(), 'krok musí prežiť reload'
+        page.locator("[data-migration-detail='guest-100']").evaluate('el => el.open = true')
         assert page.locator('#migration-guest-note-100').input_value() == note, 'poznámka musí prežiť reload'
         for status in ('stopped_on_old', 'restored_on_new', 'verified'):
             page.select_option('#migration-guest-status-100', status)
             page.wait_for_function('(status) => !migrationBusy && migrationData.guests.find(g => g.vmid === 100).status === status', arg=status)
+        page.locator("[data-migration-detail='guest-113']").evaluate('el => el.open = true')
         page.select_option('#migration-guest-status-113', 'skipped')
         page.wait_for_function("() => !migrationBusy && migrationData.guests.find(g => g.vmid === 113).status === 'skipped'")
         assert page.locator('#migration-step-cutover').is_enabled(), 'cutover po overení/vynechaní hostí'
@@ -270,10 +335,25 @@ with sync_playwright() as p:
         page.wait_for_selector('#migration-reset-btn', state='detached')
         page.locator("input[name='migration-method'][value='disk_move']").check()
         page.click('#migration-save-btn')
-        page.wait_for_selector('#migration-step-disk-move')
+        page.wait_for_selector('#migration-step-disk-move', state='attached')
         assert not page.locator('#migration-guests').count(), 'disk_move nemá presun hostí po jednom'
         assert not page.locator('#migration-step-selective-config').count(), 'disk_move má vlastné kroky'
+        assert not page.locator('#migration-current-step #migration-compare').count(), 'disk_move nemá porovnanie dvoch hostov'
         check(page, 'migration-disk-move', vp)
+
+        # Porovnanie hostov patrí do kroku Príprava pri presune vedľa starého hosta.
+        page.once('dialog', lambda dialog: dialog.accept())
+        page.click('#migration-reset-btn')
+        page.wait_for_selector('#migration-reset-btn', state='detached')
+        page.locator("input[name='migration-method'][value='side_by_side']").check()
+        page.fill('#migration-old_host-ip', '192.0.2.10')
+        page.fill('#migration-old_host-hostname', 'old-pve.example')
+        page.fill('#migration-new_host-ip', '192.0.2.11')
+        page.fill('#migration-new_host-hostname', 'new-pve.example')
+        page.click('#migration-save-btn')
+        page.wait_for_selector('#migration-current-step')
+        migration_go(page, 'prepare')
+        page.wait_for_selector('#migration-current-step #migration-compare')
 
         # Porovnanie používa iba syntetické HTTP odpovede; nikdy neotvára SSH.
         compare_attempts = {'count': 0}
@@ -321,6 +401,7 @@ with sync_playwright() as p:
         page.fill('#migration-compare-password', COMPARE_PASSWORD_MARKER)
         page.click('#migration-compare-btn')
         page.wait_for_selector("[data-compare-row='duplicate-running']")
+        page.evaluate("document.getElementById('migration-setup').open = true")
         page.click('#migration-save-btn')
         page.wait_for_function('() => !migrationBusy')
         assert not page.locator('#migration-compare-result article').count(), 'rekonfigurácia vymaže starú snímku'
