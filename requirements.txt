@@ -3,3 +3,4 @@ Werkzeug==2.3.7
 gunicorn==21.2.0
 paramiko==3.4.0
 qrcode[pil]==7.4.2
+tzdata>=2024.1

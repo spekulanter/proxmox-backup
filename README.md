@@ -20,12 +20,27 @@ Moderná webová aplikácia v Python Flask pre správu a automatizáciu záloh P
 
 ## 🚀 Rýchla inštalácia (LXC v Proxmoxe)
 
+Podporované sú Debian 12 / Ubuntu 22.04+ LXC (Python 3.9+), spustené ako root. Čistý LXC nemusí mať ani `curl`, preto sa najprv doinštaluje:
+
 ```bash
-# Jednorazová inštalácia/update (idempotentný)
+apt-get update && apt-get install -y curl ca-certificates
+# Jednorazová inštalácia/update (idempotentný) – skript si sám naklonuje repozitár do /opt/proxmox-backup
 bash <(curl -fsSL https://raw.githubusercontent.com/spekulanter/proxmox-backup/main/install_in_lxc.sh)
 ```
 
+**Alternatíva – repozitár už máš stiahnutý** (git clone/pull). Skript nainštaluje práve tento adresár, bez ďalšieho klonovania:
+
+```bash
+apt-get update && apt-get install -y git ca-certificates
+git clone https://github.com/spekulanter/proxmox-backup.git /opt/proxmox-backup
+/opt/proxmox-backup/install_in_lxc.sh
+```
+
+Skript nainštaluje systémové balíky (`git curl ca-certificates python3 python3-venv python3-pip tzdata`), vytvorí `venv`, nainštaluje knižnice, overí import appky, vytvorí systemd službu a timer automatických záloh, spustí ju a počká na HTTP odpoveď. Pri chybe vypíše koniec logu (`/var/log/proxmox-backup-install.log`). Voliteľné premenné prostredia: `APP_DIR`, `APP_PORT`, `GIT_BRANCH`, `REPO_URL`, `ENABLE_AUTO_TIMER`. Adresár s názvom `*-dev` sa nainštaluje na port 5001, vetvu `dev` a bez auto timera.
+
 Po inštalácii je aplikácia dostupná na: **http://LXC_IP:5000**
+
+**Čo musí platiť mimo LXC:** LXC dosiahne Proxmox host (SSH, port 22) a FTP server; na Proxmox hoste je povolený root login heslom (appka sa pripája cez paramiko); port appky je povolený vo firewalle.
 
 Pri prvom otvorení sa zobrazí registračná stránka. Admin účet sa vytvorí až po naskenovaní 2FA secretu do Google Authenticatora a overení 6-miestnym kódom. Recovery kódy sa zobrazia iba raz, preto si ich uložte mimo servera.
 
@@ -33,7 +48,7 @@ Pri prvom otvorení sa zobrazí registračná stránka. Admin účet sa vytvorí
 
 1. **Systémové závislosti:**
    ```bash
-   apt update && apt install -y python3 python3-pip python3-venv git curl
+   apt update && apt install -y python3 python3-pip python3-venv git curl ca-certificates tzdata
    ```
 
 2. **Klonovanie a setup:**
@@ -119,7 +134,7 @@ Ochrany:
 - Priamy restore položiek REVIEW FIRST / SELECTIVE / REFERENCE ONLY vyžaduje výslovné potvrdenie kontroly (`acknowledged_paths` v `/api/restore`, checkbox v UI).
 - Whitelist, staging, pre-apply záloha a potvrdenie textom `OBNOVIT` zostávajú.
 
-Obnova je zámerne whitelistovaná na známe konfiguračné cesty a nepodporuje wildcard položky. Aplikácia po obnove nerobí automatický reload ani restart služieb; stav Proxmoxu skontrolujte ručne.
+Obnova je zámerne whitelistovaná na známe konfiguračné cesty a nepodporuje wildcard položky. Štandardné maskované systemd jednotky (`systemctl mask`, symlink na `/dev/null` pod `/etc/systemd/`) archív neblokujú; iné nebezpečné linky sa stále odmietajú. Aplikácia po obnove nerobí automatický reload ani restart služieb; stav Proxmoxu skontrolujte ručne.
 
 ### 🛟 Obnova a migrácia (Disaster Recovery)
 
@@ -175,14 +190,16 @@ Hlavné záložky sú štyri: **Zálohovanie · Obnova a migrácia · História 
 
 **Prenos 1:1, presun hostí a prepnutie (migrácia vedľa starého hosta).** Stratégia: nový Proxmox sa nainštaluje s **pôvodným hostname** (názov nodu) a **dočasnou IP**; starý host sa počas prenosu nemení a zostáva cestou späť.
 
-1. **Prenos konfigurácie 1:1** (krok *Prenos konfigurácie 1:1*):
-   - **config.db** – appka nahrá `config.db` z čerstvého archívu (max. 24 h) na nový host, overí `PRAGMA integrity_check`, zálohuje pôvodný config.db nového hosta do `/root/pbm-migration/`, krátko zastaví `pve-cluster` a nahradí databázu. Pri chybe automaticky vráti pôvodnú. Podmienky: rovnaký hostname, nový host prázdny (bez VM/LXC), nie je v clustri; potvrdenie textom `KOPIA`. Na novom hoste potom **vypne vzdump joby, autostart hostí a firewall datacentra** (zapnú sa pri prepnutí).
-   - **Súbory hosta** – náhľad rozdielov (hash súborov, pri malých necitlivých textových súboroch aj unified diff) a prenos vybraných položiek cez restore engine s pre-apply zálohou na novom hoste. Skopírované systemd timery sa na novom hoste vypnú a zapnú až pri prepnutí. Ponúkajú sa iba položky z `MIGRATION_FILE_ITEMS` (autofs, skripty, systemd, sysctl, vzdump.conf; HW-závislé a cron/`/root` predvolene nevybraté).
-   - **Návrh siete** – pôvodný `/etc/network/interfaces` s premapovanými sieťovkami (starý NIC → nový NIC) a pôvodný `/etc/hosts` sa uložia na nový host do `/root/pbm-migration/*.proposed`; neaplikujú sa (zmena siete by prerušila SSH), použijú sa pri prepnutí z konzoly.
-2. **Presun hostí** – „Presunúť automaticky“ pri každom hosťovi: na starom vypne autostart, korektne vypne hosťa (bez násilného vypnutia), `vzdump --mode stop` do zdieľaného adresára dostupného z oboch hostov, overí, že hosť ostal vypnutý, a na novom `qmrestore`/`pct restore --force` (config už prišiel s config.db); hosť ostane vypnutý. „Spustiť na novom“ ho spustí iba ak je na starom vypnutý. „Vrátiť na starý“ ho na novom vypne a na starom spustí (stav Vynechaný s poznámkou). **LXC s touto appkou** (zistený podľa IP appky) sa automaticky nepresúva.
-3. **Prepnutie** – automaticky (potvrdenie `PREPNUT`, iba keď sú všetci hostia okrem appky overení alebo vynechaní): na starom vypne backup timery a vzdump joby, na novom ich zapne a vráti autostart presunutým hosťom. Potom sprievodca vypíše **ručné kroky z konzoly** s konkrétnymi hodnotami: vzdump LXC s appkou na starom → `poweroff` starého → nový host prevezme pôvodnú IP (návrh siete + hosts, `ifreload -a`, `pvecm updatecerts`) → obnova a štart LXC s appkou → zapnutie firewallu → v appke Test SSH a nová záloha.
+**Poistky platné pre všetky zápisové operácie:** kontrola nového hosta musí byť úspešná (SSH, iný stroj, podporovaná verzia). Tesne pred každým zápisom appka znova overí, že starý a nový host majú rôzne `machine-id`, nový nemá staršiu major verziu PVE a starý host je samostatný node (nie cluster). Pri neistote (príkaz zlyhal, výstup chýba) sa nepokračuje. Prenos sa pri prvej operácii **pripne** na konkrétny starý a nový host a na konkrétny archív (vrátane SHA-256); zmena hostov, cieľa počas bežiacej operácie alebo archívu sa odmietne a vyžaduje reset migrácie. Pripnutý archív preto nesmie zmazať retencia, kým migrácia trvá.
 
-Stav prenosu je v `migration_transfer.json` (0600; config.db, súbory, sieť, presunutí hostia, prepnutie). Všetky príkazy na hostoch sú pevné buildery s `shlex.quote`; API neprijíma ľubovoľné príkazy. Dlhé operácie (vzdump/restore) bežia na pozadí s priebežným logom. Reset migrácie zmaže aj stav prenosu (hostov nemení). Spôsob „Presun systémového disku“ zostáva ručný.
+1. **Prenos konfigurácie 1:1** (krok *Prenos konfigurácie 1:1*):
+   - **config.db** – appka nahrá `config.db` z čerstvého archívu (max. 24 h) na nový host. Databáza v archíve sa lokálne skontroluje (platný SQLite, `integrity_check`, **zhoda s VM/LXC z `/etc/pve` v tom istom archíve**, archív nie je z clustra). Pôvodný config.db nového hosta sa zálohuje konzistentným SQLite snapshotom do `/root/pbm-migration/`, zastaví sa `pvescheduler`, `pve-firewall` a `pve-cluster` a databáza sa nahradí. Potom sa **vypnú a overia** vzdump joby (podľa živého zoznamu), autostart hostí a firewall datacentra. Ak zlyhá čokoľvek v ktorejkoľvek fáze, automaticky sa vráti pôvodná databáza. Podmienky: rovnaký hostname, nový host prázdny (bez VM/LXC), nie je v clustri; potvrdenie textom `KOPIA`. Joby, autostart a firewall sa zapnú až pri prepnutí.
+   - **Súbory hosta** – náhľad rozdielov (hash súborov, pri malých necitlivých textových súboroch aj unified diff) a prenos vybraných položiek cez restore engine s pre-apply zálohou na novom hoste. Prenášať sa dajú iba položky, pre ktoré je načítaný rozdiel. Skopírované systemd timery sa na novom hoste vypnú a zapnú až pri prepnutí. Po prenose AutoFS máp sa `autofs` na novom hoste načíta (balík musíš nainštalovať ty). Ponúkajú sa iba položky z `MIGRATION_FILE_ITEMS` (autofs, skripty, systemd, sysctl, vzdump.conf; HW-závislé a cron/`/root` predvolene nevybraté).
+   - **Návrh siete** – pôvodný `/etc/network/interfaces` s premapovanými sieťovkami (starý NIC → nový NIC; náhrada je simultánna, takže výmena A↔B funguje; duplicitné alebo kolidujúce mapovanie sa odmietne) a pôvodný `/etc/hosts` sa uložia na nový host do `/root/pbm-migration/*.proposed`; neaplikujú sa (zmena siete by prerušila SSH), použijú sa pri prepnutí z konzoly.
+2. **Presun hostí** – „Presunúť automaticky“ pri každom hosťovi: appka overí, že hosť nemá disky na **zdieľanom alebo nejasnom storage** (NFS/CIFS/Ceph/iSCSI, `shared 1`, adresár na sieťovom súborovom systéme – obnova s `--force` by inak mohla odstrániť pôvodné disky; takýto hosť sa odmietne a presúva sa ručne) a že zdieľaný adresár záloh je **naozaj ten istý export** na oboch hostoch (marker súbor). Potom na starom vypne autostart (pôvodná hodnota sa zachytí iba raz), korektne vypne hosťa, `vzdump --mode stop` do zdieľaného adresára, overí, že hosť ostal vypnutý, a na novom `qmrestore`/`pct restore --force` (config už prišiel s config.db); hosť ostane vypnutý. „Spustiť na novom“ ho spustí iba ak je na starom vypnutý. „Vrátiť na starý“ (aj z Overený) spustí starú kópiu až po **potvrdení, že nová je vypnutá**; hosť dostane stav *Vrátený na starý*, ktorý nesplní podmienku prepnutia – treba ho znova presunúť alebo vedome vynechať. **LXC s touto appkou** sa zisťuje podľa IP, MAC adresy a hostname (funguje aj pri DHCP) a automaticky sa nepresúva; ak ho appka nevie spoľahlivo určiť, vyžiada si výslovné potvrdenie.
+3. **Prepnutie** – automaticky (potvrdenie `PREPNUT`, iba keď sú všetci hostia okrem appky overení alebo vedome vynechaní): na starom vypne backup timery a vzdump joby a **overí, že sú naozaj vypnuté** – ak nie, nový plánovač nezapne. Potom na novom zapne joby, timery a vráti autostart skutočne presunutým hosťom; čiastočné zlyhanie sa nehlási ako úspech a prepnutie sa dá zopakovať. Sprievodca potom vypíše **ručné kroky z konzoly** s konkrétnymi hodnotami (a upozorní, ktorí hostia na novom hoste nie sú): vzdump LXC s appkou na starom → `poweroff` starého → nový host prevezme pôvodnú IP (návrh siete + hosts, `ifreload -a`, `pvecm updatecerts`) → obnova a štart LXC s appkou → zapnutie firewallu → v appke Test SSH a nová záloha. Tento postup je aj v offline príručke (stiahni ju tesne pred vypnutím appky).
+
+Stav prenosu je v `migration_transfer.json` (0600; pripnutá relácia, config.db, súbory, sieť, presunutí hostia, prepnutie). Všetky príkazy na hostoch sú pevné buildery s `shlex.quote`; API neprijíma ľubovoľné príkazy. Dlhé operácie (vzdump/restore) bežia na pozadí s priebežným logom. Reset migrácie zmaže aj stav prenosu (hostov nemení). Spôsob „Presun systémového disku“ zostáva ručný.
 
 Postup obnovy po havárii sa ukladá na serveri v `recovery_progress.json` (0600, mimo git; pomocný `.lock`), takže v ňom pokračuješ z mobilu aj z PC. Starý postup uložený v prehliadači sa pri prvom načítaní jednorazovo prenesie na server. Aktuálne otvorený krok si pamätá iba prehliadač.
 
@@ -192,6 +209,11 @@ Nové API endpointy: `GET /api/recovery/overview` (vrátane `risks` a `checklist
 
 Každá úspešne vytvorená záloha sa uloží lokálne do `backups/` v LXC a následne sa nahrá na FTP. Ak FTP upload zlyhá, lokálny archív ostane v LXC a história záloh označí FTP stav ako `failed`.
 
+- **Záloha bez vybraných dát nie je úspech.** Ak neexistuje žiadna zo zvolených ciest, archív sa zmaže, nenahrá a retencia sa nespustí, takže nevytlačí poslednú dobrú zálohu.
+- **`config.db` sa zálohuje konzistentne** cez SQLite backup API (aj pri živej databáze v režime WAL), nie kopírovaním súboru. Na Proxmox hoste preto musí byť `python3` (v Proxmoxe je predvolene).
+- **Retencia** (`max_backup_count`) počíta zjednotený inventár: lokálne archívy, záznamy známe na FTP aj archívy iba na FTP. Najstaršie nadlimitné sa mažú lokálne aj z FTP; pri výpadku FTP sa varuje a lokálne zálohy sa navyše nemažú.
+- História záloh (`backup_history.json`) sa zapisuje atomicky pod zámkom, takže súbežné zálohy nestrácajú záznamy. SSH stream sa ukladá do `.part` súboru a finalizuje sa až po úspechu.
+
 ### 🔄 Automatické zálohovanie
 - **Denne, týždenne alebo mesačne** - podľa nastavenia v sekcii Automatická záloha
 - Vyžaduje systemd timer `proxmox-backup-auto.timer` (pridáva sa automaticky pri inštalácii/update)
@@ -200,11 +222,11 @@ Každá úspešne vytvorená záloha sa uloží lokálne do `backups/` v LXC a n
 
 ### Plánovaná migrácia na nový HW
 
-Podsekcia **Obnova a migrácia → Migrácia na nový HW** vedie migráciu živého starého servera. Vyber **presun systémového disku** (`disk_move`) alebo **nový host vedľa starého** (`side_by_side`). Kroky vychádzajú z existujúcej wiki „Migrácia na nový HW (plánovaná)“. Cluster a `qm remote-migrate` sú iba odkazy vo wiki. Migračné príkazy vykonáva administrátor ručne; kroky evidujú jeho potvrdenia. Samostatné porovnanie hostov načíta cez SSH iba diagnostiku podľa pevného read-only zoznamu.
+Podsekcia **Obnova a migrácia → Migrácia na nový HW** vedie migráciu živého starého servera. Vyber **presun systémového disku** (`disk_move`) alebo **nový host vedľa starého** (`side_by_side`). Kroky vychádzajú z existujúcej wiki „Migrácia na nový HW (plánovaná)“. Cluster a `qm remote-migrate` sú iba odkazy vo wiki. Pri `disk_move` príkazy vykonáva administrátor ručne a kroky evidujú jeho potvrdenia. Pri `side_by_side` appka po potvrdení vykoná vybrané kroky sama cez SSH pevnými príkazmi (prenos konfigurácie, presun hostí, prepnutie; popis vyššie). Samostatné porovnanie hostov načíta cez SSH iba diagnostiku podľa pevného read-only zoznamu.
 
 Pri `side_by_side` sa VM/LXC a priradenie vzdump jobov čítajú z najnovšieho **lokálneho** archívu rovnakými whitelisted parsermi ako Riziká obnovy. FTP archív najprv načítaj lokálne v Histórii. Priradený job nie je dôkaz úspešnej zálohy; bez jobu je nutný ručný vzdump. Pôvodní hostia ostanú v uloženom inventári aj po zálohe nového hosta. Neúplný alebo nedostupný inventár zobrazí upozornenie.
 
-Stavy hosťa: `pending → stopped_on_old → restored_on_new → verified`, vynechanie `pending/stopped_on_old → skipped`, návrat `skipped → pending`. Poznámku možno upraviť aj bez zmeny stavu. Pred vzdump hosťa samostatne vypni a over `stopped` pred aj po zálohe: `--mode stop` môže pôvodne bežiacu VM znovu spustiť. Na novom hosťa spusti až po overení, že stará kópia nebeží. Nikdy dva hosty s rovnakou IP/hostname/SSH identitou naraz; joby a backup timery smú zapisovať/prune mazať zálohy iba na jednom hoste. UI nepovolí odškrtnúť cutover, kým nie je dostupný inventár a každý hosť `verified` alebo `skipped`; API umožňuje ručne evidovať tento krok podľa rozhodnutia administrátora.
+Stavy hosťa: `pending → stopped_on_old → restored_on_new → verified`, vynechanie `pending/stopped_on_old → skipped`, návrat `skipped → pending`. Automatický rollback nastaví `rolled_back` (hosť beží na starom; ďalej `pending` alebo `skipped`). Poznámku možno upraviť aj bez zmeny stavu. Pred vzdump hosťa samostatne vypni a over `stopped` pred aj po zálohe: `--mode stop` môže pôvodne bežiacu VM znovu spustiť. Na novom hosťa spusti až po overení, že stará kópia nebeží. Nikdy dva hosty s rovnakou IP/hostname/SSH identitou naraz; joby a backup timery smú zapisovať/prune mazať zálohy iba na jednom hoste. UI aj automatické prepnutie (`/cutover`) vyžadujú dostupný inventár a každého hosťa `verified` alebo `skipped`; samotné ručné odškrtnutie kroku v API je len evidencia rozhodnutia administrátora.
 
 Pri `side_by_side` pôvodné disky/configy hostí na starom hoste zostávajú; restore vzdump vytvorí kópiu na novom. Starú kópiu nechaj vypnutú. Dáta zmenené na novom sa do pôvodnej kópie nesynchronizujú, preto pri návrate naplánuj aj prenos aktuálnych dát. Sprievodca pôvodné dáta nemaže. Pri `disk_move` presúvaš fyzický disk, takže starý stroj nezachová samostatnú kópiu.
 
