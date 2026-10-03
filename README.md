@@ -179,6 +179,37 @@ Každá úspešne vytvorená záloha sa uloží lokálne do `backups/` v LXC a n
 - Timer spúšťa `auto_backup.sh` na štvrťhodinách `:00/:15/:30/:45`; skript podľa `backup_config.json` rozhodne, či je automatická záloha zapnutá a či už nastal uložený deň/čas
 - `auto_backup.sh` volá JSON API `/api/backup/auto` zo saved configu a pri zapnutom logine používa servisný token z `auth_config.json`, takže nepotrebuje browser session
 
+### Plánovaná migrácia na nový HW
+
+Podsekcia **Obnova na novom HW → Migrácia** vedie migráciu živého starého servera. Vyber **presun systémového disku** (`disk_move`) alebo **nový host vedľa starého** (`side_by_side`). Kroky vychádzajú z existujúcej wiki „Migrácia na nový HW (plánovaná)“. Cluster a `qm remote-migrate` sú iba odkazy vo wiki. Migračné príkazy vykonáva administrátor ručne; kroky evidujú jeho potvrdenia. Samostatné porovnanie hostov načíta cez SSH iba diagnostiku podľa pevného read-only zoznamu.
+
+Pri `side_by_side` sa VM/LXC a priradenie vzdump jobov čítajú z najnovšieho **lokálneho** archívu rovnakými whitelisted parsermi ako Riziká obnovy. FTP archív najprv načítaj lokálne v Histórii. Priradený job nie je dôkaz úspešnej zálohy; bez jobu je nutný ručný vzdump. Pôvodní hostia ostanú v uloženom inventári aj po zálohe nového hosta. Neúplný alebo nedostupný inventár zobrazí upozornenie.
+
+Stavy hosťa: `pending → stopped_on_old → restored_on_new → verified`, vynechanie `pending/stopped_on_old → skipped`, návrat `skipped → pending`. Poznámku možno upraviť aj bez zmeny stavu. Pred vzdump hosťa samostatne vypni a over `stopped` pred aj po zálohe: `--mode stop` môže pôvodne bežiacu VM znovu spustiť. Na novom hosťa spusti až po overení, že stará kópia nebeží. Nikdy dva hosty s rovnakou IP/hostname/SSH identitou naraz; joby a backup timery smú zapisovať/prune mazať zálohy iba na jednom hoste. UI nepovolí odškrtnúť cutover, kým nie je dostupný inventár a každý hosť `verified` alebo `skipped`; API umožňuje ručne evidovať tento krok podľa rozhodnutia administrátora.
+
+Pri `side_by_side` pôvodné disky/configy hostí na starom hoste zostávajú; restore vzdump vytvorí kópiu na novom. Starú kópiu nechaj vypnutú. Dáta zmenené na novom sa do pôvodnej kópie nesynchronizujú, preto pri návrate naplánuj aj prenos aktuálnych dát. Sprievodca pôvodné dáta nemaže. Pri `disk_move` presúvaš fyzický disk, takže starý stroj nezachová samostatnú kópiu.
+
+`migration_state.json` je samostatný lokálny runtime súbor s právami **0600**, mimo git aj `backup_config.json`. Schéma `version: 1` obsahuje `method`, `old_host/new_host: {ip, hostname}`, `steps: {id: {completed, updated_at}}`, `guests: {vmid: {type, name, status, note, updated_at}}`, `started_at`, `updated_at`, `finished_at`. Časy obsahujú časové pásmo Europe/Bratislava. Dokončenie všetkých krokov nastaví `finished_at`; odznačenie kroku ho vymaže. Zmena spôsobu vyžaduje reset. Nevkladaj heslá ani tajomstvá do poznámok; API na uloženie stavu neprijíma polia pre prihlasovacie údaje.
+
+Zápis používa dočasný súbor s 0600, fsync a `os.replace`. Pomocný `migration_state.json.lock` (0600, mimo git) serializuje zmeny medzi gunicorn workermi. Poškodený stav sa potichu neprepisuje; API vráti 503 a explicitný reset ho môže obnoviť. Offline príručka pri začatej migrácii pridá snapshot krokov, údajov hostov a stavov/poznámok hostí.
+
+Všetky endpointy vyžadujú login a POST aj CSRF:
+
+| Metóda | Endpoint | Telo / výsledok |
+|---|---|---|
+| GET | `/api/recovery/migration` | Stav, metódy, kroky, hostia, inventár, riziká a `cutover_ready` |
+| POST | `/api/recovery/migration` | `{method, old_host: {ip, hostname}, new_host: {ip, hostname}}` |
+| POST | `/api/recovery/migration/steps/<step_id>` | `{completed: boolean}` |
+| POST | `/api/recovery/migration/guests/<vmid>` | `{status, note}` (poznámka max. 2000 znakov) |
+| POST | `/api/recovery/migration/reset` | `{}`; UI vyžaduje potvrdenie |
+| POST | `/api/recovery/migration/compare` | `{new_host: {host, port: 22, password}}`; nový používateľ je vždy root, heslo jednorazové |
+
+**Porovnanie hostov (Fáza 2)** používa starý SSH cieľ a prihlasovacie údaje z uložených Nastavení (`remote_ssh`). Nový cieľ (IPv4/IPv6 alebo hostname), port a jednorazové root heslo zadáš iba pre porovnanie. UI heslo ihneď vymaže; server ho neukladá do konfigurácie, migračného stavu ani reportu. Report zostáva iba v aktuálnom UI a pri zmene cieľov/nastavení alebo resete sa vymaže. Do offline príručky sa neukladá.
+
+Na oboch hostoch sa spúšťa pevný read-only zoznam s `LC_ALL=C`: `hostname`, `pveversion -v`, `pvesm status`, `ip -br link`, `ip -br addr`, `cat /etc/network/interfaces`, `lscpu`, `qm list`, `pct list` a `systemctl list-timers --all --no-pager --no-legend`. Žiadne SFTP, restore, štartovanie, zastavovanie ani zápisové príkazy. Čítanie stdout/stderr má spoločný limit 64 KiB na príkaz, časový limit 10 s na príkaz a 60 s na zber po pripojení každého hosta. SSH klient aj kanály sa uzatvoria pri úspechu aj chybe. Surové výstupy, stderr a texty SSH výnimiek sa do API neposielajú; report obsahuje iba parsované fakty a bezpečné chyby.
+
+Report obsahuje `compared_at`, `read_only`, `old_host/new_host` (cieľ, stav pripojenia, úplnosť, chyby a fakty), `rows` s úrovňami `ok/info/warning/error/unknown` a `summary` s ich počtami. Kontroluje PVE verziu, chýbajúce/neaktívne storage ID, bridge/VLAN, CPU vendor/flags, NIC a IP, inventár hostí a timery. Rovnaké bežiace VMID na oboch hostoch (aj naprieč VM/LXC typmi) je chyba. Výpadok pripojenia alebo príkazu znamená čiastočný report a `unknown`, nie úspešné overenie. Sieťové `source/source-directory` sa nerozbaľujú, takže zahrnuté bridge/VLAN definície treba overiť ručne. Zber nie je simultánny ani priebežný; porovnanie nemení uložené stavy sprievodcu. Vzdump joby, SSH host keys a obsah storage ešte over ručne.
+
 ### 🔐 Prihlásenie, 2FA a recovery
 
 - Aplikácia povoľuje iba jeden admin účet. Ak účet existuje, registračné endpointy ďalšieho používateľa odmietnu.
@@ -234,6 +265,7 @@ journalctl -u proxmox-backup.service -f
 - `auth_config.json` - Login/2FA/Pushover runtime konfigurácia (vytvorí sa automaticky)
 - `backup_config.json` - Konfigurácia (vytvorí sa automaticky)
 - `backup_history.json` - História záloh (vytvorí sa automaticky)
+- `migration_state.json` - Lokálny postup plánovanej migrácie (0600; pomocný `.lock`, bez prihlasovacích údajov)
 - `backups/` - Lokálne archívy v LXC (vytvorí sa automaticky)
 
 ## 📝 Poznámky

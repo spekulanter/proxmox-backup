@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Testy disaster recovery funkcionality (klasifikácia, readiness, wiki, snapshot, restore ochrany)."""
+"""Testy disaster recovery a plánovanej migrácie (API, stav, archív, offline príručka)."""
 
 import io
 import re
@@ -9,6 +9,7 @@ import tarfile
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -574,6 +575,620 @@ def test_downloads_and_handbook():
             app_module.sync_flask_secret()
 
 
+def test_migration_data_model():
+    methods = {method['id'] for method in recovery_data.MIGRATION_METHODS}
+    assert methods == {'disk_move', 'side_by_side'}
+    assert len(methods) == len(recovery_data.MIGRATION_METHODS)
+    for method in recovery_data.MIGRATION_METHODS:
+        assert method['title'] and method['description']
+    steps = recovery_data.MIGRATION_STEPS
+    assert len({step['id'] for step in steps}) == len(steps), 'duplicitné migration step id'
+    for step in steps:
+        assert step['title'] and step['goal']
+        assert step['methods'] and set(step['methods']) <= methods
+        assert step['wiki_slug'] in recovery_data.WIKI_ARTICLE_SLUGS
+        for key in ('tasks', 'commands', 'warnings'):
+            assert isinstance(step[key], list), (step['id'], key)
+    by_method = {
+        method: [step['id'] for step in steps if method in step['methods']]
+        for method in methods
+    }
+    assert by_method['side_by_side'] == [
+        'prepare', 'fresh-backups', 'new-host', 'selective-config', 'move-guests',
+        'cutover', 'verify-rollback', 'retire-old',
+    ]
+    assert by_method['disk_move'] == [
+        'prepare', 'fresh-backups', 'disk-move', 'cutover', 'verify-rollback', 'retire-old',
+    ]
+
+
+def test_migration_api():
+    """Migrácia iba eviduje stav; testy používajú archív a nikdy nepripájajú SSH."""
+    with tempfile.TemporaryDirectory(prefix='pve-migration-', dir=str(ROOT)) as workdir:
+        workdir = Path(workdir)
+        globals_to_patch = ('CONFIG_FILE', 'BACKUP_HISTORY_FILE', 'BACKUP_STORAGE_DIR', 'MIGRATION_STATE_FILE', 'list_ftp_backups')
+        originals = {name: getattr(app_module, name) for name in globals_to_patch}
+        app_module.CONFIG_FILE = str(workdir / 'backup_config.json')
+        app_module.BACKUP_HISTORY_FILE = str(workdir / 'backup_history.json')
+        app_module.BACKUP_STORAGE_DIR = str(workdir / 'backups')
+        app_module.MIGRATION_STATE_FILE = str(workdir / 'migration_state.json')
+        app_module.list_ftp_backups = lambda cfg: {'available': False, 'warning': 'test', 'archives': []}
+        (workdir / 'backups').mkdir()
+        original_auth, secret, _password = create_test_auth_config(workdir / 'auth_config.json')
+        base = '/api/recovery/migration'
+        initial = {
+            'method': 'side_by_side',
+            'old_host': {'ip': '192.0.2.2', 'hostname': 'old-pve.example'},
+            'new_host': {'ip': '192.0.2.3', 'hostname': 'new-pve.example'},
+        }
+        try:
+            config = app_module.default_config()
+            config['ftp_config']['password'] = 'FTP-' + SECRET_MARKER
+            config['source_config']['ssh']['password'] = 'SSH-' + SECRET_MARKER
+            app_module.save_config(config)
+            original_config = Path(app_module.CONFIG_FILE).read_bytes()
+            app_module.save_backup_history([])
+            anonymous = app_module.app.test_client()
+            assert anonymous.get(base).status_code == 401
+            for path, body in (
+                (base, initial), (base + '/steps/prepare', {'completed': True}),
+                (base + '/guests/100', {'status': 'stopped_on_old'}), (base + '/reset', {}),
+            ):
+                response = anonymous.post(path, json=body)
+                assert response.status_code == 401 and response.is_json, path
+
+            client = make_authed_client(secret)
+            # Helper pridáva CSRF iba ak chýba hlavička; prázdny/zlý token overí skutočnú ochranu.
+            for path, body in (
+                (base, initial), (base + '/steps/prepare', {'completed': True}),
+                (base + '/guests/100', {'status': 'stopped_on_old'}), (base + '/reset', {}),
+            ):
+                response = client.post(path, json=body, headers={'X-CSRF-Token': ''})
+                assert response.status_code == 403 and response.is_json, path
+            assert client.post(base, json=initial, headers={'X-CSRF-Token': 'invalid'}).status_code == 403
+
+            response = client.get(base)
+            assert response.status_code == 200 and response.get_json()['success']
+            payload = response.get_json()
+            assert payload['state']['version'] == 1
+            assert not payload['state']['method'] and not payload['state']['started_at']
+            assert payload['inventory']['available'] is False
+            assert not payload['guests']
+            assert {method['id'] for method in payload['methods']} == {'disk_move', 'side_by_side'}
+
+            invalid_base = [
+                {}, {'method': 'cluster'}, {'method': ['side_by_side']},
+                {**initial, 'password': SECRET_MARKER},
+                {**initial, 'old_host': {'ip': '999.1.1.1', 'hostname': 'old-pve'}},
+                {**initial, 'new_host': {'ip': '192.0.2.3; reboot', 'hostname': 'new-pve'}},
+                {**initial, 'new_host': {'ip': '192.0.2.3', 'hostname': 'bad host'}},
+                {**initial, 'new_host': {'ip': '192.0.2.3', 'hostname': '<script>alert(1)</script>'}},
+                {**initial, 'old_host': []},
+                {**initial, 'new_host': {'ip': '192.0.2.3', 'hostname': 'new-pve', 'password': SECRET_MARKER}},
+                {**initial, 'new_host': {'ip': '192.0.2.2', 'hostname': 'new-pve'}},
+                {**initial, 'new_host': {'ip': '192.0.2.3', 'hostname': 'OLD-PVE.EXAMPLE'}},
+                {**initial, 'new_host': {'ip': '192.0.2.3', 'hostname': 'old-pve.other.example'}},
+                {**initial, 'old_host': {'ip': '2001:db8::2', 'hostname': 'old-pve'},
+                 'new_host': {'ip': '2001:db8:0:0:0:0:0:2', 'hostname': 'new-pve'}},
+            ]
+            for body in invalid_base:
+                response = client.post(base, json=body)
+                assert response.status_code == 400 and response.is_json, (body, response.get_data(as_text=True))
+            for malformed in ('{', '[]', 'null', '"side_by_side"'):
+                response = client.post(base, data=malformed, content_type='application/json')
+                assert response.status_code == 400 and response.is_json, malformed
+            assert not client.get(base).get_json()['state']['started_at'], 'neplatný vstup nesmie začať migráciu'
+
+            # Najnovší archív obsahuje VM aj LXC, vrátane hostí mimo vzdump jobu.
+            archive = workdir / 'backups' / 'migration.tar.gz'
+            build_host_archive(archive)
+            app_module.save_backup_history([{
+                'id': 'migration', 'filename': archive.name, 'local_path': str(archive),
+                'timestamp': datetime.now().isoformat(), 'ftp_status': 'success',
+                'files': sorted(REQUIRED_PATHS), 'skipped': [],
+            }])
+            response = client.post(base, json=initial)
+            assert response.status_code == 200, response.get_data(as_text=True)
+            payload = client.get(base).get_json()
+            state = payload['state']
+            assert state['method'] == 'side_by_side' and state['version'] == 1
+            assert state['old_host'] == initial['old_host'] and state['new_host'] == initial['new_host']
+            assert state['started_at'] and state['updated_at'] and not state['finished_at']
+            assert payload['inventory']['available'] is True
+            assert payload['cutover_ready'] is False
+            guests = {int(guest['vmid']): guest for guest in payload['guests']}
+            assert set(guests) == {100, 113, 122, 124}
+            assert guests[100]['type'] == 'VM' and guests[113]['type'] == 'LXC'
+            assert guests[100]['name'] == 'home-assistant' and guests[124]['name'] == 'games'
+            assert {vmid for vmid, guest in guests.items() if guest['backed_up']} == {100, 113}
+            assert all(guest['status'] == 'pending' for guest in guests.values())
+            assert all(set(guest['allowed_transitions']) == {'stopped_on_old', 'skipped'} for guest in guests.values())
+            assert 'guests-without-vzdump' in {risk['id'] for risk in payload['risks']['risks']}
+            for vmid, guest in guests.items():
+                old_commands = '\n'.join(guest['commands']['old_host'])
+                new_commands = '\n'.join(guest['commands']['new_host'])
+                tool, restore = ('qm', 'qmrestore') if guest['type'] == 'VM' else ('pct', 'pct restore')
+                assert f'{tool} set {vmid} --onboot 0' in old_commands
+                assert f'vzdump {vmid}' in old_commands and '--mode stop' in old_commands
+                assert restore in new_commands and str(vmid) in new_commands
+            state_file = Path(app_module.MIGRATION_STATE_FILE)
+            assert state_file.stat().st_mode & 0o777 == 0o600
+            persisted = state_file.read_text(encoding='utf-8')
+            assert json.loads(persisted) == state
+            assert SECRET_MARKER not in persisted and 'password' not in persisted.lower()
+            assert Path(app_module.CONFIG_FILE).read_bytes() == original_config, 'stav migrácie nemá meniť backup_config'
+            assert SECRET_MARKER not in json.dumps(payload)
+            assert client.post(base, json={**initial, 'method': 'disk_move'}).status_code == 400
+            for suffix in ('/steps/prepare', '/guests/100', '/reset'):
+                for malformed in ('{', '[]', 'null'):
+                    response = client.post(base + suffix, data=malformed, content_type='application/json')
+                    assert response.status_code == 400 and response.is_json, (suffix, malformed)
+
+            for step_id, body in (
+                ('unknown', {'completed': True}), ('disk-move', {'completed': True}),
+                ('prepare', {'completed': 'true'}), ('prepare', {'completed': 1}),
+                ('prepare', {'completed': True, 'password': SECRET_MARKER}),
+            ):
+                response = client.post(base + '/steps/' + step_id, json=body)
+                assert response.status_code == 400, (step_id, body)
+            for completed in (True, False, True):
+                response = client.post(base + '/steps/prepare', json={'completed': completed})
+                assert response.status_code == 200, response.get_data(as_text=True)
+                step = client.get(base).get_json()['state']['steps']['prepare']
+                assert step['completed'] is completed and step['updated_at']
+            # Požiadavka používateľa: cutover chráni iba UI, API umožní evidovať krok.
+            assert client.post(base + '/steps/cutover', json={'completed': True}).status_code == 200
+            assert client.get(base).get_json()['cutover_ready'] is False
+
+            for vmid, body in (
+                ('oops', {'status': 'stopped_on_old'}), ('999999999', {'status': 'stopped_on_old'}),
+                ('100', {'status': 'running'}), ('100', {'status': ['pending']}),
+                ('100', {'status': 'verified'}), ('100', {'status': 'restored_on_new'}),
+                ('100', {'status': 'pending', 'note': []}),
+                ('100', {'status': 'pending', 'password': SECRET_MARKER}),
+            ):
+                response = client.post(base + '/guests/' + vmid, json=body)
+                assert response.status_code == 400 and response.is_json, (vmid, body)
+
+            note = '<script>alert("migration")</script> & kontrola po presune'
+            for status in ('stopped_on_old', 'restored_on_new', 'verified'):
+                response = client.post(base + '/guests/100', json={'status': status, 'note': note})
+                assert response.status_code == 200, response.get_data(as_text=True)
+                guest_state = client.get(base).get_json()['state']['guests']['100']
+                assert guest_state['status'] == status and guest_state['note'] == note and guest_state['updated_at']
+                illegal_next = 'skipped' if status in ('restored_on_new', 'verified') else 'pending'
+                assert client.post(base + '/guests/100', json={'status': illegal_next}).status_code == 400
+            assert client.post(base + '/guests/100', json={'status': 'pending'}).status_code == 400
+            assert client.post(base + '/guests/100', json={'status': 'verified', 'note': note}).status_code == 200
+            for vmid in (113, 122, 124):
+                assert client.post(base + '/guests/' + str(vmid), json={'status': 'skipped', 'note': 'ponechaný'}).status_code == 200
+            assert client.get(base).get_json()['cutover_ready'] is True
+            assert client.post(base + '/guests/124', json={'status': 'restored_on_new'}).status_code == 400
+            assert client.post(base + '/guests/124', json={'status': 'pending'}).status_code == 200
+            assert client.get(base).get_json()['cutover_ready'] is False
+            for status in ('stopped_on_old', 'skipped'):
+                assert client.post(base + '/guests/124', json={'status': status}).status_code == 200
+
+            # Stav overeného hosťa prežije nový archív, v ktorom už na starom hoste nie je.
+            new_archive = workdir / 'backups' / 'migration-new.tar.gz'
+            with tarfile.open(archive, 'r:gz') as source, tarfile.open(new_archive, 'w:gz') as target:
+                for member in source.getmembers():
+                    if member.name != 'backup-info/qm-list.txt':
+                        target.addfile(member, source.extractfile(member) if member.isfile() else None)
+                add_member(target, 'backup-info/qm-list.txt', info_file(
+                    'VMID NAME STATUS MEM(MB) BOOTDISK(GB) PID\n'
+                    '122 mikrotik-chr running 512 8.00 2324', 'qm list'))
+            app_module.save_backup_history([{
+                'id': 'migration-new', 'filename': new_archive.name, 'local_path': str(new_archive),
+                'timestamp': (datetime.now() + timedelta(seconds=1)).isoformat(),
+                'ftp_status': 'success', 'files': sorted(REQUIRED_PATHS), 'skipped': [],
+            }])
+            payload = client.get(base).get_json()
+            guests = {int(guest['vmid']): guest for guest in payload['guests']}
+            assert payload['inventory']['available'] is True and set(guests) == {100, 113, 122, 124}
+            assert guests[100]['status'] == 'verified' and guests[100]['note'] == note
+            assert guests[100]['name'] == 'home-assistant' and payload['cutover_ready'] is True
+
+            # Sekcia sa exportuje ako snapshot uloženého postupu a escapuje poznámky.
+            html = client.get('/api/recovery/handbook').get_data(as_text=True)
+            assert '<section id="migration">' in html
+            assert 'old-pve.example' in html and 'new-pve.example' in html
+            assert 'kontrola po presune' in html and '&lt;script&gt;' in html
+            assert '<script>alert("migration")</script>' not in html and SECRET_MARKER not in html
+            assert 'home-assistant' in html and 'ponechaný' in html
+            side_steps = client.get(base).get_json()['steps']
+            for step in side_steps:
+                assert client.post(base + '/steps/' + step['id'], json={'completed': True}).status_code == 200
+            assert client.get(base).get_json()['state']['finished_at']
+            assert client.post(base + '/steps/prepare', json={'completed': False}).status_code == 200
+            assert not client.get(base).get_json()['state']['finished_at']
+
+            # Nedostupný archív nesmie vymazať stav a nesmie vyhlásiť cutover za bezpečný.
+            app_module.save_backup_history([])
+            payload = client.get(base).get_json()
+            assert payload['inventory']['available'] is False and payload['cutover_ready'] is False
+            assert payload['state']['guests']['100']['status'] == 'verified'
+
+            assert client.post(base + '/reset', json={'password': SECRET_MARKER}).status_code == 400
+            response = client.post(base + '/reset', json={})
+            assert response.status_code == 200, response.get_data(as_text=True)
+            state = client.get(base).get_json()['state']
+            assert not state['method'] and not state['started_at'] and not state['finished_at']
+            assert not state['steps'] and not state['guests']
+            html = client.get('/api/recovery/handbook').get_data(as_text=True)
+            assert note not in html and '<section id="migration">' not in html
+            # Po resete sa spôsob dá zmeniť, disk_move neponúka presun jednotlivých hostí.
+            assert client.post(base, json={**initial, 'method': 'disk_move'}).status_code == 200
+            payload = client.get(base).get_json()
+            assert not payload['guests']
+            assert 'disk-move' in {step['id'] for step in payload['steps']}
+            assert 'new-host' not in {step['id'] for step in payload['steps']}
+            assert client.post(base + '/guests/100', json={'status': 'stopped_on_old'}).status_code == 400
+            assert client.post(base + '/steps/new-host', json={'completed': True}).status_code == 400
+            assert state_file.stat().st_mode & 0o777 == 0o600
+            assert Path(str(state_file) + '.lock').stat().st_mode & 0o777 == 0o600
+
+            # Zlyhanie atomického replace zachová starý platný stav a odstráni tmp súbor.
+            before_failed_write = state_file.read_bytes()
+            with patch.object(app_module.os, 'replace', side_effect=OSError('simulovaný výpadok disku')):
+                response = client.post(base + '/steps/prepare', json={'completed': True})
+            assert response.status_code == 503 and response.is_json
+            assert state_file.read_bytes() == before_failed_write
+            assert not list(workdir.glob('.migration-state-*.tmp'))
+            assert 'prepare' not in client.get(base).get_json()['state']['steps']
+
+            # Poškodený/nepodporovaný stav sa nesmie ticho zahodiť ani vypísať do odpovede.
+            for corrupt in ('{"password":"' + SECRET_MARKER + '"', '{"version":999}', '[]'):
+                state_file.write_text(corrupt, encoding='utf-8')
+                response = client.get(base)
+                assert response.status_code == 503 and response.is_json
+                assert SECRET_MARKER not in response.get_data(as_text=True)
+                assert state_file.read_text(encoding='utf-8') == corrupt
+                assert client.post(base, json=initial).status_code == 503
+                handbook = client.get('/api/recovery/handbook')
+                assert handbook.status_code == 200, 'poškodená migrácia nesmie rozbiť existujúcu DR príručku'
+                html = handbook.get_data(as_text=True)
+                assert SECRET_MARKER not in html
+                assert 'Stav migrácie nie je dostupný' in html and 'poškodený stav' in html
+                assert '<section id="migration">' not in html
+                assert client.post(base + '/reset', json={}).status_code == 200
+                assert not client.get(base).get_json()['state']['method']
+                assert state_file.stat().st_mode & 0o777 == 0o600
+        finally:
+            for name, value in originals.items():
+                setattr(app_module, name, value)
+            app_module.AUTH_CONFIG_FILE = original_auth
+            app_module.sync_flask_secret()
+
+
+class MigrationCompareChannel:
+    """Paramiko channel double: stdout aj stderr sa musia čítať v obmedzených blokoch."""
+    def __init__(self, stdout='', stderr='', exit_code=0):
+        self.stdout = stdout.encode('utf-8') if isinstance(stdout, str) else stdout
+        self.stderr = stderr.encode('utf-8') if isinstance(stderr, str) else stderr
+        self.exit_code = exit_code
+        self.closed = False
+
+    def recv_ready(self):
+        return bool(self.stdout)
+
+    def recv(self, size):
+        assert 0 < size <= 65536
+        block, self.stdout = self.stdout[:size], self.stdout[size:]
+        return block
+
+    def recv_stderr_ready(self):
+        return bool(self.stderr)
+
+    def recv_stderr(self, size):
+        assert 0 < size <= 65536
+        block, self.stderr = self.stderr[:size], self.stderr[size:]
+        return block
+
+    def exit_status_ready(self):
+        return True
+
+    def recv_exit_status(self):
+        return self.exit_code
+
+    def settimeout(self, timeout):
+        self.timeout = timeout
+
+    def close(self):
+        self.closed = True
+
+
+class MigrationCompareStream:
+    def __init__(self, channel):
+        self.channel = channel
+
+    def read(self, *_args):
+        raise AssertionError('compare nesmie použiť neobmedzené stream.read()')
+
+
+class MigrationCompareSshClient:
+    def __init__(self, outputs, connect_error=None, command_errors=None):
+        self.outputs = outputs
+        self.connect_error = connect_error
+        self.command_errors = command_errors or {}
+        self.commands = []
+        self.channels = []
+        self.closed = False
+
+    def connect(self, **kwargs):
+        self.connect_kwargs = kwargs
+        if self.connect_error:
+            raise self.connect_error
+
+    def exec_command(self, command, timeout=None):
+        by_command = {item['command']: item['id'] for item in recovery_data.MIGRATION_COMPARE_COMMANDS}
+        assert command in by_command, 'compare smie vykonať iba pevný read-only allowlist'
+        self.commands.append(command)
+        command_id = by_command[command]
+        if command_id in self.command_errors:
+            raise self.command_errors[command_id]
+        output = self.outputs[command_id]
+        stdout, stderr, exit_code = output if isinstance(output, tuple) else (output, '', 0)
+        channel = MigrationCompareChannel(stdout, stderr, exit_code)
+        self.channels.append(channel)
+        return io.BytesIO(), MigrationCompareStream(channel), MigrationCompareStream(channel)
+
+    def open_sftp(self):
+        raise AssertionError('compare nesmie zapisovať cez SFTP')
+
+    def close(self):
+        self.closed = True
+
+
+def migration_compare_outputs(new_host=False):
+    """Výstupy read-only príkazov s reálnym tvarom PVE/Linux tabuliek."""
+    if new_host:
+        return {
+            'hostname': 'new-pve\n',
+            'version': 'proxmox-ve: 8.4.0\npve-manager: 8.4.1\n',
+            'storage': 'Name Type Status Total Used Available %\nlocal-lvm lvmthin inactive 0 0 0 0%\n',
+            'links': 'eno2 UP 02:00:00:00:00:02 <BROADCAST,UP>\nvmbr1 UP 02:00:00:00:00:02 <BROADCAST,UP>\n',
+            'addresses': 'lo UNKNOWN 127.0.0.1/8 ::1/128\nvmbr1 UP 192.0.2.3/24\n',
+            'network': 'auto vmbr1\niface vmbr1 inet manual\n bridge-ports eno2\n bridge-vlan-aware no\n'
+                       'auto vmbr1.300\niface vmbr1.300 inet static\n vlan-raw-device vmbr1\n vlan-id 300\n',
+            'cpu': 'Architecture: x86_64\nVendor ID: AuthenticAMD\nFlags: fpu sse\n',
+            'qm': 'VMID NAME STATUS MEM(MB) BOOTDISK(GB) PID\n',
+            'pct': 'VMID Status Lock Name\n100 running moved-copy\n113 stopped proxmox-backup\n',
+            'timers': 'Sun 2026-10-04 04:00:00 CEST 1h Sat 2026-10-03 04:00:00 CEST 23h pve-backup.timer pve-backup.service\n',
+        }
+    return {
+        'hostname': 'old-pve\n',
+        'version': 'proxmox-ve: 9.2.0\npve-manager: 9.2.3\n',
+        'storage': 'Name Type Status Total Used Available %\nlocal-lvm lvmthin active 100 30 70 30%\n'
+                   'nas dir active 500 100 400 20%\n',
+        'links': 'eno1 UP 02:00:00:00:00:01 <BROADCAST,UP>\nvmbr0 UP 02:00:00:00:00:01 <BROADCAST,UP>\n',
+        'addresses': 'lo UNKNOWN 127.0.0.1/8 ::1/128\nvmbr0 UP 192.0.2.2/24\n',
+        'network': 'auto vmbr0\niface vmbr0 inet manual\n bridge-ports eno1\n bridge-vlan-aware yes\n'
+                   ' bridge-vids 100 200\nauto vmbr0.200\niface vmbr0.200 inet static\n'
+                   ' vlan-raw-device vmbr0\n vlan-id 200\n',
+        'cpu': 'Architecture: x86_64\nVendor ID: GenuineIntel\nFlags: fpu sse avx avx2\n',
+        'qm': 'VMID NAME STATUS MEM(MB) BOOTDISK(GB) PID\n100 shared-vm running 2048 32.00 123\n'
+              '101 offline-vm stopped 1024 8.00 0\n',
+        'pct': 'VMID Status Lock Name\n113 running proxmox-backup\n',
+        'timers': 'Sun 2026-10-04 04:00:00 CEST 1h Sat 2026-10-03 04:00:00 CEST 23h pve-backup.timer pve-backup.service\n',
+    }
+
+
+def test_migration_compare():
+    commands = recovery_data.MIGRATION_COMPARE_COMMANDS
+    expected_commands = {
+        'hostname': 'LC_ALL=C hostname', 'version': 'LC_ALL=C pveversion -v',
+        'storage': 'LC_ALL=C pvesm status', 'links': 'LC_ALL=C ip -br link',
+        'addresses': 'LC_ALL=C ip -br addr', 'network': 'LC_ALL=C cat /etc/network/interfaces',
+        'cpu': 'LC_ALL=C lscpu', 'qm': 'LC_ALL=C qm list', 'pct': 'LC_ALL=C pct list',
+        'timers': 'LC_ALL=C systemctl list-timers --all --no-pager --no-legend',
+    }
+    assert {item['id']: item['command'] for item in commands} == expected_commands
+    assert len(commands) == len(expected_commands), 'duplicitný compare príkaz'
+    with tempfile.TemporaryDirectory(prefix='pve-migration-compare-', dir=str(ROOT)) as workdir:
+        workdir = Path(workdir)
+        names = ('CONFIG_FILE', 'BACKUP_HISTORY_FILE', 'BACKUP_STORAGE_DIR', 'MIGRATION_STATE_FILE', 'SSH_CLIENT_FACTORY', 'list_ftp_backups')
+        originals = {name: getattr(app_module, name) for name in names}
+        app_module.CONFIG_FILE = str(workdir / 'backup_config.json')
+        app_module.BACKUP_HISTORY_FILE = str(workdir / 'backup_history.json')
+        app_module.BACKUP_STORAGE_DIR = str(workdir / 'backups')
+        app_module.MIGRATION_STATE_FILE = str(workdir / 'migration_state.json')
+        app_module.list_ftp_backups = lambda cfg: {'available': False, 'warning': 'test', 'archives': []}
+        (workdir / 'backups').mkdir()
+        original_auth, secret, _password = create_test_auth_config(workdir / 'auth_config.json')
+        endpoint = '/api/recovery/migration/compare'
+        request_body = {'new_host': {'host': '192.0.2.3', 'password': 'NEW-' + SECRET_MARKER}}
+        created = []
+        pending_clients = []
+
+        def factory():
+            assert pending_clients, 'neočakávané SSH pripojenie'
+            ssh = pending_clients.pop(0)
+            created.append(ssh)
+            return ssh
+
+        def compare(old=None, new=None):
+            created.clear()
+            pending_clients[:] = [
+                old or MigrationCompareSshClient(migration_compare_outputs()),
+                new or MigrationCompareSshClient(migration_compare_outputs(True)),
+            ]
+            response = client.post(endpoint, json=request_body)
+            assert response.status_code == 200, response.get_data(as_text=True)
+            payload = response.get_json()
+            assert payload['success'] and payload['read_only'] is True and payload['compared_at']
+            assert len(created) == 2 and not pending_clients
+            assert all(ssh.closed for ssh in created), 'každý klient sa musí zavrieť aj pri chybe'
+            assert all(channel.closed for ssh in created for channel in ssh.channels)
+            assert SECRET_MARKER not in response.get_data(as_text=True), 'compare nesmie echo password/stderr/exception'
+            return payload
+
+        app_module.SSH_CLIENT_FACTORY = factory
+        try:
+            config = app_module.default_config()
+            config['source_config']['mode'] = 'remote_ssh'
+            config['source_config']['ssh'].update({
+                'host': '192.0.2.2', 'port': 22, 'username': 'root', 'password': 'OLD-' + SECRET_MARKER,
+            })
+            app_module.save_config(config)
+            app_module.save_backup_history([])
+            app_module.save_migration_state(app_module.default_migration_state())
+            config_before = Path(app_module.CONFIG_FILE).read_bytes()
+            state_before = Path(app_module.MIGRATION_STATE_FILE).read_bytes()
+            files_before = {path.name for path in workdir.iterdir()}
+            assert app_module.app.test_client().post(endpoint, json=request_body).status_code == 401
+            client = make_authed_client(secret)
+            assert client.post(endpoint, json=request_body, headers={'X-CSRF-Token': ''}).status_code == 403
+            invalid = [
+                {}, {'new_host': []}, {'new_host': {'host': '192.0.2.3', 'password': ''}},
+                {'new_host': {'host': '192.0.2.3; reboot', 'password': 'x'}},
+                {'new_host': {'host': 'bad host', 'password': 'x'}},
+                {'new_host': {'host': '999.1.1.1', 'password': 'x'}},
+                {'new_host': {'host': '192.0.2.3', 'password': None}},
+                {'new_host': {'host': '192.0.2.3', 'password': ['x']}},
+                {'new_host': {'host': '192.0.2.3', 'password': 'x' * 4097}},
+                {'new_host': {'host': '192.0.2.3', 'password': 'x', 'port': 0}},
+                {'new_host': {'host': '192.0.2.3', 'password': 'x', 'port': 65536}},
+                {'new_host': {'host': '192.0.2.3', 'password': 'x', 'port': True}},
+                {'new_host': {'host': '192.0.2.3', 'password': 'x', 'port': '22'}},
+                {'new_host': {'host': '192.0.2.3', 'password': 'x', 'username': 'other'}},
+                {'new_host': {'host': '192.0.2.2', 'password': 'x'}},
+                {**request_body, 'old_host': {'password': 'x'}},
+            ]
+            for body in invalid:
+                response = client.post(endpoint, json=body)
+                assert response.status_code == 400 and response.is_json, body
+                assert SECRET_MARKER not in response.get_data(as_text=True)
+            for malformed in ('{', 'null', '[]'):
+                response = client.post(endpoint, data=malformed, content_type='application/json')
+                assert response.status_code == 400 and response.is_json
+            assert not created, 'neplatný vstup ani auth nesmie spustiť SSH'
+
+            payload = compare()
+            old_facts, new_facts = payload['old_host']['facts'], payload['new_host']['facts']
+            assert payload['old_host']['connected'] and payload['new_host']['connected']
+            assert payload['old_host']['complete'] and payload['new_host']['complete']
+            assert not payload['old_host']['errors'] and not payload['new_host']['errors']
+            assert old_facts['hostname'] == 'old-pve' and new_facts['hostname'] == 'new-pve'
+            assert '9.2' in old_facts['pve_version'] and '8.4' in new_facts['pve_version']
+            assert {storage['id'] for storage in old_facts['storage']} == {'local-lvm', 'nas'}
+            assert old_facts['cpu']['vendor'] == 'GenuineIntel' and new_facts['cpu']['vendor'] == 'AuthenticAMD'
+            assert set(old_facts['cpu']['flags']) == {'fpu', 'sse', 'avx', 'avx2'}
+            assert old_facts['network']['bridges'][0]['name'] == 'vmbr0'
+            assert old_facts['network']['bridges'][0]['vlan_aware'] in (True, 'yes')
+            assert old_facts['network']['vlans'][0]['name'] == 'vmbr0.200'
+            assert {guest['vmid'] for guest in old_facts['guests']} == {100, 101, 113}
+            assert old_facts['timers'][0]['unit'] == 'pve-backup.timer'
+            rows = {row['id']: row for row in payload['rows']}
+            assert len(rows) == len(payload['rows'])
+            assert rows['guests-running']['level'] == 'error', 'duplicitné running VMID platí aj pri rozdielnom VM/LXC type'
+            for row_id in ('pve-version', 'storage-ids', 'storage-status', 'bridges', 'vlans', 'cpu-vendor', 'cpu-flags', 'backup-timers'):
+                assert rows[row_id]['level'] in ('warning', 'error'), (row_id, rows[row_id])
+            assert rows['identity']['level'] == 'ok'
+            for level, count in payload['summary'].items():
+                assert count == sum(row['level'] == level for row in payload['rows'])
+            for ssh in created:
+                assert ssh.commands == [item['command'] for item in commands]
+            assert created[0].connect_kwargs['hostname'] == '192.0.2.2'
+            assert created[0].connect_kwargs['password'] == 'OLD-' + SECRET_MARKER
+            assert created[1].connect_kwargs['hostname'] == '192.0.2.3'
+            assert created[1].connect_kwargs['username'] == 'root' and created[1].connect_kwargs['port'] == 22
+
+            same_hostname = migration_compare_outputs(True)
+            same_hostname['hostname'] = 'old-pve\n'
+            payload = compare(new=MigrationCompareSshClient(same_hostname))
+            assert next(row for row in payload['rows'] if row['id'] == 'identity')['level'] == 'error'
+            old_fqdn, new_fqdn = migration_compare_outputs(), migration_compare_outputs(True)
+            old_fqdn['hostname'], new_fqdn['hostname'] = 'same-pve.old.example\n', 'same-pve.new.example\n'
+            payload = compare(old=MigrationCompareSshClient(old_fqdn), new=MigrationCompareSshClient(new_fqdn))
+            assert next(row for row in payload['rows'] if row['id'] == 'identity')['level'] == 'error'
+            # Slabé heslo zhodné s enumom nesmie zmeniť závažnosť bezpečnostného nálezu.
+            assert app_module.redact_migration_comparison(
+                {'level': 'error', 'detail': 'credential: error'}, ['error']) == {
+                    'level': 'error', 'detail': 'credential: [skryté]'}
+            secret_old_outputs, secret_new_outputs = migration_compare_outputs(), migration_compare_outputs(True)
+            secret_old_outputs['storage'] = secret_old_outputs['storage'].replace('nas dir', 'OLD-' + SECRET_MARKER + ' dir')
+            secret_new_outputs['cpu'] = 'Vendor ID: NEW-' + SECRET_MARKER + '\nFlags: fpu sse\n'
+            payload = compare(old=MigrationCompareSshClient(secret_old_outputs), new=MigrationCompareSshClient(secret_new_outputs))
+            assert SECRET_MARKER not in payload['new_host']['facts']['cpu']['vendor']
+            for host in ('NEW-PVE.EXAMPLE.', '2001:db8::3'):
+                request_body['new_host'].update(host=host, port=2222)
+                payload = compare()
+                assert created[1].connect_kwargs['hostname'] == host.lower().rstrip('.')
+                assert created[1].connect_kwargs['port'] == 2222
+            request_body['new_host'] = {'host': '192.0.2.3', 'password': 'NEW-' + SECRET_MARKER}
+
+            # SSH spojenie padne, ale druhý host sa porovná a oba klienty sa zavrú.
+            payload = compare(old=MigrationCompareSshClient({}, connect_error=RuntimeError(SECRET_MARKER)))
+            assert payload['old_host']['connected'] is False and payload['old_host']['complete'] is False
+            assert payload['old_host']['errors'] and payload['new_host']['connected']
+            assert all(row['level'] == 'unknown' for row in payload['rows'])
+            assert not created[0].commands
+            payload = compare(new=MigrationCompareSshClient({}, connect_error=RuntimeError(SECRET_MARKER)))
+            assert payload['new_host']['connected'] is False and payload['old_host']['connected'] is True
+
+            # Zlyhaný príkaz vracia unknown, nie zavádzajúce úspešné porovnanie.
+            payload = compare(new=MigrationCompareSshClient(
+                migration_compare_outputs(True), command_errors={'storage': RuntimeError(SECRET_MARKER)}))
+            rows = {row['id']: row for row in payload['rows']}
+            assert payload['new_host']['connected'] is True and payload['new_host']['complete'] is False
+            assert rows['storage-ids']['level'] == 'unknown' and rows['storage-status']['level'] == 'unknown'
+            assert any(error['command_id'] == 'storage' for error in payload['new_host']['errors'])
+            assert rows['guests-running']['level'] == 'error', 'chyba jedného príkazu nesmie skryť zistený konflikt hostí'
+            payload = compare(new=MigrationCompareSshClient(
+                migration_compare_outputs(True), command_errors={'storage': ValueError(SECRET_MARKER)}))
+            assert any(error['command_id'] == 'storage' for error in payload['new_host']['errors'])
+
+            invalid_version = migration_compare_outputs(True)
+            invalid_version['version'] = 'pve-manager: 9BROKEN\n'
+            payload = compare(new=MigrationCompareSshClient(invalid_version))
+            assert any(error['command_id'] == 'version' for error in payload['new_host']['errors'])
+            assert next(row for row in payload['rows'] if row['id'] == 'pve-version')['level'] == 'unknown'
+
+            failed_outputs = migration_compare_outputs(True)
+            failed_outputs['cpu'] = ('Vendor ID: ' + SECRET_MARKER, SECRET_MARKER, 1)
+            payload = compare(new=MigrationCompareSshClient(failed_outputs))
+            rows = {row['id']: row for row in payload['rows']}
+            assert rows['cpu-vendor']['level'] == 'unknown' and rows['cpu-flags']['level'] == 'unknown'
+            assert any(error['command_id'] == 'cpu' for error in payload['new_host']['errors'])
+
+            # Limit výstupu zahodí celé fakty z príkazu; parsovaný fragment nie je spoľahlivý.
+            huge_outputs = migration_compare_outputs(True)
+            huge_outputs['qm'] = 'VMID NAME STATUS MEM(MB) BOOTDISK(GB) PID\n' + '120 synthetic running 1024 8.00 123\n' * 10000
+            huge_outputs['pct'] = 'VMID Status Lock Name\n113 stopped proxmox-backup\n'
+            payload = compare(new=MigrationCompareSshClient(huge_outputs))
+            rows = {row['id']: row for row in payload['rows']}
+            assert payload['new_host']['complete'] is False
+            assert any(error['command_id'] == 'qm' for error in payload['new_host']['errors'])
+            assert rows['guests-running']['level'] == 'unknown' and rows['guests-inventory']['level'] == 'unknown'
+
+            included_network = migration_compare_outputs(True)
+            included_network['network'] += '\nsource /etc/network/interfaces.d/*\n'
+            payload = compare(new=MigrationCompareSshClient(included_network))
+            assert payload['new_host']['facts']['network']['includes'] is True
+            rows = {row['id']: row for row in payload['rows']}
+            assert rows['bridges']['level'] == 'unknown' and rows['vlans']['level'] == 'unknown'
+
+            # Porovnanie neukladá zadané heslo ani nemení konfiguráciu či priebeh migrácie.
+            assert Path(app_module.CONFIG_FILE).read_bytes() == config_before
+            assert Path(app_module.MIGRATION_STATE_FILE).read_bytes() == state_before
+            assert {path.name for path in workdir.iterdir()} == files_before
+
+            for source in ({'mode': 'local'}, {'mode': 'remote_ssh', 'ssh': {'host': '', 'password': 'x'}}):
+                config['source_config'] = source
+                app_module.save_config(config)
+                created.clear()
+                pending_clients.clear()
+                response = client.post(endpoint, json=request_body)
+                assert response.status_code == 400 and response.is_json
+                assert not created, 'neplatný SSH zdroj nesmie začať porovnanie'
+        finally:
+            for name, value in originals.items():
+                setattr(app_module, name, value)
+            app_module.AUTH_CONFIG_FILE = original_auth
+            app_module.sync_flask_secret()
+
+
 def main():
     test_data_model()
     test_readiness()
@@ -583,6 +1198,9 @@ def main():
     test_wiki_additions()
     test_risk_analysis()
     test_downloads_and_handbook()
+    test_migration_data_model()
+    test_migration_api()
+    test_migration_compare()
     print('test_recovery: OK')
 
 

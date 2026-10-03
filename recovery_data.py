@@ -1044,8 +1044,12 @@ update-initramfs -u -k all
             _code("""
 # na STAROM hoste
 qm set <id> --onboot 0              # pct set <id> --onboot 0 pre LXC
+qm shutdown <id>                   # pct shutdown <id> pre LXC
+qm status <id>                     # pct status <id>: musí byť stopped
 vzdump <id> --storage <backup-storage> --mode stop --compress zstd
-# hosť je teraz vypnutý – na starom ho už nespúšťaj
+qm status <id>                     # pct status <id>: po zálohe over stopped
+# vzdump --mode stop môže pôvodne bežiacu VM znovu spustiť!
+# hosťa najprv vypni; na starom ho už nespúšťaj
 
 # na NOVOM hoste
 qmrestore <dump>/vzdump-qemu-<id>-<čas>.vma.zst <id> --storage local-lvm
@@ -1588,6 +1592,136 @@ timedatectl; chronyc tracking
 ]
 
 WIKI_ARTICLE_SLUGS = [article['slug'] for article in WIKI_ARTICLES]
+
+# Plánovaná migrácia: príkazy sú návody pre administrátora, appka ich nespúšťa.
+MIGRATION_METHODS = [
+    {'id': 'disk_move', 'title': 'Presun systémového disku',
+     'description': 'Starý host vypneš a jeho disk presunieš do nového stroja.'},
+    {'id': 'side_by_side', 'title': 'Nový host vedľa starého',
+     'description': 'Samostatný nový Proxmox s dočasnou IP a hostname; hostí presúvaš po jednom cez vzdump.'},
+]
+MIGRATION_COMPARE_COMMANDS = [
+    {'id': 'hostname', 'title': 'Názov hosta', 'command': 'LC_ALL=C hostname'},
+    {'id': 'version', 'title': 'Verzia PVE', 'command': 'LC_ALL=C pveversion -v'},
+    {'id': 'storage', 'title': 'Storage', 'command': 'LC_ALL=C pvesm status'},
+    {'id': 'links', 'title': 'Sieťové rozhrania', 'command': 'LC_ALL=C ip -br link'},
+    {'id': 'addresses', 'title': 'IP adresy', 'command': 'LC_ALL=C ip -br addr'},
+    {'id': 'network', 'title': 'Bridge a VLAN', 'command': 'LC_ALL=C cat /etc/network/interfaces'},
+    {'id': 'cpu', 'title': 'CPU', 'command': 'LC_ALL=C lscpu'},
+    {'id': 'qm', 'title': 'Virtuálne stroje', 'command': 'LC_ALL=C qm list'},
+    {'id': 'pct', 'title': 'Kontajnery', 'command': 'LC_ALL=C pct list'},
+    {'id': 'timers', 'title': 'Systemd timery',
+     'command': 'LC_ALL=C systemctl list-timers --all --no-pager --no-legend'},
+]
+
+MIGRATION_GUEST_TRANSITIONS = {
+    'pending': ['stopped_on_old', 'skipped'],
+    'stopped_on_old': ['restored_on_new', 'skipped'],
+    'restored_on_new': ['verified'],
+    'verified': [],
+    'skipped': ['pending'],
+}
+MIGRATION_STEPS = [
+    {
+        'id': 'prepare', 'methods': ['disk_move', 'side_by_side'],
+        'title': 'Príprava a kontroly', 'goal': 'Poznať závislosti, nový HW a plán výpadku.',
+        'tasks': ['Over verziu PVE, NIC/MAC, bridge/VLAN, CPU vendor a PCI/USB passthrough.',
+                  'Naplánuj presun routera, DNS a LXC s touto appkou; maj konzolu a offline príručku.',
+                  'Priprav samostatnú zálohu bind mountov a diskov vylúčených z vzdump.'],
+        'commands': ['pveversion -v', 'ip -br link', 'lscpu', 'lspci -nn', 'qm list', 'pct list'],
+        'warnings': ['Pri Intel ↔ AMD uprav VM CPU typu host podľa kompatibility.',
+                     'Nikdy dva hosty s rovnakou IP, hostname alebo SSH identitou naraz.'],
+        'wiki_slug': 'hw-migration',
+    },
+    {
+        'id': 'fresh-backups', 'methods': ['disk_move', 'side_by_side'],
+        'title': 'Čerstvé zálohy', 'goal': 'Mať aktuálnu konfiguráciu aj disky hostí mimo starého servera.',
+        'tasks': ['Skontroluj Riziká obnovy. Hosť bez vzdump jobu potrebuje ručnú zálohu.',
+                  'Vytvor zálohu hosta v appke, stiahni archív aj offline príručku na PC.',
+                  'Over úspešné vzdump úlohy a dostupnosť záloh na NAS; job nie je dôkaz úspešnej zálohy.'],
+        'commands': ['# STARÝ HOST – nahraď BACKUP_STORAGE reálnym ID',
+                     'vzdump --all --storage BACKUP_STORAGE --mode snapshot --compress zstd'],
+        'warnings': ['Nahraď BACKUP_STORAGE reálnym ID. Konfiguračný archív hosta neobsahuje disky VM/LXC.',
+                     'Backup joby a timery smú zapisovať a prune-backups mazať zálohy iba z jedného hosta.'],
+        'wiki_slug': 'vm-lxc',
+    },
+    {
+        'id': 'new-host', 'methods': ['side_by_side'],
+        'title': 'Nový host s dočasnou identitou', 'goal': 'Pripraviť nový samostatný Proxmox bez kolízie so starým.',
+        'tasks': ['Nainštaluj rovnakú alebo novšiu podporovanú verziu PVE.',
+                  'Použi inú dočasnú IP aj hostname a vlastné SSH host keys.',
+                  'Z konzoly nastav NIC, bridge/VLAN a NAS; povoľ dočasnú IP na NAS.'],
+        'commands': ['hostname', 'ip -br link', 'ip -br addr', 'pvesm status'],
+        'warnings': ['Neklonuj SSH identitu bežiaceho starého servera.', 'Backup joby a timery na novom zatiaľ nezapínaj.'],
+        'wiki_slug': 'network',
+    },
+    {
+        'id': 'selective-config', 'methods': ['side_by_side'],
+        'title': 'Selektívny prenos konfigurácie', 'goal': 'Preniesť iba skontrolované nastavenia vhodné pre nový host.',
+        'tasks': ['Po kontrole prenes storage ID, používateľov/ACL, autofs mapy a vlastné skripty.',
+                  'Sieť, fstab, passthrough a firewall prispôsob novému HW; firewall prenášaj posledný.',
+                  'Vzdump joby a timery ponechaj na novom vypnuté.'],
+        'commands': ['pvesm status', 'systemctl list-timers', 'systemctl --failed'],
+        'warnings': ['NIE celý config.db, kým starý host beží. Nekopíruj celý /etc/pve ani SSH host keys.',
+                     'Restore ochrany appky platia aj počas migrácie.'],
+        'wiki_slug': 'hw-migration',
+    },
+    {
+        'id': 'move-guests', 'methods': ['side_by_side'],
+        'title': 'Presun hostí po jednom', 'goal': 'Vypnúť pôvodného hosťa, zálohovať, obnoviť a overiť novú kópiu.',
+        'tasks': ['Použi zoznam hostí nižšie: vypni autostart, vypni hosťa a over stopped pred aj po vzdump.',
+                  'Na novom vyber správny archív a storage, obnov bez --force, skontroluj sieť/passthrough.',
+                  'Pred štartom na novom znovu over vypnutie na starom; over služby a až potom označ verified.'],
+        'commands': [],
+        'warnings': ['Nikdy ten istý hosť bežiaci na oboch serveroch.',
+                     'vzdump --mode stop môže pôvodne bežiacu VM znovu spustiť; najprv ju samostatne vypni.',
+                     'Skipped znamená vedomé vynechanie. Poznač dôvod a čo bude so službou po vypnutí starého hosta.'],
+        'wiki_slug': 'vm-lxc',
+    },
+    {
+        'id': 'disk-move', 'methods': ['disk_move'],
+        'title': 'Vypnutie a presun disku', 'goal': 'Spustiť pôvodnú inštaláciu na novom HW.',
+        'tasks': ['Vypni autostart hostí s passthrough, hostí aj starý server; až potom presuň disk.',
+                  'Over kompatibilitu bootovania UEFI/GRUB a dostupnosť všetkých diskov.',
+                  'Z konzoly oprav bridge-ports, CPU/microcode a PCI/USB; autostart zapni až po kontrole.'],
+        'commands': ['ip -br link', 'proxmox-boot-tool status', 'ip -br addr', 'lspci -nn', 'lsusb'],
+        'warnings': ['Starý stroj nesmie súčasne bootovať kópiu tej istej inštalácie.',
+                     'Pri probléme nový vypni a vráť disk do pôvodného servera.'],
+        'wiki_slug': 'hw-migration',
+    },
+    {
+        'id': 'cutover', 'methods': ['disk_move', 'side_by_side'],
+        'title': 'Prepnutie (cutover)', 'goal': 'Prepnúť prevádzku aj správu záloh na nový host.',
+        'tasks': ['Pri side_by_side musia byť všetci hostia verified alebo vedome skipped.',
+                  'Vypni alebo odpoj starý server skôr, než nový prevezme pôvodnú IP/hostname/SSH identitu.',
+                  'V Nastaveniach appky zmeň SSH hosta a prípadné heslo, ulož a použi Test SSH.',
+                  'Vzdump joby a backup timery aktivuj iba na novom; na starom ostanú vypnuté.'],
+        'commands': ['hostname', 'ip -br addr', 'systemctl list-timers'],
+        'warnings': ['Stavy sú ručné potvrdenia administrátora, nie živá kontrola hostov.',
+                     'Zmena názvu existujúceho PVE nodu potrebuje osobitný postup podľa wiki.'],
+        'wiki_slug': 'hw-migration',
+    },
+    {
+        'id': 'verify-rollback', 'methods': ['disk_move', 'side_by_side'],
+        'title': 'Overenie a cesta späť', 'goal': 'Overiť služby, novú zálohu a použiteľný návrat.',
+        'tasks': ['Over sieť, NAS, služby hostí, firewall, čas a úspešnú novú zálohu hosta aj vzdump.',
+                  'Pri návrate najprv vypni novú kópiu hosťa, až potom spusti starú.',
+                  'Zmeny dát po presune sa do starej kópie neprenesú; naplánuj ich bezpečný návrat.'],
+        'commands': ['pvesm status', 'systemctl --failed', 'qm list', 'pct list', 'timedatectl'],
+        'warnings': ['Pôvodné dáta a zálohy zachovaj, kým neoveríš prevádzku aj obnovu.'],
+        'wiki_slug': 'post-recovery-checklist',
+    },
+    {
+        'id': 'retire-old', 'methods': ['disk_move', 'side_by_side'],
+        'title': 'Vyradenie starého servera', 'goal': 'Uzavrieť migráciu po úspešnom cykle záloh a skúške obnovy.',
+        'tasks': ['Nechaj nový host prejsť aspoň jedným cyklom záloh a over obnovu jedného hosťa.',
+                  'Over vypnuté backup joby, timery a autostart na starom; starý server vypni.',
+                  'Stiahni novú offline príručku; staré disky vymaž až po vedomom rozhodnutí.'],
+        'commands': [],
+        'warnings': ['Vymazanie starých diskov zruší cestu späť. Appka žiadne mazanie ani migráciu nevykonáva.'],
+        'wiki_slug': 'hw-migration',
+    },
+]
 
 # ---------------------------------------------------------------------------
 # Hlavný recovery checklist (New HW)

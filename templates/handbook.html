@@ -195,6 +195,7 @@ footer { color: var(--muted); font-size: 0.85rem; text-align: center; margin-top
   <ol id="toc">
     <li><a href="#rychle-udaje">0. Kľúčové údaje (ťahák)</a></li>
     <li><a href="#rizika">1. Riziká obnovy</a></li>
+    {% if migration %}<li><a href="#migration">Plánovaná migrácia – uložený stav</a></li>{% endif %}
     <li><a href="#prehlad">2. Ako sú veci zálohované</a></li>
     <li><a href="#priprava">3. Čo potrebuješ mať pripravené</a></li>
     <li><a href="#faza1">4. Fáza 1 – inštalácia Proxmoxu</a></li>
@@ -274,6 +275,33 @@ footer { color: var(--muted); font-size: 0.85rem; text-align: center; margin-top
 <div class="ok callout"><strong>✅ Bez zistených rizík</strong>Analýza archívu nenašla hostí bez zálohy ani problémy s vzdump jobmi.</div>
 {% endfor %}
 </section>
+
+{% if migration_error %}<div class="warn callout"><strong>Stav migrácie nie je dostupný</strong>{{ migration_error }}</div>{% endif %}
+{% if migration %}
+<section id="migration">
+<h2>Plánovaná migrácia – uložený stav</h2>
+<p><strong>Spôsob:</strong> {{ 'Presun systémového disku' if migration.state.method == 'disk_move' else 'Nový host vedľa starého' }}.
+<strong>Začiatok:</strong> {{ migration.state.started_at or '–' }}.
+<strong>Posledná zmena:</strong> {{ migration.state.updated_at or '–' }}.
+<strong>Dokončenie:</strong> {{ migration.state.finished_at or 'prebieha' }}.</p>
+<p><strong>Starý host:</strong> {{ migration.state.old_host.ip or 'IP neurčená' }} / {{ migration.state.old_host.hostname or 'hostname neurčený' }}<br>
+<strong>Nový host:</strong> {{ migration.state.new_host.ip or 'IP neurčená' }} / {{ migration.state.new_host.hostname or 'hostname neurčený' }}</p>
+<div class="crit callout"><strong>Bezpečnostné poistky</strong>Nikdy dva hosty s rovnakou IP, hostname alebo SSH identitou naraz. Nikdy ten istý hosť bežiaci na oboch. Vzdump joby a backup timery smú bežať iba na jednom hoste; inak prune-backups môže mazať zálohy na NAS.</div>
+<p>Snapshot ručne potvrdeného postupu pri exporte; nejde o živú kontrolu hostov. Pokyny sú vo wiki <strong>Migrácia na nový HW (plánovaná)</strong>. Postup obnovy po havárii nižšie (najmä config.db) nepoužívaj ako plošnú obnovu pri bežiacom starom hoste.</p>
+<ul>{% for s in migration.steps %}
+<li><strong>{{ '✓' if migration.state.steps.get(s.id, {}).get('completed') else '○' }} {{ s.title }}</strong> – {{ s.goal }}{% if migration.state.steps.get(s.id, {}).get('updated_at') %} ({{ migration.state.steps[s.id].updated_at }}){% endif %}</li>
+{% endfor %}</ul>
+{% if migration.state.method == 'side_by_side' %}
+{% if not migration.inventory.available %}<div class="warn callout"><strong>Inventár sa nedá overiť</strong>{{ migration.inventory.error }}</div>{% endif %}
+{% set states = {'pending': 'Čaká na presun', 'stopped_on_old': 'Vypnutý na starom', 'restored_on_new': 'Obnovený na novom', 'verified': 'Overený', 'skipped': 'Vynechaný'} %}
+<div class="table-wrap"><table><tr><th>VMID / typ</th><th>Názov</th><th>Stav migrácie</th><th>Vzdump job</th><th>Poznámka / zmena</th></tr>
+{% for g in migration.guests %}<tr><td>{{ g.vmid }} / {{ g.type }}</td><td>{{ g.name }}</td><td>{{ states[g.status] }}</td><td>{{ 'áno (over výsledok zálohy)' if g.backed_up else 'nie – ručný vzdump nutný' }}</td><td>{{ g.note }}<br>{{ g.updated_at or '–' }}</td></tr>
+{% else %}<tr><td colspan="5">Žiadni hostia v dostupnom inventári.</td></tr>{% endfor %}
+</table></div>
+{% if not migration.cutover_ready %}<div class="warn callout"><strong>Prepnutie ešte nie je pripravené</strong>Over inventár a každého hosťa označ overený alebo vedome vynechaný.</div>{% endif %}
+{% endif %}
+</section>
+{% endif %}
 
 <section id="prehlad">
 <h2>2. Ako sú veci zálohované</h2>

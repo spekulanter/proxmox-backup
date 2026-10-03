@@ -35,10 +35,49 @@ OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(tempfile.mkdtemp(prefix='
 OUT.mkdir(parents=True, exist_ok=True)
 SECRET_MARKER = 'SECRET_HASH_DO_NOT_SHOW'
 
+COMPARE_PASSWORD_MARKER = 'COMPARE_PASSWORD_NOT_FOR_STORAGE'
+COMPARE_HOST_FIXTURE = {
+    'host': 'old-pve.example', 'port': 22, 'username': 'root', 'connected': True,
+    'complete': True, 'errors': [],
+    'facts': {
+        'hostname': 'old-pve', 'pve_version': 'proxmox-ve: 9.2.0',
+        'storage': [{'id': 'local-lvm', 'type': 'lvmthin', 'status': 'active'}],
+        'links': [{'name': 'enp45s0', 'state': 'UP'}],
+        'addresses': [{'name': 'vmbr0.200', 'state': 'UP', 'addresses': ['192.0.2.10/24']}],
+        'network': {
+            'bridges': [{'name': 'vmbr0', 'ports': ['enp45s0'], 'vlan_aware': 'yes', 'vids': '2-4094'}],
+            'vlans': [{'name': 'vmbr0.200', 'raw_device': 'vmbr0', 'vlan_id': '200'}], 'includes': True,
+        },
+        'cpu': {'vendor': 'GenuineIntel', 'flags': ['sse', 'sse2', 'vmx']},
+        'guests': [{'vmid': 100, 'type': 'VM', 'name': 'home-assistant', 'status': 'running'}],
+        'timers': [{'unit': 'pve-backup-to-a-very-long-nas-name-for-mobile-wrapping.timer', 'activates': 'pve-backup.service'}],
+    },
+}
+COMPARE_FIXTURE = {
+    'success': True, 'read_only': True, 'compared_at': '2026-10-03T10:20:30+00:00',
+    'old_host': COMPARE_HOST_FIXTURE,
+    'new_host': {
+        **COMPARE_HOST_FIXTURE, 'host': 'new-pve.example', 'complete': False,
+        'errors': [{'command_id': 'timers', 'title': 'Systemd timery', 'message': 'Diagnostický príkaz zlyhal; over host ručne.'}],
+        'facts': {**COMPARE_HOST_FIXTURE['facts'], 'hostname': 'new-pve', 'cpu': {'vendor': 'AuthenticAMD', 'flags': ['sse', 'sse2', 'svm']}},
+    },
+    'summary': {'ok': 1, 'info': 1, 'warning': 2, 'error': 1, 'unknown': 1},
+    'rows': [
+        {'id': 'pve-version', 'label': 'Verzia PVE', 'level': 'ok', 'old_value': '9.2.0', 'new_value': '9.2.0', 'detail': 'Verzie PVE sú zhodné.'},
+        {'id': 'storage', 'label': 'Storage ID', 'level': 'warning', 'old_value': 'local-lvm, qnap.autofs', 'new_value': 'local-lvm', 'detail': 'Na novom hoste chýba storage ID qnap.autofs.'},
+        {'id': 'network', 'label': 'Bridge a VLAN', 'level': 'info', 'old_value': 'vmbr0.200', 'new_value': 'vmbr0.200', 'detail': 'Skontroluj fyzické porty a include súbory.'},
+        {'id': 'cpu', 'label': 'CPU vendor a flags', 'level': 'warning', 'old_value': 'GenuineIntel / vmx', 'new_value': 'AuthenticAMD / svm', 'detail': 'Zmena CPU Intel ↔ AMD: over kompatibilitu hostí.'},
+        {'id': 'duplicate-running', 'label': 'Hostia bežiaci na oboch serveroch', 'level': 'error', 'old_value': '100 running', 'new_value': '100 running', 'detail': 'Rovnaký VMID 100 beží na oboch hostoch. Pred pokračovaním ho na jednom zastav.'},
+        {'id': 'timers', 'label': 'Backup timery', 'level': 'unknown', 'old_value': 'pve-backup.timer', 'new_value': 'neoverené', 'detail': 'Výstup nového hosta nie je dostupný. Timery povoľ iba na jednom hoste.'},
+    ],
+}
+
+
 work = Path(tempfile.mkdtemp(prefix='pbm-ui-'))
 app_module.CONFIG_FILE = str(work / 'backup_config.json')
 app_module.BACKUP_HISTORY_FILE = str(work / 'backup_history.json')
 app_module.BACKUP_STORAGE_DIR = str(work / 'backups')
+app_module.MIGRATION_STATE_FILE = str(work / 'migration_state.json')
 os.makedirs(app_module.BACKUP_STORAGE_DIR)
 _orig, totp_secret, password = create_test_auth_config(work / 'auth_config.json')
 
@@ -61,6 +100,9 @@ with tarfile.open(archive, 'w:gz') as tar:
     add('etc/network/interfaces', 'auto vmbr0\n')
     add('etc/pve/storage.cfg', 'dir: local\n')
     add('var/lib/pve-cluster/config.db', 'sqlite')
+    add('etc/pve/jobs.cfg', 'vzdump: daily\n\tvmid 100\n\tstorage local\n\tenabled 1\n')
+    add('backup-info/qm-list.txt', '$ qm list\nexit_code=0\n\n--- stdout ---\nVMID NAME STATUS MEM(MB) BOOTDISK(GB) PID\n100 home-assistant running 8192 60 1790\n\n--- stderr ---\n\n')
+    add('backup-info/pct-list.txt', '$ pct list\nexit_code=0\n\n--- stdout ---\nVMID Status Lock Name\n113 stopped proxmox-backup-with-a-very-long-name-to-check-mobile-wrapping\n\n--- stderr ---\n\n')
     add('etc/ssh/sshd_config', 'PermitRootLogin yes\n')
     add('etc/ssh/ssh_host_ed25519_key', f'{SECRET_MARKER}\n')
     add('backup-info/ip-br-link.txt', '$ ip -br link\nexit_code=0\n\n--- stdout ---\nlo UNKNOWN 00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP>\nenp2s0 UP 58:47:ca:aa:bb:cc <BROADCAST,MULTICAST,UP,LOWER_UP> averyveryverylongtokenwithoutanyspacesthatcouldoverflowthemobilelayoutifnotwrappedproperly\n\n--- stderr ---\n\n')
@@ -155,6 +197,145 @@ with sync_playwright() as p:
         if width == 390:
             page.locator('#rsec-checklist details').nth(6).scroll_into_view_if_needed()
             page.screenshot(path=str(OUT / 'm-checklist.png'))
+        if width == 360:
+            Path(app_module.MIGRATION_STATE_FILE).write_text('{broken-json', encoding='utf-8')
+        page.click("#recovery-subnav [data-rsec='migration']")
+        if width == 360:
+            page.wait_for_selector("#migration-body [data-migration-action='reset']")
+            check(page, 'migration-corrupt-state', vp)
+            page.once('dialog', lambda dialog: dialog.accept())
+            page.click("#migration-body [data-migration-action='reset']")
+        page.wait_for_selector('#migration-form')
+        # Každý viewport začne bez stavu z predchádzajúceho priechodu.
+        if page.locator('#migration-reset-btn').count():
+            page.once('dialog', lambda dialog: dialog.accept())
+            page.click('#migration-reset-btn')
+            page.wait_for_selector('#migration-reset-btn', state='detached')
+        page.locator("input[name='migration-method'][value='side_by_side']").check()
+        page.fill('#migration-old_host-ip', '192.0.2.10')
+        page.fill('#migration-old_host-hostname', 'old-pve.example')
+        page.fill('#migration-new_host-ip', '192.0.2.11')
+        page.fill('#migration-new_host-hostname', 'new-pve.example')
+        page.click('#migration-save-btn')
+        page.wait_for_selector("[data-migration-guest='100']")
+        assert page.locator('#migration-step-cutover').is_disabled(), 'cutover pred overením hostí'
+        assert page.locator("[data-migration-guest='113']").inner_text().find('Bez vzdump jobu') >= 0
+        # Rekonfigurácia nesmie prepísať rozpracovaný spôsob ani zdieľať IP.
+        page.locator("input[name='migration-method'][value='disk_move']").check()
+        page.click('#migration-save-btn')
+        page.wait_for_function("() => !migrationBusy && document.querySelector('#migration-status').textContent.includes('resetuj')")
+        assert page.evaluate("migrationData.state.method === 'side_by_side'"), 'odmietnutá zmena spôsobu zachová stav'
+        assert page.locator('#migration-save-btn').is_enabled(), 'po chybe sa formulár odblokuje'
+        page.locator("input[name='migration-method'][value='side_by_side']").check()
+        page.fill('#migration-new_host-ip', '192.0.2.10')
+        page.click('#migration-save-btn')
+        page.wait_for_function("() => !migrationBusy && document.querySelector('#migration-status').textContent.includes('inú IP')")
+        assert page.evaluate("migrationData.state.new_host.ip === '192.0.2.11'"), 'odmietnutá duplicitná IP zachová stav'
+        check(page, 'migration-validation-errors', vp)
+        page.fill('#migration-new_host-ip', '192.0.2.11')
+        page.click('#migration-save-btn')
+        page.wait_for_function("() => !migrationBusy && document.querySelector('#migration-status').textContent.includes('uložený')")
+        page.locator("[data-migration-detail='fresh-backups']").evaluate('el => el.open = true')
+        page.locator("[data-migration-detail='guest-100']").evaluate('el => el.open = true')
+        page.locator("[data-migration-detail='guest-113']").evaluate('el => el.open = true')
+        check(page, 'migration-side-by-side', vp)
+        if width == 390:
+            page.screenshot(path=str(OUT / 'm-migration.png'), full_page=True)
+        note = '<img src=x onerror="window.migrationXss=true">' + 'a' * 160
+        page.fill('#migration-guest-note-100', note)
+        page.click("[data-migration-action='guest-note'][data-vmid='100']")
+        page.wait_for_function("() => document.querySelector('#migration-status').textContent.includes('uložený') && !migrationBusy")
+        assert page.evaluate('window.migrationXss === undefined'), 'poznámka musí byť escapovaná'
+        page.locator('#migration-step-prepare').check()
+        page.wait_for_function('() => !migrationBusy')
+        page.reload()
+        page.wait_for_selector('#readiness-mini:not(:has-text("Načítavam"))', timeout=20000)
+        page.click('#tab-recovery')
+        page.click("#recovery-subnav [data-rsec='migration']")
+        page.wait_for_selector("[data-migration-guest='100']")
+        assert page.locator('#migration-step-prepare').is_checked(), 'krok musí prežiť reload'
+        assert page.locator('#migration-guest-note-100').input_value() == note, 'poznámka musí prežiť reload'
+        for status in ('stopped_on_old', 'restored_on_new', 'verified'):
+            page.select_option('#migration-guest-status-100', status)
+            page.wait_for_function('(status) => !migrationBusy && migrationData.guests.find(g => g.vmid === 100).status === status', arg=status)
+        page.select_option('#migration-guest-status-113', 'skipped')
+        page.wait_for_function("() => !migrationBusy && migrationData.guests.find(g => g.vmid === 113).status === 'skipped'")
+        assert page.locator('#migration-step-cutover').is_enabled(), 'cutover po overení/vynechaní hostí'
+        check(page, 'migration-verified-guests', vp)
+        page.once('dialog', lambda dialog: dialog.dismiss())
+        page.click('#migration-reset-btn')
+        assert page.locator('#migration-guest-note-100').input_value() == note, 'zrušený reset zachová stav'
+        page.once('dialog', lambda dialog: dialog.accept())
+        page.click('#migration-reset-btn')
+        page.wait_for_selector('#migration-reset-btn', state='detached')
+        page.locator("input[name='migration-method'][value='disk_move']").check()
+        page.click('#migration-save-btn')
+        page.wait_for_selector('#migration-step-disk-move')
+        assert not page.locator('#migration-guests').count(), 'disk_move nemá presun hostí po jednom'
+        assert not page.locator('#migration-step-selective-config').count(), 'disk_move má vlastné kroky'
+        check(page, 'migration-disk-move', vp)
+
+        # Porovnanie používa iba syntetické HTTP odpovede; nikdy neotvára SSH.
+        compare_attempts = {'count': 0}
+
+        def mock_compare(route):
+            compare_attempts['count'] += 1
+            payload = route.request.post_data_json
+            assert set(payload) == {'new_host'}
+            assert payload['new_host'] == {'host': 'new-pve.example', 'port': 2222, 'password': COMPARE_PASSWORD_MARKER}
+            assert route.request.headers.get('x-csrf-token'), 'porovnanie musí používať CSRF'
+            if compare_attempts['count'] == 2:
+                route.fulfill(status=400, content_type='application/json', body=json.dumps({'success': False, 'error': 'Skontroluj uložený SSH cieľ aplikácie.'}))
+            else:
+                route.fulfill(status=200, content_type='application/json', body=json.dumps(COMPARE_FIXTURE))
+
+        page.route('**/api/recovery/migration/compare', mock_compare)
+        assert not page.locator('#migration-compare-result article').count(), 'porovnanie sa nespúšťa automaticky'
+        page.fill('#migration-compare-host', 'new-pve.example')
+        page.fill('#migration-compare-port', '2222')
+        page.fill('#migration-compare-password', COMPARE_PASSWORD_MARKER)
+        page.click('#migration-compare-btn')
+        assert page.locator('#migration-compare-password').input_value() == '', 'heslo vymaž ihneď po odoslaní'
+        page.wait_for_selector("[data-compare-row='duplicate-running']")
+        assert 'Chyba' in page.locator("[data-compare-row='duplicate-running']").inner_text()
+        assert 'Intel' in page.locator("[data-compare-row='cpu']").inner_text()
+        page.locator('#migration-compare-result details').evaluate('el => el.open = true')
+        check(page, 'migration-compare-mismatches', vp)
+        assert COMPARE_PASSWORD_MARKER not in page.content()
+        assert page.evaluate('(secret) => !Object.values(localStorage).some(v => v.includes(secret)) && !Object.values(sessionStorage).some(v => v.includes(secret)) && !JSON.stringify(appConfig).includes(secret) && !JSON.stringify(migrationData).includes(secret)', COMPARE_PASSWORD_MARKER)
+        assert COMPARE_PASSWORD_MARKER not in Path(app_module.CONFIG_FILE).read_text()
+        assert COMPARE_PASSWORD_MARKER not in Path(app_module.MIGRATION_STATE_FILE).read_text()
+        page.locator('#migration-step-prepare').check()
+        page.wait_for_function('() => !migrationBusy')
+        assert page.locator("[data-compare-row='duplicate-running']").count(), 'výsledok prežije prekreslenie krokov'
+        if width == 390:
+            page.locator('#migration-compare').scroll_into_view_if_needed()
+            page.screenshot(path=str(OUT / 'm-migration-compare.png'), full_page=True)
+        page.fill('#migration-compare-password', COMPARE_PASSWORD_MARKER)
+        page.click('#migration-compare-btn')
+        page.wait_for_function("() => !migrationCompareBusy && document.querySelector('#migration-compare-status').textContent.includes('zadaj heslo znova')")
+        assert page.locator('#migration-compare-password').input_value() == '', 'heslo vymaž aj po HTTP chybe'
+        assert not page.locator('#migration-compare-result article').count(), 'pri chybe nezobrazuj starý výsledok'
+        assert page.locator('#migration-compare-btn').is_enabled(), 'porovnanie možno zopakovať'
+        check(page, 'migration-compare-failure', vp)
+        page.fill('#migration-compare-password', COMPARE_PASSWORD_MARKER)
+        page.click('#migration-compare-btn')
+        page.wait_for_selector("[data-compare-row='duplicate-running']")
+        page.click('#migration-save-btn')
+        page.wait_for_function('() => !migrationBusy')
+        assert not page.locator('#migration-compare-result article').count(), 'rekonfigurácia vymaže starú snímku'
+        page.fill('#migration-compare-password', COMPARE_PASSWORD_MARKER)
+        page.click('#migration-compare-btn')
+        page.wait_for_selector("[data-compare-row='duplicate-running']")
+        page.once('dialog', lambda dialog: dialog.accept())
+        page.click('#migration-reset-btn')
+        page.wait_for_selector('#migration-reset-btn', state='detached')
+        assert not page.locator('#migration-compare-result article').count(), 'reset vymaže výsledok porovnania'
+        assert page.locator('#migration-compare-password').input_value() == ''
+        assert compare_attempts['count'] == 4
+        page.unroute('**/api/recovery/migration/compare', mock_compare)
+
+
         page.click("#recovery-subnav [data-rsec='items']")
         check(page, 'recovery-items', vp)
         page.click("#rsec-items button[data-path='/etc/shadow']")
