@@ -1038,9 +1038,11 @@ update-initramfs -u -k all
 """),
             _tip('Disk zo starého stroja je zároveň záloha: ak nový HW nefunguje, vráť disk späť do starého servera.'),
             _h('Spôsob B – nový host vedľa starého'),
-            _p('1) Nainštaluj nový Proxmox s DOČASNOU IP (napr. `.3`) a dočasným alebo novým hostname. Nastav sieť/VLAN a pripoj NAS (článok Obnova siete na inom HW a Obnova AutoFS).'),
-            _p('2) Prenes konfiguráciu selektívne – NIE celý config.db, kým starý host beží: definície storage zo storage.cfg, používateľov/ACL, autofs mapy, vlastné skripty. Vzdump joby a backup timery na novom hoste zatiaľ NEZAPÍNAJ. Firewall prenášaj ako posledný.'),
-            _p('3) Presúvaj hostí po jednom (najprv menej dôležité, infraštruktúru ako router, DNS a správcu hesiel naplánuj na čas s možnosťou výpadku):'),
+            _p('Podporovaný automatický postup v appke (samostatný node, 1:1): nový Proxmox má PÔVODNÝ hostname (názov nodu), DOČASNÚ odlišnú IP, vlastné machine-id a SSH kľúče, je prázdny (bez VM/LXC) a nie je v clustri. Appka prenesie config.db z čerstvého archívu, súbory hosta, návrh siete a presúva hostí po jednom; starý host sa pri prenose nemení (zmení sa až pri presune hosťa a pri prepnutí). Postup krok za krokom vedie sprievodca v záložke Obnova a migrácia.'),
+            _p('1) Nainštaluj nový Proxmox s pôvodným hostname a DOČASNOU IP (napr. `.3`). Nastav sieť/VLAN a pripoj NAS (článok Obnova siete na inom HW a Obnova AutoFS); appka po prenose máp autofs načíta, no balík `autofs` musíš nainštalovať ty.'),
+            _p('2) Appka skopíruje konzistentný snapshot config.db (definície hostí, storage, používatelia, ACL, joby). Vzdump joby, autostart hostí a firewall datacentra sú na novom hoste po prenose vypnuté a zapnú sa až pri prepnutí. Presun hostí s diskami na zdieľanom storage (NFS/CIFS/Ceph/iSCSI) appka odmietne – obnova s --force by mohla odstrániť pôvodné disky.'),
+            _p('Ručná selektívna alternatíva (iný hostname nodu, cluster alebo chceš niečo vynechať): NEPRENÁŠAJ celý config.db, kým starý host beží; prenes iba definície storage zo storage.cfg, používateľov/ACL, autofs mapy a vlastné skripty, a hostí obnov ručne podľa príkazov nižšie.'),
+            _p('3) Hostia sa presúvajú po jednom (najprv menej dôležité, infraštruktúru ako router, DNS a správcu hesiel naplánuj na čas s možnosťou výpadku). Príkazy nižšie sú ručný ekvivalent toho, čo appka vykoná:'),
             _code("""
 # na STAROM hoste
 qm set <id> --onboot 0              # pct set <id> --onboot 0 pre LXC
@@ -1593,7 +1595,7 @@ timedatectl; chronyc tracking
 
 WIKI_ARTICLE_SLUGS = [article['slug'] for article in WIKI_ARTICLES]
 
-# Plánovaná migrácia: príkazy sú návody pre administrátora, appka ich nespúšťa.
+# Plánovaná migrácia: disk_move sú ručné návody; pri side_by_side appka po potvrdení vykoná pevné kroky cez SSH (app.py, migračné buildery).
 MIGRATION_METHODS = [
     {'id': 'disk_move', 'title': 'Presun systémového disku',
      'description': 'Starý host vypneš a jeho disk presunieš do nového stroja.'},
@@ -1619,6 +1621,8 @@ MIGRATION_GUEST_TRANSITIONS = {
     'stopped_on_old': ['restored_on_new', 'skipped'],
     'restored_on_new': ['verified'],
     'verified': [],
+    # Hosť bol vrátený na starý host (beží tam). Nesplní podmienku prepnutia: treba ho znova presunúť alebo vedome vynechať.
+    'rolled_back': ['pending', 'skipped'],
     'skipped': ['pending'],
 }
 MIGRATION_STEPS = [
@@ -1672,9 +1676,9 @@ MIGRATION_STEPS = [
     {
         'id': 'move-guests', 'methods': ['side_by_side'],
         'title': 'Presun hostí po jednom', 'goal': 'Vypnúť pôvodného hosťa, zálohovať, obnoviť a overiť novú kópiu.',
-        'tasks': ['Pri každom hosťovi použi „Presunúť automaticky“: vypne autostart a hosťa na starom, urobí vzdump a obnoví ho na novom.',
+        'tasks': ['Pri každom hosťovi použi „Presunúť automaticky“: appka overí zdieľaný adresár záloh, vypne autostart a hosťa na starom, urobí vzdump a obnoví ho na novom.',
                   'Skontroluj config hosťa na novom (sieť, passthrough), potom „Spustiť na novom“ – iba ak je na starom vypnutý.',
-                  'Over služby hosťa a až potom nastav stav Overený. Pri probléme použi „Vrátiť na starý“.',
+                  'Over služby hosťa a až potom nastav stav Overený. Pri probléme použi „Vrátiť na starý“ (appka najprv potvrdí, že nová kópia je vypnutá); vrátený hosť sa musí znova presunúť alebo vedome vynechať.',
                   'LXC s touto appkou sa presúva ručne až v kroku Prepnutie.'],
         'commands': [],
         'warnings': ['Nikdy ten istý hosť bežiaci na oboch serveroch.',
@@ -1701,7 +1705,7 @@ MIGRATION_STEPS = [
                   'Ručne z konzoly: záloha LXC s appkou, vypnutie starého, nový host prevezme pôvodnú IP, obnova a štart appky.',
                   'V appke na novom hoste: Test SSH, nová záloha, stav READY.'],
         'commands': ['hostname', 'ip -br addr', 'systemctl list-timers'],
-        'warnings': ['Stavy sú ručné potvrdenia administrátora, nie živá kontrola hostov.',
+        'warnings': ['Stav hostí je potvrdenie administrátora; appka pred prepnutím navyše overí vypnutie starých plánovačov a pred zápismi identitu a verziu hostov.',
                      'Zmena názvu existujúceho PVE nodu potrebuje osobitný postup podľa wiki.'],
         'wiki_slug': 'hw-migration',
     },
@@ -1722,7 +1726,7 @@ MIGRATION_STEPS = [
                   'Over vypnuté backup joby, timery a autostart na starom; starý server vypni.',
                   'Stiahni novú offline príručku; staré disky vymaž až po vedomom rozhodnutí.'],
         'commands': [],
-        'warnings': ['Vymazanie starých diskov zruší cestu späť. Appka žiadne mazanie ani migráciu nevykonáva.'],
+        'warnings': ['Vymazanie starých diskov zruší cestu späť. Appka starý host nevyraďuje ani nemaže jeho disky.'],
         'wiki_slug': 'hw-migration',
     },
 ]

@@ -100,6 +100,9 @@ if not isinstance(history, list):
 for entry in history:
     if not isinstance(entry, dict) or entry.get("backup_mode") != "auto":
         continue
+    if entry.get("included_count") == 0:
+        # Záloha bez vybraných dát nie je použiteľný restore point a nesplní obdobie.
+        continue
     timestamp = parse_timestamp(entry.get("timestamp"))
     if not timestamp:
         continue

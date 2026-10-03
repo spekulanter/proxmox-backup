@@ -4,6 +4,7 @@
 import io
 import re
 import json
+import sqlite3
 import sys
 import tarfile
 import threading
@@ -29,8 +30,20 @@ EXPECTED_WIKI = {
 }
 
 
+def make_pmxcfs_db(path, conf_names):
+    """Skutočná SQLite databáza so schémou pmxcfs `tree` (použije sa aj lokálna kontrola zhody s archívom)."""
+    connection = sqlite3.connect(str(path))
+    connection.execute('CREATE TABLE tree (inode INTEGER PRIMARY KEY NOT NULL, parent INTEGER NOT NULL, version INTEGER NOT NULL, '
+                       'writer INTEGER NOT NULL, mtime INTEGER NOT NULL, type INTEGER NOT NULL, name TEXT NOT NULL, data BLOB)')
+    for index, name in enumerate(conf_names, start=10):
+        connection.execute('INSERT INTO tree VALUES (?, 2, 1, 1, 0, 8, ?, ?)', (index, name, b'name: x'))
+    connection.commit()
+    connection.close()
+    return Path(path).read_bytes()
+
+
 def add_member(tar, name, payload):
-    data = payload.encode('utf-8')
+    data = payload if isinstance(payload, bytes) else payload.encode('utf-8')
     info = tarfile.TarInfo(name)
     info.size = len(data)
     tar.addfile(info, io.BytesIO(data))
@@ -1515,8 +1528,11 @@ def migration_world(new_hostname='nuc'):
     world = {'commands': [], 'files': {}, 'modes': {}, 'fail_once': set(),
              'passwords': {'192.0.2.2': 'OLD-' + SECRET_MARKER, '192.0.2.3': 'NEW-' + SECRET_MARKER},
              'running': {'192.0.2.2': {100, 113, 122}, '192.0.2.3': set()},
-             'defined_new': set(), 'new_hostname': new_hostname, 'dumps': set()}
+             'defined_new': set(), 'new_hostname': new_hostname, 'dumps': set(),
+             'jobs': {'192.0.2.2': {'backup-qnap': 1}, '192.0.2.3': {'backup-qnap': 1}},
+             'timers': {'192.0.2.2': {'pve-backup-qnap.timer': 'enabled'}, '192.0.2.3': {}}}
     old_conf = {100: 'name: home-assistant\nonboot: 1\n', 122: 'name: mikrotik-chr\n'}
+    world['old_conf'] = old_conf
 
     def respond(host, command):
         if command in world['fail_once']:
@@ -1527,6 +1543,38 @@ def migration_world(new_hostname='nuc'):
             return (world['new_hostname'] if new else 'nuc') + '\n', '', 0
         if command == 'test -e /etc/pve/corosync.conf':
             return '', '', 1
+        if command == 'if test -e /etc/pve/corosync.conf; then echo cluster; else echo standalone; fi':
+            return 'standalone\n', '', 0
+        if command == 'pvesh get /cluster/backup --output-format json':
+            return json.dumps([{'id': job_id, 'enabled': enabled} for job_id, enabled in world['jobs'][host].items()]), '', 0
+        match = re.fullmatch(r'pvesh set /cluster/backup/(\S+) --enabled ([01])', command)
+        if match:
+            world['jobs'][host][match.group(1)] = int(match.group(2))
+            return '', '', 0
+        if command.startswith('if grep -q') or '| grep -q "^onboot: 1"' in command:
+            return 'off\n', '', 0
+        match = re.fullmatch(r'systemctl (disable|enable) --now (\S+\.timer)', command)
+        if match:
+            world['timers'][host][match.group(2)] = match.group(1) + 'd'
+            return '', '', 0
+        match = re.fullmatch(r'systemctl (is-active|is-enabled) (\S+\.timer) \|\| true', command)
+        if match:
+            state = world['timers'][host].get(match.group(2), 'disabled')
+            return ((state if match.group(1) == 'is-enabled' else ('active' if state == 'enabled' else 'inactive')) + '\n'), '', 0
+        match = re.fullmatch(r'if test -e /etc/pve/(qemu-server|lxc)/(\d+)\.conf; then echo present; else echo absent; fi', command)
+        if match:
+            return 'present\n', '', 0
+        match = re.fullmatch(r'touch (\S+\.pbm-share-check-\w+)', command)
+        if match:
+            world.setdefault('markers', set()).add(match.group(1))
+            return '', '', 0
+        match = re.fullmatch(r'if test -f (\S+\.pbm-share-check-\w+); then echo visible; else echo missing; fi', command)
+        if match:
+            return ('visible\n' if match.group(1) in world.get('markers', set()) and not world.get('unshared') else 'missing\n'), '', 0
+        if command.startswith('rm -f ') and '.pbm-share-check-' in command:
+            return '', '', 0
+        if command == 'if systemctl cat autofs >/dev/null 2>&1; then echo installed; else echo missing; fi':
+            return 'installed\n', '', 0
         if command == 'cat /etc/machine-id':
             return ('bbb' if new else 'aaa') + '\n', '', 0
         if command == 'LC_ALL=C pveversion':
@@ -1562,7 +1610,7 @@ def migration_world(new_hostname='nuc'):
             return f'status: {"running" if vmid in world["running"][host] else "stopped"}\n', '', 0
         match = re.fullmatch(r'(qm|pct) config (\d+)', command)
         if match:
-            return old_conf.get(int(match.group(2)), ''), '', 0
+            return world['old_conf'].get(int(match.group(2)), ''), '', 0
         match = re.fullmatch(r'(qm|pct) shutdown (\d+) --timeout \d+', command)
         if match:
             world['running'][host].discard(int(match.group(2)))
@@ -1612,7 +1660,7 @@ def test_migration_transfer_and_cutover():
             config['source_config']['ssh'].update({'host': '192.0.2.2', 'password': world['passwords']['192.0.2.2']})
             app_module.save_config(config)
             archive = workdir / 'backups' / 'proxmox_backup_host.tar.gz'
-            db_bytes = 'SQLite format 3\x00 simulovaná pmxcfs databáza'
+            db_bytes = make_pmxcfs_db(workdir / 'pmxcfs.db', ['100.conf', '113.conf', '122.conf', '124.conf'])
             build_host_archive(archive, extra={
                 'var/lib/pve-cluster/config.db': db_bytes,
                 'etc/pve/nodes/nuc/qemu-server/100.conf': 'name: home-assistant\nonboot: 1\nnet0: virtio,bridge=vmbr0,tag=200\n',
@@ -1655,7 +1703,7 @@ def test_migration_transfer_and_cutover():
             assert client.get(f'{base}/transfer').get_json()['transfer']['config_db'] is None
             job = wait_for_job(client, client.post(f'{base}/transfer/config-db', json={'confirm': 'KOPIA'}).get_json()['job']['id'])
             assert job['status'] == 'success', job
-            assert world['files'][('192.0.2.3', '/root/pbm-migration/config.db.new')] == db_bytes.encode('utf-8')
+            assert world['files'][('192.0.2.3', '/root/pbm-migration/config.db.new')] == db_bytes
             assert world['modes'][('192.0.2.3', '/root/pbm-migration/config.db.new')] == 0o600
             commands = [cmd for host, cmd in world['commands'] if host == '192.0.2.3']
             assert commands.index('systemctl stop pve-cluster') < commands.index('systemctl start pve-cluster')
@@ -1668,15 +1716,19 @@ def test_migration_transfer_and_cutover():
             assert response.status_code == 400 and 'už bol prenesený' in response.get_json()['error']
 
             # Súbory hosta: rozdiely a prenos iba povolených položiek s potvrdením.
-            job = wait_for_job(client, client.post(f'{base}/transfer/files-diff', json={'paths': ['/etc/auto.nfs', '/usr/local/bin']}).get_json()['job']['id'])
+            job = wait_for_job(client, client.post(f'{base}/transfer/files-diff', json={'paths': ['/etc/auto.nfs', '/usr/local/bin', '/etc/systemd/system']}).get_json()['job']['id'])
             items = {item['path']: item for item in job['result']['items']}
             assert items['/etc/auto.nfs']['status'] == 'different' and '198.51.100.99' in items['/etc/auto.nfs']['diff']
             assert items['/usr/local/bin']['status'] == 'missing_on_new'
-            for body in ({'paths': ['/etc/shadow'], 'confirm': True}, {'paths': ['/etc/auto.nfs']}, {'paths': [], 'confirm': True}):
+            for body in ({'paths': ['/etc/shadow'], 'confirm': True}, {'paths': ['/etc/auto.nfs']}, {'paths': [], 'confirm': True},
+                         {'paths': ['/etc/sysctl.conf'], 'confirm': True}):  # bez porovnaného rozdielu
                 assert client.post(f'{base}/transfer/files-apply', json=body).status_code == 400, body
+            assert 'chýba skontrolovaný rozdiel' in client.post(f'{base}/transfer/files-apply', json={'paths': ['/etc/sysctl.conf'], 'confirm': True}).get_json()['error']
             job = wait_for_job(client, client.post(f'{base}/transfer/files-apply', json={'paths': ['/etc/auto.nfs', '/etc/systemd/system'], 'confirm': True}).get_json()['job']['id'])
             assert job['status'] == 'success', job
             assert job['result']['timers_to_enable'] == ['pve-backup-qnap.timer']
+            assert job['result']['autofs'] == {'status': 'reloaded'}
+            assert ('192.0.2.3', 'systemctl reload-or-restart autofs') in world['commands']
             assert ('192.0.2.3', 'systemctl disable --now pve-backup-qnap.timer') in world['commands']
             assert any(host == '192.0.2.3' and cmd.startswith('cp -a /tmp/pve-restore.TEST/staging/etc/auto.nfs') for host, cmd in world['commands'])
 
@@ -1696,6 +1748,12 @@ def test_migration_transfer_and_cutover():
                          {'dump_dir': 'relative', 'target_storage': 'local-lvm', 'confirm': True},
                          {'dump_dir': '/autofs/qnap/dump', 'target_storage': 'nope', 'confirm': True}):
                 assert client.post(f'{base}/guests/100/move', json=body).status_code == 400, body
+            # Adresár záloh, ktorý nový host nevidí ako rovnaký export, zastaví presun skôr, než sa hosť vypne.
+            world['unshared'] = True
+            job = wait_for_job(client, client.post(f'{base}/guests/100/move', json={'dump_dir': '/autofs/qnap/dump', 'target_storage': 'local-lvm', 'confirm': True}).get_json()['job']['id'])
+            assert job['status'] == 'failed' and 'nie je to ten istý export' in job['error']
+            assert ('192.0.2.2', 'qm shutdown 100 --timeout 600') not in world['commands']
+            world['unshared'] = False
             job = wait_for_job(client, client.post(f'{base}/guests/100/move', json={'dump_dir': '/autofs/qnap/dump', 'target_storage': 'local-lvm', 'confirm': True}).get_json()['job']['id'])
             assert job['status'] == 'success', job
             assert job['result']['dump_file'].endswith('vzdump-qemu-100-2026_10_03-10_00_00.vma.zst') and job['result']['original_onboot'] is True
@@ -1718,13 +1776,17 @@ def test_migration_transfer_and_cutover():
             job = wait_for_job(client, client.post(f'{base}/guests/122/rollback', json={'confirm': True}).get_json()['job']['id'])
             assert job['status'] == 'success' and 122 in world['running']['192.0.2.2'] and 122 not in world['running']['192.0.2.3']
             guest = next(g for g in client.get(base).get_json()['guests'] if g['vmid'] == 122)
-            assert guest['status'] == 'skipped' and 'vrátený na starý host' in guest['note']
+            assert guest['status'] == 'rolled_back' and 'vrátený na starý host' in guest['note']
+            assert 'moved_at' not in client.get(f'{base}/transfer').get_json()['transfer']['guests']['122']
 
             # Prepnutie: potvrdenie a všetci hostia okrem LXC s appkou overení/vynechaní.
+            # Vrátený hosť (beží na starom) nesplní podmienku, kým sa vedome nevynechá.
             assert client.post(f'{base}/cutover', json={}).status_code == 400
             response = client.post(f'{base}/cutover', json={'confirm': 'PREPNUT'})
             assert response.status_code == 400 and 'over alebo' in response.get_json()['error']
             assert client.post(f'{base}/guests/124', json={'status': 'skipped'}).status_code == 200
+            assert client.get(base).get_json()['cutover_ready'] is False
+            assert client.post(f'{base}/guests/122', json={'status': 'skipped'}).status_code == 200
             assert client.get(base).get_json()['cutover_ready'] is True, 'LXC 113 s appkou sa do podmienky neráta'
             job = wait_for_job(client, client.post(f'{base}/cutover', json={'confirm': 'PREPNUT'}).get_json()['job']['id'])
             assert job['status'] == 'success', job
@@ -1736,6 +1798,10 @@ def test_migration_transfer_and_cutover():
             text = json.dumps(final, ensure_ascii=False)
             assert 'vzdump 113' in text and 'poweroff' in text and 'pct restore 113' in text
             assert '/root/pbm-migration/interfaces.proposed' in text and 'cluster.fw' in text
+            assert 'VM 122' not in text or 'po poweroff nepobežia nikde' in text
+            handbook = client.get('/api/recovery/handbook?inline=1').get_data(as_text=True)
+            assert 'Konkrétny postup prepnutia' in handbook and '/root/pbm-migration/interfaces.proposed' in handbook
+            assert 'pct restore 113' in handbook and SECRET_MARKER not in handbook
 
             for url in (base, f'{base}/transfer', f'{base}/jobs', f'{base}/target'):
                 body = client.get(url).get_data(as_text=True)

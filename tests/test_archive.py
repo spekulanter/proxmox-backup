@@ -865,6 +865,7 @@ def main():
                 keep_archive = backup_dir / "keep.tar.gz"
                 old_archive.write_bytes(b"old")
                 keep_archive.write_bytes(b"keep")
+                FakeFtp.files.clear()  # retencia počíta aj FTP-only archívy, preto test začína s čistým FTP
                 FakeFtp.files[keep_archive.name] = b"keep"
                 app_module.save_backup_history([
                     {

@@ -28,6 +28,7 @@ User=root
 Group=root
 WorkingDirectory=${APP_DIR}
 Environment=APP_DIR=${APP_DIR}
+Environment=APP_PORT=${APP_PORT}
 ExecStart=${APP_DIR}/auto_backup.sh
 EOF
 

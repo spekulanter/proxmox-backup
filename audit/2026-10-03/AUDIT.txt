@@ -1,0 +1,356 @@
+AUDIT PROXMOX BACKUP MANAGER — 3. október 2026
+
+Verdikt: aktuálny automatický prenos 1:1 ešte nie je pripravený na ostrú
+migráciu. Sú potvrdené chyby rozbaľovania, rollbacku a uchovania dát.
+Pri zdieľaných diskoch môže obnova z nového hosta odstrániť pôvodné disky.
+Úspešné existujúce testy nie sú dôkazom bezpečného priechodu reálnou migráciou.
+
+Auditovaný základ: dev, commit 0fe489b. Pracovný strom pred auditom čistý.
+Rozsah: app.py, recovery_data.py, templates/index.html, handbook.html,
+backup/restore a migračné API, automatický plánovač, install/update skripty,
+existujúce Python a browser testy. Ide o audit zdrojov a izolovaných scenárov,
+nie o vykonanú migráciu Proxmox hostov ani penetračný audit infraštruktúry.
+Kód aplikácie nebol upravený. Bez commit/push/reštartu/nasadenia.
+Neboli vykonané SSH zápisy, FTP upload/mazanie ani migrácia na reálnych hostoch.
+Reprodukcie používajú iba syntetické konfigurácie; tajomstvá nie sú v správe.
+
+Závažnosť:
+P1 — vyriešiť pred reálnou migráciou alebo pred použitím postihnutého flow.
+P2 — konkrétna funkčná chyba, zavádzajúci stav alebo prevádzkový problém.
+P3 — úzky problém voliteľného vývojového nastavenia.
+
+NÁLEZY ZORADENÉ PODĽA DOPADU
+
+A01 / P1 — --force môže odstrániť pôvodné disky na zdieľanom storage.
+Miesto: app.py:3144–3146, prenos config.db:2871–2956.
+Config.db skopíruje na nový host pôvodné definície hostí a storage.cfg.
+Následné qmrestore/pct restore --force obnovuje existujúce VMID. Proxmox
+pritom odstraňuje staré zväzky z pôvodnej definície. Ak nový host vidí rovnaké
+NFS/CIFS/Ceph/iné zdieľané disky, sú to aj disky pôvodného hosta! Ani voľba
+cieľového local-lvm nezabráni cleanupu starých diskov na inom storage.
+Dopad: strata rollback kópie, pri zlyhaní restore aj strata pôvodného hosťa.
+Dôkaz: oficiálny qemu-server restore_cleanup_oldconf → vdisk_free;
+pve-container restore → destroy_lxc_container → delete_mountpoint_volume.
+Je to potvrdená sémantika kódu, podmienená dostupným zdieľaným guest storage;
+žiadny deštruktívny pokus sa nevykonal. Pri nezávislých lokálnych diskoch
+na oboch hostoch sa tento konkrétny dopad neuplatní.
+Oprava: pred obnovou overiť identitu a typ pôvodných aj cieľových zväzkov;
+skopírované definície nesmú viesť k destroy/force cleanupu zdrojových diskov.
+Zdieľané/nejasné storage odmietnuť, kým pre ne nie je bezpečný osobitný flow.
+
+A02 / P1 — rollback spustí starú kópiu aj pri neznámom stave novej.
+Miesto: app.py:3174–3182.
+Kontrola zastaví iba stav running. Pri zlyhaní `qm/pct status` vráti unknown
+a pokračuje priamo na `start` na starom hoste. Nová kópia môže stále bežať.
+Dôkaz: reproduce_migration.py, M02; pri unknown sa vydal old `qm start 100`.
+Oprava: pred spustením pôvodnej kópie vyžadovať potvrdený stopped na novom.
+Chýbajúcu definíciu odlíšiť od zlyhania kontroly; ostatné stavy blokovať.
+
+A03 / P1 — živý config.db sa kopíruje bez konzistentného SQLite snapshotu.
+Miesto: app.py:3883–3928, 4073–4081, 4150–4179, 2913.
+Backup kopíruje databázu priamo cez tar. Pri WAL režime môžu aktuálne
+commitnuté zmeny zostať iba vo WAL a samostatný config.db je zastaraný.
+PRAGMA integrity_check počas migrácie overí štruktúru, nie aktuálnosť dát.
+Rovnaký problém sa týka cp pôvodného cieľového config.db pred zastavením služby.
+Dôkaz: M01 používa skutočný SQLite WAL: kópia má integrity_check=ok,
+ale chýba jej už commitnutý konfiguračný riadok. Aktuálny oficiálny pmxcfs
+zdroj zapína WAL; kopírovanie počas zmien je problém aj bez WAL.
+Oprava: konzistentný SQLite backup do dočasného súboru a jeho vloženie
+do archívu pod správnym názvom. Overiť aj súlad s inventárom z /etc/pve.
+
+A04 / P1 — prázdna záloha môže odstrániť poslednú funkčnú zálohu.
+Miesto: app.py:4506–4509, 4531–4536, 4547; auto_backup.sh:102–121.
+Ak chýbajú všetky zvolené cesty, vznikne iba backup-info archív. Flow napriek
+included=[] vráti success a spustí retenciu. Napríklad local režim v LXC
+a zvolený /etc/pve: pri limite 1 sa zmaže predchádzajúca dobrá záloha.
+Automatický plánovač taký záznam považuje za splnené obdobie.
+Dôkaz: izolovaná reprodukcia so skutočným lokálnym archívom a fake FTP.
+Oprava: kontrolovať skutočný obsah pred označením úspechu a retenciou;
+prázdne/nepoužiteľné zálohy nesmú vytlačiť posledný použiteľný restore point.
+
+A05 / P1 — obnova adresárov a migračný prenos súborov zlyhajú na GNU tar.
+Miesto: app.py:5247, 5263–5273; migrácia tento restore volá na 3006.
+members.txt obsahuje adresár aj jeho všetkých potomkov. GNU tar rekurzívne
+spracuje adresár a následný explicitný výber potomka vráti Not found in
+archive, exit 2. Flow sa zastaví pred apply/stage, hoci súbor bol rozbalený.
+Dôkaz: skutočný GNU tar nad syntetickým etc/network + interfaces, nie SSH mock.
+Oprava: presný nerekurzívny výber členov, deduplikácia, bezpečný formát
+zoznamu a test reálneho GNU tar. Zachovať striktné vyhodnotenie exit code.
+
+A06 / P1 — neúspešný preflight neblokuje zápisové operácie.
+Miesto: app.py:2707–2720; templates/index.html:3150–3154.
+MigrationContext aj UI kontrolujú uložené heslo a odlišný text adresy,
+nie výsledok identity/verzie/preflightu. Po identity=error alebo staršej
+nekompatibilnej verzii sú prenosy stále dostupné. IP a DNS alias môžu
+označovať ten istý stroj. Files-apply navyše nemá kontrolu prázdneho cieľa.
+Dôkaz: M08 vytvorí MigrationContext s last_check.ok=False, identity=error.
+Oprava: pri mutačných operáciách znovu overiť potrebné živé predpoklady,
+identitu zdroja a cieľa a podporovanú verziu; pri neistote nepokračovať.
+Config.db kontroluje cluster iba na pôvodnom cieľovom /etc/pve; treba
+odmietnuť aj klastrovú databázu zdroja pre tento standalone prenos.
+
+A07 / P1 — prenos nie je viazaný na konkrétne hosty a archív.
+Miesto: app.py:2637, 2707–2737, 6292–6332.
+Stav config_db/files/guests je globálny, bez identity zdroja/cieľa a pinovania
+archívu. Dá sa uložiť iný target, pričom config_db „prenesený“ a hostia ostanú.
+MigrationContext potom používa nový target a najnovší lokálny archív.
+POST target dokonca zapíše target pred odmietnutím pre práve bežiaci job.
+Dopad: pokračovanie na inom serveri so stavom patriacim pôvodnému; rozdiely
+súborov môžu patriť inému archívu než následný apply.
+Dôkaz: M09: HTTP 400 „už beží operácia“, ale nový cieľ už je uložený.
+Oprava: nemenná identita migračnej relácie, pripnutý archív a jeho hash;
+zmenu hostov/archívu počas prenosu odmietnuť alebo vyžadovať bezpečný reset.
+Kontrolu a zápis vykonať atomicky s lockom operácií.
+
+A08 / P1 — config.db flow má neúplný rollback a ignoruje poistné chyby.
+Miesto: app.py:2917–2956.
+Try/except pokrýva iba výmenu DB a štart pmxcfs. Neskoršia chyba vypínania
+firewallu už nevracia DB; vypnutie jobov/onboot a reštarty len logujú alebo
+ignorujú zlyhanie. UI môže tvrdiť „vypnuté“, hoci príkazy neprešli.
+Po neskorej chybe ostanú definície na cieli, transfer.config_db je None
+a opakovaný prenos sa odmietne pre neprázdny cieľ.
+Dôkaz: M07, simulované zlyhanie firewallu po štarte novej DB, bez rollbacku.
+Oprava: kontrolovať každú bezpečnostnú operáciu, overiť výsledný stav,
+zaznamenať čiastočný prenos a mať funkčnú cestu zotavenia z každej fázy.
+Pred aktivovaním novej DB bezpečne zablokovať automatické joby a autostart.
+
+A09 / P1 — cutover môže zapnúť nový plánovač aj keď starý ostal zapnutý.
+Miesto: app.py:3239–3263.
+Zlyhanie disable starých timerov/jobov je len text v logu. Nové sa aj tak
+enable --now, následne sa uloží cutover a job je success. Ignoruje sa aj
+zlyhanie zapnutia na novom. Pri prune záloh môžu zapisovať/mazať obaja.
+Dôkaz: M04: failed old disable, vydaný new enable, cutover zaznamenaný.
+Oprava: potvrdené zastavenie starého plánovača pred zapnutím nového;
+jednotlivé výsledky, overenie stavov a čiastočný stav namiesto false success.
+
+A10 / P1 — rollback hosťa sa mylne považuje za pripravenosť na cutover.
+Miesto: app.py:3184, 1905, 3206, 3238, 3255–3259.
+Rollback nastaví skipped, hoci hosť beží iba na starom hoste. Skipped
+splní cutover_ready a konzolový postup následne odporúča poweroff starého.
+Transfer stále obsahuje moved_at; ak mal hosť onboot=1, cutover ho zapne
+aj na novej kópii. Reštart nového hosta môže spustiť duplicitu.
+Dôkaz: existujúci test prijíma cutover po rollbacku; M03 potvrdzuje
+zapnutie onboot na novej kópii vráteného hosťa.
+Oprava: samostatný rolled_back stav, explicitné rozhodnutie o zostávajúcich
+službách pred vypnutím starého; autostart iba pre skutočne presunuté hosty.
+
+A11 / P1 — ochrana LXC s appkou nefunguje pri DHCP alebo neznámej IP.
+Miesto: app.py:2715–2732, 3460–3494, 6248.
+Detekcia vyhľadáva iba statické ip=<IPv4>/ v archivovaných configoch;
+pri DHCP alebo zlyhaní detekcie vlastnej IP vráti None. Flow potom dovolí
+presunúť vlastné LXC. Shutdown vypne samotnú appku uprostred jej operácie.
+Dôkaz: M10: DHCP LXC sa nerozpozná; endpoint blokuje iba nájdené app_guest.
+Oprava: spoľahlivá identifikácia LXC/VMID a výslovné potvrdenie neznámeho
+prípadu; vlastný kontajner vždy presúvať ručne po uložení offline postupu.
+
+A12 / P2 — súbežné zápisy histórie strácajú záznamy.
+Miesto: app.py:3653–3664, 4531–4533; aj cache/sync/delete/annotate.
+Dva gunicorn workery môžu načítať rovnakú históriu a posledný zápis zahodí
+zmeny prvého. Priamy open('w') umožní súbežnému čitateľovi vidieť neúplný JSON.
+Dôkaz: dve izolované vlákna, save A potom save B, finálna história iba B.
+Oprava: process-shared lock nad celým read/modify/write a atomický replace.
+
+A13 / P2 — bežný systemd mask link zablokuje celý archív.
+Miesto: app.py:4616–4617, 4642–4644, 2689, 1387.
+Backup zachová maskovanú jednotku → /dev/null, ale čítače archívu ju
+označia za nebezpečný link ešte pred filtrovaním vybraných ciest.
+Zlyhá aj restore iného /etc/hostname, diff, inventár a čítanie DR faktov.
+Dôkaz: syntetický archív s hostname + masked.service → /dev/null.
+Oprava: bezpečné osobitné spracovanie štandardných mask liniek, validácia
+relevantných členov a jasné varovanie; neoslabovať ochranu stagingu.
+
+A14 / P2 — refresh sprievodcu mení používateľský výber bez upozornenia.
+Miesto: templates/index.html:3182, 3191, 3240–3241, 3427, 3053–3056.
+Po spustení operácie aj počas pollingu sa prepisuje celý formulár. Checkboxy
+sa vrátia na item.default, dump_dir/storage na predvolenú hodnotu, rozpracované
+mapovanie NIC a poznámky sa stratia. Diff jednej cesty môže nasledovať apply
+všetkých predvolených ciest; ďalší hosť môže ísť na iný storage.
+Oprava: zachovať draft formulára, naviazať diff a acknowledgment na presný
+target/archív/výber; žiadne automatické prepisovanie aktívneho vstupu.
+
+A15 / P2 — NIC mapovanie môže zmeniť dve rôzne karty na rovnakú.
+Miesto: app.py:3071–3082; templates/index.html:3191.
+Sekvenčná náhrada pri enp1s0→enp2s0 a enp2s0→enp1s0 prepíše už upravený
+text znova. Výsledok sú dve enp1s0. UI navyše vyberá pre každú pôvodnú NIC
+rovnakú prvú UP kartu. Nevaliduje sa jednoznačnosť fyzickej topológie.
+Dôkaz: M05: bridge-ports enp1s0 enp1s0 pri požadovanom swape kariet.
+Oprava: simultánne nahradzovanie tokenov, validácia mapovania a návrhu;
+neznáme mapovanie nechať prázdne a vyžadovať ručnú voľbu.
+
+A16 / P2 — opakovanie presunu stratí pôvodný autostart hosťa.
+Miesto: app.py:3114–3118, 3152–3155.
+Prvý pokus uloží original_onboot=True a na starom nastaví 0. Po zlyhaní
+ďalší pokus načíta 0 a prepíše uloženú pôvodnú hodnotu na False.
+Rollback/cutover potom nevie vrátiť pôvodnú konfiguráciu.
+Dôkaz: M06: pôvodne uložené True sa pri retry zmení na False.
+Oprava: pôvodnú hodnotu zachytiť iba raz; pri zlyhaní config čítania neodhadovať.
+
+A17 / P2 — Overený hosť už nemá rollback cez sprievodcu.
+Miesto: recovery_data.py:1621, app.py:6269, templates/index.html:3259.
+Verified je koncový stav bez spätného prechodu; endpoint rollback ho odmietne.
+Neskoršie zistená chyba služby tak vyžaduje ručné SSH a nevie sa správne
+evidovať v sprievodcovi. Dôkaz: fixture VM100 verified, rollback HTTP 400.
+Oprava: bezpečný rollback z verified, vždy s kontrolou zastavenia novej kópie.
+
+A18 / P2 — validačné chyby pri spustení operácie okamžite zmiznú.
+Miesto: templates/index.html:3136–3139, 3043–3047, 2828.
+Catch zobrazí chybu, finally zavolá loadMigration a ten úspešný GET hlášku
+vymaže. Pri HTTP 400 pred štartom neexistuje ani failed job na vysvetlenie.
+Oprava: refresh pred zobrazením chyby alebo zachovať hlášku do ďalšej akcie.
+
+A19 / P2 — sprievodca a wiki si odporujú v podmienkach migrácie.
+Miesto: recovery_data.py:1599–1600, 1650–1670 a hw-migration wiki;
+templates/index.html:3428–3429; templates/handbook.html:289–293; AGENTS.md.
+Aktuálny flow vyžaduje pôvodný hostname a celý config.db. Safety/wiki
+odporúčajú odlišný hostname a zakazujú celý config.db počas behu starého.
+Text „príkazy vykonávaš ručne“ nezodpovedá automatickým SSH zápisom.
+AGENTS.md má súčasne staré read-only a novšie zápisové migračné pravidlá.
+Oprava: jednotný popis podporovaného standalone 1:1 flow, oddeliť manuálnu
+selektívnu alternatívu a cluster. Rozdielna IP a nezávislá identita ostávajú.
+
+A20 / P2 — chýba aktivovanie AutoFS po prenose máp.
+Miesto: recovery_data.py:1653–1655, 1663–1685; app.py:2998–3035.
+Autofs sa inštaluje pred kopírovaním máp. Transfer ich skopíruje, ale
+nenasleduje reload/restart ani výslovný krok overenia mountu z oboch hostov.
+Guest move sa potom môže bezpečne zastaviť na nedostupnom dump adresári.
+Kontrola existencie adresára navyše nedokazuje rovnaký NAS na oboch stranách.
+Oprava: explicitná aktivácia a overenie skutočne zdieľaného mountu pred
+odstavením hosťa. Je to chýbajúci prevádzkový krok, nie požiadavka na auto-install.
+
+A21 / P2 — odporúčaná offline príručka neobsahuje aktuálne final_steps.
+Miesto: templates/index.html:3289; app.py:3190–3229, 3528;
+templates/handbook.html:291–293.
+Sprievodca odporúča offline handbook pred vypnutím LXC appky, ale export
+obsahuje iba všeobecnú migráciu a DR postup. Chýba vygenerované poradie
+aktuálneho cutoveru a cesty interfaces.proposed/hosts.proposed.
+Dôkaz: export po vytvorení návrhu neobsahuje interfaces.proposed.
+Oprava: exportovať konkrétne final_steps vrátane dump dir, target storage,
+mapovania siete a VMID appky; aktualizovať export tesne pred odstavením appky.
+
+A22 / P2 — spoločná retencia ignoruje FTP-only archívy.
+Miesto: app.py:5125–5138.
+Limit počíta len existujúce lokálne súbory. FTP-only archívy a históriu
+s chýbajúcou lokálnou kópiou nepočíta. NAS tak môže ďalej rásť nad limit.
+Oprava: retencia nad zjednoteným inventárom, best-effort FTP mazanie
+a zachovanie úspešnej lokálnej zálohy pri výpadku FTP.
+
+A23 / P2 — postupné čítanie stdout/stderr môže zablokovať SSH backup.
+Miesto: app.py:4027–4030, 4108–4117.
+Stdout sa dočíta pred stderr. Pri veľkom stderr sa môže zaplniť spoločné
+flow-control okno Paramiko a čakanie na stdout EOF ostane visieť do timeoutu.
+Čiastočný lokálny archív nie je bezpečne finalizovaný/odstránený ako transakcia.
+Dôkaz: potvrdené poradie v zdrojovom kóde; nie reprodukcia cez skutočný SSH.
+Oprava: súbežne drainovať oba streamy, ohraničiť diagnostiku a použiť
+dočasný archív s atomickým dokončením a cleanupom pri chybe.
+
+A24 / P3 — voliteľný dev auto timer používa port 5000.
+Miesto: update.sh:30–31, auto_backup.sh:9.
+Pri ENABLE_AUTO_TIMER=1 pre dev generovaná auto služba dostane APP_DIR,
+ale nie APP_PORT=5001. Skript pošle dev token na produkčný port 5000.
+Dev timer je predvolene vypnutý; štandardná produkcia na 5000 nie je postihnutá.
+Oprava: do auto služby pridať APP_PORT alebo explicitnú BACKUP_MANAGER_URL.
+
+ČO BOLO OVERENÉ
+
+- venv/bin/python -m py_compile app.py recovery_data.py: PASS.
+- venv/bin/python tests/test_archive.py: PASS.
+- venv/bin/python tests/test_recovery.py: PASS.
+- bash -n install_in_lxc.sh update.sh auto_backup.sh test.sh: PASS.
+- ./test.sh mimo sandboxu: Python PASS, dev služba active, HTTP/root/auth PASS.
+  Prvá kontrola zo sandboxu nemala prístup k službe; opakovanie ju overilo.
+- Existujúci izolovaný Playwright: 121/121 kontrol, 4 veľkosti obrazovky,
+  bez JS chýb, overflow a DOM úniku testovacích tajomstiev.
+  Screenshoty: /tmp/pbm-audit-ui-shots.
+- reproduce_migration.py: 10/10 potvrdených izolovaných reprodukcií.
+- reproduce_backup.py: skutočný GNU tar a lokálne syntetické archívy;
+  mask link, prázdna záloha/retencia, súbeh histórie.
+- Dodatočná instrumentation existujúceho migračného testu potvrdila
+  verified rollback HTTP 400, cutover po návrate hosťa na starý a chýbajúci
+  konkrétny návrh siete v offline exporte.
+- Deštruktívne správanie Proxmox --force overené z oficiálnych zdrojov.
+
+Testovacie medzery: FakeSshClient akceptuje tar -xzf bez reálneho tar;
+ScenarioSsh väčšinu neznámych príkazov považuje za úspešné. Test DB obsahuje
+syntetický reťazec a integrity_check je mock. Test rollbacku používa hosťa
+bez pôvodného autostartu, takže nevie odhaliť jeho opätovné zapnutie.
+Browser test overuje render, preflight a ručné stavy, nie reálnu migráciu.
+Žiadna kontrola necertifikuje boot konkrétneho HW, NAS oprávnenia, passthrough
+ani konzistentnosť konkrétnej produkčnej zálohy.
+
+ODPORÚČANÉ PORADIE OPRÁV
+
+1. Uchovanie zdrojových dát: A01, A03, A04; reálny tar A05.
+2. Identita/proveniencia a fail-closed poistky: A02, A06–A11.
+3. Atómová história a kompatibilita archívov: A12–A13.
+4. Zachovanie používateľského výberu, sieť, retry, rollback: A14–A18.
+5. Zjednotiť sprievodcu/wiki/offline postup a prevádzku: A19–A24.
+6. Až potom kompletný laboratórny priechod a failure/retry scenáre.
+
+PLÁN SKÚŠKY VO VM
+
+Použiť DVE samostatné disposable PVE VM: laboratórny zdroj a čistý cieľ.
+Samotný VM cieľ s produkčným zdrojom stále mení skutočný zdroj: vypína
+hostí, mení onboot a vypína plánovače. Na úplnú skúšku to nie je izolácia.
+
+Príprava:
+1. Izolovaný bridge/VLAN, samostatný lab NAS/export, bez produkčných
+   storage.cfg, NAS hesiel, prune cieľov a automatických jobov.
+2. Rovnaká podporovaná PVE major verzia, dostatok RAM/diskov. Pre vnorené
+   VM povoliť nested virtualization; LXC-only test nepotrebuje vnorené KVM.
+3. Pre implementovaný 1:1 flow rovnaký node hostname, rozdielne management
+   IP, machine-id a SSH host keys; ani jeden host nepripájať do clustra.
+4. Zdieľaný dump adresár pod rovnakou absolútnou cestou, overiť rovnaký
+   export a práva z oboch hostov. Fyzické storage/pooly vytvoriť na novom
+   osobitne: config.db iba kopíruje definície, nevytvára LVM/ZFS ani dáta.
+5. Malá VM, LXC, LXC s appkou; onboot 1 aj 0; druhý bridge/VLAN;
+   nepredvolený target storage; bind mount/excluded disk osobitne pokryť.
+6. Snapshot oboch PVE VM pred config.db a pred cutover; funkčná konzola
+   cez vonkajší hypervízor aj po strate IP/SSH.
+
+Úspešný priechod:
+čerstvá záloha → preflight → config.db → diff/apply súborov → aktivácia
+AutoFS a kontrola NAS → návrh siete → presun hosťa → kontrola konfigurácie
+→ štart na novom → overenie služby → rollback iného hosťa → retry
+→ cutover → ručný presun app LXC → prevzatie IP → Test SSH → nová záloha.
+Pred vypnutím appky stiahnuť AKTUÁLNY konkrétny konzolový postup.
+Bridge/VLAN pre služby pripraviť s dočasnou management IP už pred presunom;
+následný návrh siete pri cutoveri neprevezme túto povinnosť.
+
+Chybové scenáre:
+nesprávny hostname; neprázdny cieľ; rovnaká identita cez alias; staršia PVE;
+nedostupný NAS; rovnaká cesta k inému exportu; chýbajúci bridge; plný disk;
+shutdown failure; vzdump/restore failure; SSH strata; restart workera;
+unknown pri rollbacku; onboot retry; verified rollback; old timer disable
+failure; new job enable failure; zmena targetu počas práce; zmena najnovšieho
+archívu; maskovaná systemd jednotka; dva súbežné backupy; prázdna záloha;
+NIC swap; návrat hosťa na starý pred cutover; app LXC cez DHCP.
+
+Pri každej chybe overiť zachovanie pôvodných diskov, absenciu dvojitého behu,
+správny trvalý stav, viditeľnú chybu, dostupnú cestu späť a presný retry.
+Skúška VM preverí workflow, nie PCI passthrough ani boot disk na novom HW.
+Tieto časti treba nakoniec preveriť na konkrétnom cieľovom serveri.
+
+PRIMÁRNE EXTERNÉ ZDROJE (overené počas auditu)
+
+https://github.com/proxmox/qemu-server/blob/master/src/PVE/QemuServer.pm
+  restore_cleanup_oldconf a restore_vma_archive — cleanup pôvodných zväzkov.
+https://github.com/proxmox/pve-container/blob/master/src/PVE/API2/LXC.pm
+  restore existujúceho CT — destroy_lxc_container(old_conf).
+https://github.com/proxmox/pve-container/blob/master/src/PVE/LXC.pm
+  delete_mountpoint_volume a destroy_lxc_container — vdisk_free.
+https://github.com/proxmox/pve-cluster/blob/master/src/pmxcfs/database.c
+  PRAGMA journal_mode=WAL.
+https://www.sqlite.org/howtocorrupt.html
+  konzistentné zálohovanie živej DB a potreba journal/WAL.
+https://pve.proxmox.com/pve-docs-9-beta/pct.1.html
+  bind/device mounty sa cez vzdump nezálohujú; samostatná ochrana dát.
+
+REPRODUKCIE
+
+venv/bin/python audit/2026-10-03/reproduce_migration.py
+venv/bin/python audit/2026-10-03/reproduce_backup.py
+
+Skripty majú assertions dokazujúce chyby auditovanej verzie, nie očakávané
+správne správanie. Po opravách sa preto musia nahradiť regresnými testami
+správnych výsledkov. Import aplikácie až po zmene cwd na dočasný /tmp
+adresár chráni runtime konfigurácie pracovnej inštancie.

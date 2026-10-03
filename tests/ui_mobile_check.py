@@ -273,6 +273,18 @@ with sync_playwright() as p:
         assert page.locator("#migration-files [data-migration-file][value='/etc/auto.nfs']").is_checked(), 'autofs mapy sú predvolene vybrané'
         assert not page.locator("#migration-files [data-migration-file][value='/root']").is_checked(), '/root je predvolene nevybraný'
         check(page, 'migration-transfer', vp)
+        # Obnovenie stavu nesmie prepísať rozpracovaný výber súborov, adresár záloh ani poznámky (A14).
+        first_file = page.locator('[data-migration-file]').first
+        original_state = first_file.is_checked()
+        first_file.set_checked(not original_state)
+        page.evaluate('loadMigration()')
+        assert page.locator('[data-migration-file]').first.is_checked() == (not original_state), 'výber súborov prežije obnovenie'
+        first_file.set_checked(original_state)
+        page.evaluate('loadMigration()')
+        # Chyba pred štartom (HTTP 400, bez failed jobu) nesmie hneď zmiznúť po obnovení stavu (A18).
+        page.evaluate("migrationOperation('/transfer/network', { mapping: {} })")
+        assert 'Kontrola nového hosta' in page.locator('#migration-status').inner_text(), 'validačná chyba ostane zobrazená: ' + page.locator('#migration-status').inner_text()
+        page.evaluate("migrationMessage('')")
         if width == 390:
             page.locator('#migration-transfer').scroll_into_view_if_needed()
             page.screenshot(path=str(OUT / 'm-migration-transfer.png'), full_page=True)

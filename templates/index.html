@@ -2796,15 +2796,24 @@
             }
         }
 
-        // Plánovaná migrácia: stav sprievodcu; príkazy sú iba na ručné vykonanie.
+        // Plánovaná migrácia: stav sprievodcu; pri side_by_side vykonáva kroky backend cez SSH, pri disk_move ide o ručné návody.
         let migrationData = null;
         let migrationBusy = false;
         const MIGRATION_GUEST_LABELS = {
             pending: 'Čaká na presun', stopped_on_old: 'Zastavený na starom',
-            restored_on_new: 'Obnovený na novom', verified: 'Overený', skipped: 'Vynechaný'
+            restored_on_new: 'Obnovený na novom', verified: 'Overený', rolled_back: 'Vrátený na starý', skipped: 'Vynechaný'
         };
 
+        // Posledná chyba ostane zobrazená aj po obnovení stavu (inak ju loadMigration hneď zmaže); vymaže ju až ďalšia akcia.
+        let migrationLastError = '';
+        // Rozpracovaný vstup sprievodcu prežije obnovenie/polling: výber súborov, adresár záloh, storage, mapovanie NIC, poznámky.
+        function emptyMigrationDraft() {
+            return { files: null, dumpDir: null, storage: null, nic: {}, ack: false, notes: {} };
+        }
+        let migrationDraft = emptyMigrationDraft();
+
         function migrationMessage(message, error = false) {
+            migrationLastError = error ? message : '';
             const box = document.getElementById('migration-status');
             box.textContent = message;
             box.className = `rounded-lg border px-3 py-2 text-sm break-words ${error ? 'border-destructive text-destructive' : 'border-border text-muted-foreground'}`;
@@ -2825,7 +2834,7 @@
                     migrationTransferInfo = null;
                 }
                 renderMigration();
-                migrationMessage('');
+                migrationMessage(migrationLastError, Boolean(migrationLastError));
             } catch (error) {
                 if (!migrationData) {
                     document.getElementById('migration-body').innerHTML = `<div class="flex flex-wrap gap-2"><button type="button" data-migration-action="refresh" class="min-h-11 rounded-md border px-3 py-2 text-sm">Skúsiť znovu</button><button type="button" data-migration-action="reset" class="min-h-11 rounded-md border px-3 py-2 text-sm text-destructive">Resetovať poškodený stav migrácie</button></div>`;
@@ -2852,6 +2861,9 @@
                 if (!response.ok || !data.success) throw new Error(data.error || 'Uloženie migrácie zlyhalo');
                 migrationData = data;
                 if (path === '' || path === '/reset') clearMigrationComparison();
+                if (path === '/reset') migrationDraft = emptyMigrationDraft();
+                const guestNote = path.match(/^\/guests\/([^/]+)$/);
+                if (guestNote) delete migrationDraft.notes[decodeURIComponent(guestNote[1])];
                 renderMigration();
                 migrationMessage('Stav migrácie bol uložený.');
                 return true;
@@ -3031,6 +3043,7 @@
         async function migrationTargetRequest(method, path, body) {
             if (migrationTargetBusy) return;
             migrationTargetBusy = true;
+            let targetError = '';
             document.querySelectorAll('#migration-target button, #migration-target input').forEach(el => { el.disabled = true; });
             try {
                 const response = await fetch(`/api/recovery/migration${path}`, {
@@ -3040,10 +3053,11 @@
                 if (!response.ok || !data.success) throw new Error(data.error || 'Operácia s novým hostom zlyhala');
                 migrationMessage(data.job ? 'Kontrola nového hosta beží…' : 'Pripojenie nového hosta bolo zabudnuté.');
             } catch (error) {
-                migrationMessage(error.message, true);
+                targetError = error.message;
             } finally {
                 migrationTargetBusy = false;
                 await loadMigration();
+                if (targetError) migrationMessage(targetError, true);
             }
         }
 
@@ -3125,6 +3139,8 @@
         async function migrationOperation(path, body) {
             if (migrationOperationBusy) return;
             migrationOperationBusy = true;
+            let operationError = '';
+            migrationMessage('');
             try {
                 const response = await fetch(`/api/recovery/migration${path}`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
@@ -3132,11 +3148,14 @@
                 const data = await response.json().catch(() => ({}));
                 if (!response.ok || !data.success) throw new Error(data.error || 'Operáciu sa nepodarilo spustiť');
                 migrationMessage(`Spustené: ${data.job?.title || 'operácia'}. Priebeh sa zobrazuje nižšie.`);
+                if (path === '/transfer/files-apply') migrationDraft.ack = false;
             } catch (error) {
-                migrationMessage(error.message, true);
+                operationError = error.message;
             } finally {
                 migrationOperationBusy = false;
                 await loadMigration();
+                // Chyba pred štartom (HTTP 400) nemá failed job, ktorý by ju vysvetlil – po obnovení stavu sa zobrazí znova.
+                if (operationError) migrationMessage(operationError, true);
             }
         }
 
@@ -3179,7 +3198,7 @@
                 </details>` : '';
                 return `<li class="min-w-0 rounded-md border p-2">
                     <label class="flex min-w-0 cursor-pointer items-start gap-2">
-                        <input type="checkbox" class="mt-1 h-4 w-4 shrink-0" data-migration-file value="${escapeHtml(item.path)}" ${item.default ? 'checked' : ''}>
+                        <input type="checkbox" class="mt-1 h-4 w-4 shrink-0" data-migration-file value="${escapeHtml(item.path)}" ${(migrationDraft.files ? migrationDraft.files.includes(item.path) : item.default) ? 'checked' : ''}>
                         <span class="min-w-0 text-sm"><span class="font-mono break-all">${escapeHtml(item.path)}</span>
                             ${label ? `<span class="dr-flag ${style} ml-1">${escapeHtml(label)}</span>` : ''}${applied ? '<span class="dr-flag readiness-READY ml-1">Prenesené</span>' : ''}
                             ${item.note ? `<span class="block text-xs text-muted-foreground">${escapeHtml(item.note)}</span>` : ''}</span>
@@ -3187,8 +3206,21 @@
                 </li>`;
             }).join('');
             const newNics = info.new_nics || [];
+            // Každá pôvodná karta dostane inú kartu nového hosta; bez jednoznačnej voľby ostane prázdna (ručný výber).
+            const nicChoice = {};
+            const claimedNics = new Set();
+            (info.old_nics || []).forEach(old => {
+                const explicit = migrationDraft.nic[old] !== undefined ? migrationDraft.nic[old] : network?.mapping?.[old];
+                if (explicit !== undefined) { nicChoice[old] = explicit; if (explicit) claimedNics.add(explicit); }
+            });
+            (info.old_nics || []).forEach(old => {
+                if (nicChoice[old] !== undefined) return;
+                const free = newNics.find(nic => nic.state === 'UP' && !claimedNics.has(nic.name));
+                nicChoice[old] = free ? free.name : '';
+                if (free) claimedNics.add(free.name);
+            });
             const nicRows = (info.old_nics || []).map(old => {
-                const current = network?.mapping?.[old] || (newNics.find(nic => nic.state === 'UP') || newNics[0] || {}).name || '';
+                const current = nicChoice[old] || '';
                 return `<label class="flex min-w-0 flex-wrap items-center gap-2 text-sm"><span class="font-mono">${escapeHtml(old)}</span> →
                     <select data-nic-map="${escapeHtml(old)}" class="h-10 min-w-0 rounded-md border border-input bg-background px-2 text-sm">
                         <option value="">(nemapovať)</option>${newNics.map(nic => `<option value="${escapeHtml(nic.name)}" ${nic.name === current ? 'selected' : ''}>${escapeHtml(nic.name)} ${escapeHtml(nic.state)} ${escapeHtml(nic.mac)}</option>`).join('')}
@@ -3210,7 +3242,7 @@
                     <ul class="space-y-1.5">${fileRows}</ul>
                     <div class="flex flex-wrap gap-2"><button type="button" data-migration-action="files-diff" class="${button}" ${disabled}>Načítať rozdiely</button></div>
                     ${diffJob && diffJob.status !== 'success' ? migrationJobPanel(diffJob) : ''}
-                    <label class="flex items-start gap-2 text-sm"><input type="checkbox" id="migration-files-ack" class="mt-0.5 h-4 w-4 shrink-0"><span>Rozdiely vybraných položiek som skontroloval a chcem ich preniesť na nový host.</span></label>
+                    <label class="flex items-start gap-2 text-sm"><input type="checkbox" id="migration-files-ack" class="mt-0.5 h-4 w-4 shrink-0" ${migrationDraft.ack ? 'checked' : ''}><span>Rozdiely vybraných položiek som skontroloval a chcem ich preniesť na nový host.</span></label>
                     <button type="button" data-migration-action="files-apply" class="${primary}" ${disabled}>Preniesť vybrané</button>
                     ${transfer.files ? `<p class="break-words text-xs text-muted-foreground">Prenesené: ${escapeHtml((transfer.files.paths || []).join(', '))} · záloha pôvodných: ${escapeHtml(transfer.files.backup_dir || '–')}${(transfer.files.timers_to_enable || []).length ? ` · timery zapnuté až pri prepnutí: ${escapeHtml(transfer.files.timers_to_enable.join(', '))}` : ''}</p>` : ''}
                     ${applyJob && applyJob.status !== 'success' ? migrationJobPanel(applyJob) : ''}
@@ -3237,8 +3269,8 @@
                 ${configDb ? '' : '<p class="rounded-md border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900">Automatický presun je dostupný po prenose config.db v kroku Prenos konfigurácie.</p>'}
                 <p class="text-sm text-muted-foreground">Appka hosťa na starom vypne (najprv autostart), urobí vzdump do zdieľaného adresára a obnoví ho na novom (ostane vypnutý). Spustenie na novom potvrdíš zvlášť – iba ak je na starom vypnutý.</p>
                 <div class="grid min-w-0 gap-2 sm:grid-cols-2">
-                    <label class="min-w-0 text-sm" for="migration-dump-dir">Zdieľaný adresár záloh (dostupný z oboch hostov)<input id="migration-dump-dir" value="${escapeHtml(info.dump_dir || '')}" class="mt-1 h-11 w-full min-w-0 rounded-md border border-input bg-background px-3 font-mono text-sm"></label>
-                    <label class="min-w-0 text-sm" for="migration-target-storage">Storage pre disky na novom<select id="migration-target-storage" class="mt-1 h-11 w-full min-w-0 rounded-md border border-input bg-background px-3 text-sm">${(info.storages || []).map(id => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`).join('')}</select></label>
+                    <label class="min-w-0 text-sm" for="migration-dump-dir">Zdieľaný adresár záloh (dostupný z oboch hostov)<input id="migration-dump-dir" value="${escapeHtml(migrationDraft.dumpDir ?? (info.dump_dir || ''))}" class="mt-1 h-11 w-full min-w-0 rounded-md border border-input bg-background px-3 font-mono text-sm"></label>
+                    <label class="min-w-0 text-sm" for="migration-target-storage">Storage pre disky na novom<select id="migration-target-storage" class="mt-1 h-11 w-full min-w-0 rounded-md border border-input bg-background px-3 text-sm">${(info.storages || []).map(id => `<option value="${escapeHtml(id)}" ${id === migrationDraft.storage ? 'selected' : ''}>${escapeHtml(id)}</option>`).join('')}</select></label>
                 </div>
             </div>`;
         }
@@ -3254,9 +3286,9 @@
             const busy = runningMigrationJob() || !info.transfer?.config_db || !migrationData?.target?.has_password ? 'disabled' : '';
             const moved = info.transfer?.guests?.[String(guest.vmid)];
             const actions = [];
-            if (['pending', 'stopped_on_old'].includes(guest.status)) actions.push(`<button type="button" data-migration-action="guest-move" data-vmid="${guest.vmid}" data-label="${escapeHtml(label)}" class="min-h-11 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50" ${busy}>Presunúť automaticky</button>`);
+            if (['pending', 'stopped_on_old', 'rolled_back'].includes(guest.status)) actions.push(`<button type="button" data-migration-action="guest-move" data-vmid="${guest.vmid}" data-label="${escapeHtml(label)}" class="min-h-11 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50" ${busy}>Presunúť automaticky</button>`);
             if (guest.status === 'restored_on_new') actions.push(`<button type="button" data-migration-action="guest-start" data-vmid="${guest.vmid}" class="${button}" ${busy}>Spustiť na novom</button>`);
-            if (['stopped_on_old', 'restored_on_new'].includes(guest.status)) actions.push(`<button type="button" data-migration-action="guest-rollback" data-vmid="${guest.vmid}" data-label="${escapeHtml(label)}" class="${button}" ${busy}>Vrátiť na starý</button>`);
+            if (['stopped_on_old', 'restored_on_new', 'verified'].includes(guest.status)) actions.push(`<button type="button" data-migration-action="guest-rollback" data-vmid="${guest.vmid}" data-label="${escapeHtml(label)}" class="${button}" ${busy}>Vrátiť na starý</button>`);
             const job = (migrationData?.jobs || []).find(item => new RegExp('\\b' + Number(guest.vmid) + '\\b').test(item.title || '') && ['guest-move', 'guest-start', 'guest-rollback'].includes(item.kind));
             return `<div class="space-y-2">
                 ${actions.length ? `<div class="flex flex-wrap gap-2">${actions.join('')}</div>` : ''}
@@ -3286,7 +3318,8 @@
                 </div>
                 <div class="min-w-0 space-y-2 rounded-lg border border-amber-300 p-3 sm:p-4">
                     <h4 class="text-sm font-semibold">B. Ručne z konzoly: presun appky a prevzatie IP</h4>
-                    <p class="text-sm text-muted-foreground">Appka beží na starom hoste, preto tieto kroky robíš ty – v tomto poradí. Po kroku 1 appka nebude dostupná, kým ju v kroku 4 nespustíš na novom hoste (rovnaká IP aj nastavenia). Odporúčanie: maj tento postup otvorený na mobile alebo v offline príručke.</p>
+                    <p class="text-sm text-muted-foreground">Appka beží na starom hoste, preto tieto kroky robíš ty – v tomto poradí. Po kroku 1 appka nebude dostupná, kým ju v kroku 4 nespustíš na novom hoste (rovnaká IP aj nastavenia). Odporúčanie: stiahni si príručku s týmto konkrétnym postupom tesne pred krokom 1 (je vygenerovaná z aktuálneho stavu prenosu) a maj ju otvorenú na mobile alebo vytlačenú.</p>
+                    <a href="/api/recovery/handbook" download class="inline-flex min-h-11 items-center justify-center rounded-md border border-input bg-background px-3 py-2 text-sm font-medium hover:bg-accent">Stiahnuť aktuálnu offline príručku</a>
                     <ol class="space-y-2">${steps}</ol>
                 </div>
             </section>`;
@@ -3371,7 +3404,7 @@
                         ${renderMigrationGuestActions(guest)}
                         <p class="text-sm text-destructive">Hosť nesmie bežať na oboch serveroch naraz. Na starom hoste vypni onboot, zastav hosťa a over stav stopped pred aj po vzdump. Režim --mode stop môže pôvodne bežiaceho hosťa opäť spustiť; pred štartom na novom to ručne skontroluj.</p>
                         <label class="block text-sm" for="migration-guest-status-${escapeHtml(vmid)}">Stav presunu<select id="migration-guest-status-${escapeHtml(vmid)}" data-migration-guest-status="${escapeHtml(vmid)}" class="${inputClass}">${statuses.map(status => `<option value="${escapeHtml(status)}" ${status === guest.status ? 'selected' : ''}>${escapeHtml(MIGRATION_GUEST_LABELS[status] || status)}</option>`).join('')}</select></label>
-                        <label class="block text-sm" for="migration-guest-note-${escapeHtml(vmid)}">Poznámka (bez hesiel)<textarea id="migration-guest-note-${escapeHtml(vmid)}" maxlength="2000" rows="2" class="mt-1 w-full min-w-0 rounded-md border border-input bg-background p-3 text-base md:text-sm">${escapeHtml(guest.note || '')}</textarea></label>
+                        <label class="block text-sm" for="migration-guest-note-${escapeHtml(vmid)}">Poznámka (bez hesiel)<textarea id="migration-guest-note-${escapeHtml(vmid)}" maxlength="2000" rows="2" class="mt-1 w-full min-w-0 rounded-md border border-input bg-background p-3 text-base md:text-sm">${escapeHtml(migrationDraft.notes[vmid] ?? (guest.note || ''))}</textarea></label>
                         <div class="flex flex-wrap items-center gap-2"><button type="button" data-migration-action="guest-note" data-vmid="${escapeHtml(vmid)}" class="${buttonClass}">Uložiť poznámku</button><span class="break-words text-xs text-muted-foreground">Zmena: ${escapeHtml(formatDateTime(guest.updated_at))}</span></div>
                         <details data-migration-detail="guestcmd-${escapeHtml(vmid)}" ${openDetails.has(`guestcmd-${vmid}`) ? 'open' : ''}><summary class="min-h-11 cursor-pointer py-2 text-sm font-medium">Príkazy pre tohto hosťa</summary><div class="min-w-0 space-y-3 pt-2">${migrationCommands(guest.commands?.old_host, 'STARÝ HOST – vypnutie onboot a vzdump')}${migrationCommands(guest.commands?.new_host, 'NOVÝ HOST – obnova; pred štartom over zastavenie na starom')}</div></details>
                     </div>
@@ -3425,8 +3458,8 @@
             }
 
             container.innerHTML = `<div class="space-y-4">
-                <div class="flex flex-wrap items-start justify-between gap-3"><div class="min-w-0"><h2 class="text-lg font-semibold">Plánovaná migrácia na nový HW</h2><p class="text-sm text-muted-foreground">Starý server ešte žije. Sprievodca ukladá postup, príkazy vykonávaš ručne.</p></div><button type="button" data-migration-action="refresh" class="${buttonClass}">Obnoviť stav</button></div>
-                <details class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900" data-migration-detail="safety" ${!state.method || (!methodJustSet && openDetails.has('safety')) ? 'open' : ''}><summary class="min-h-9 cursor-pointer font-semibold">Bezpečnostné poistky</summary><ul class="mt-2 list-disc space-y-1 pl-5"><li>Nikdy dva zapnuté hosty s rovnakou IP, hostname alebo SSH identitou. Pri migrácii vedľa seba má nový host dočasnú IP, vlastný hostname a nové SSH kľúče.</li><li>Nikdy ten istý hosť bežiaci na oboch serveroch.</li><li>Vzdump joby a backup timery zapni iba na jednom hoste. Súbežné prune-backups môže mazať zálohy na NAS.</li><li>Kým starý host beží, neprenášaj celý config.db; konfiguráciu prenášaj selektívne.</li></ul></details>
+                <div class="flex flex-wrap items-start justify-between gap-3"><div class="min-w-0"><h2 class="text-lg font-semibold">Plánovaná migrácia na nový HW</h2><p class="text-sm text-muted-foreground">Starý server ešte žije. Pri spôsobe „Nový host vedľa starého“ appka po tvojom potvrdení vykoná vybrané kroky sama cez SSH (zápisy iba na nový host, starý sa mení iba pri presune hosťa a prepnutí); pri presune disku príkazy vykonávaš ručne.</p></div><button type="button" data-migration-action="refresh" class="${buttonClass}">Obnoviť stav</button></div>
+                <details class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900" data-migration-detail="safety" ${!state.method || (!methodJustSet && openDetails.has('safety')) ? 'open' : ''}><summary class="min-h-9 cursor-pointer font-semibold">Bezpečnostné poistky</summary><ul class="mt-2 list-disc space-y-1 pl-5"><li>Nikdy dva zapnuté hosty s rovnakou IP, hostname alebo SSH identitou. Pri migrácii vedľa seba má nový host dočasnú IP, vlastný hostname a nové SSH kľúče.</li><li>Nikdy ten istý hosť bežiaci na oboch serveroch.</li><li>Vzdump joby a backup timery zapni iba na jednom hoste. Súbežné prune-backups môže mazať zálohy na NAS.</li><li>Automatický prenos 1:1 je iba pre samostatný node na prázdny nový host s rovnakým hostname a odlišnou IP; config.db sa neprenáša do clustra. Pri inom hostname alebo clustri použi ručný selektívny postup z wiki.</li></ul></details>
                 ${renderMigrationJobBanner()}
                 ${setup}
                 ${wizard}
@@ -3457,8 +3490,19 @@
                 new_host: { ip: form.get('new_host-ip').trim(), hostname: form.get('new_host-hostname').trim() }
             });
         });
+        // Priebežné ukladanie rozpracovaného vstupu (A14), aby ho obnovenie stavu neprepísalo.
+        document.getElementById('migration-body').addEventListener('input', event => {
+            const el = event.target;
+            if (el.id === 'migration-dump-dir') migrationDraft.dumpDir = el.value;
+            const note = el.id?.match(/^migration-guest-note-(.+)$/);
+            if (note) migrationDraft.notes[note[1]] = el.value;
+        });
         document.getElementById('migration-body').addEventListener('change', event => {
             const el = event.target;
+            if (el.dataset.migrationFile !== undefined) migrationDraft.files = selectedMigrationFiles();
+            if (el.id === 'migration-target-storage') migrationDraft.storage = el.value;
+            if (el.dataset.nicMap) migrationDraft.nic[el.dataset.nicMap] = el.value;
+            if (el.id === 'migration-files-ack') migrationDraft.ack = el.checked;
             if (el.dataset.migrationStep) {
                 if (el.dataset.migrationStep === 'cutover' && el.checked && !migrationData.cutover_ready) {
                     el.checked = false;
@@ -3476,7 +3520,7 @@
             const button = event.target.closest('[data-migration-action]');
             if (!button || migrationBusy) return;
             switch (button.dataset.migrationAction) {
-                case 'refresh': loadMigration(); break;
+                case 'refresh': migrationMessage(''); loadMigration(); break;
                 case 'target-check': migrationTargetRequest('POST', '/target/check', {}); break;
                 case 'config-db': {
                     const typed = window.prompt('Prenos config.db nahradí celú PVE konfiguráciu NOVÉHO hosta konfiguráciou starého (1:1). Starý host sa nemení. Pre potvrdenie napíš KOPIA:');
@@ -3487,22 +3531,34 @@
                 case 'files-apply': {
                     const ack = document.getElementById('migration-files-ack');
                     if (!ack?.checked) { migrationMessage('Najprv potvrď, že si skontroloval rozdiely.', true); break; }
+                    // Potvrdenie platí iba pre položky, ktorých rozdiel bol načítaný; ostatné treba najprv porovnať.
+                    const diffed = new Set((latestMigrationJob('files-diff')?.result?.items || []).map(item => item.path));
+                    const undiffed = selectedMigrationFiles().filter(path => !diffed.has(path));
+                    if (undiffed.length) { migrationMessage(`Pre tieto položky najprv načítaj rozdiely: ${undiffed.join(', ')}`, true); break; }
                     migrationOperation('/transfer/files-apply', { paths: selectedMigrationFiles(), confirm: true });
                     break;
                 }
                 case 'network': {
                     const mapping = {};
                     document.querySelectorAll('[data-nic-map]').forEach(select => { mapping[select.dataset.nicMap] = select.value; });
+                    const chosen = Object.values(mapping).filter(Boolean);
+                    if (new Set(chosen).size !== chosen.length) { migrationMessage('Viac pôvodných sieťoviek je namapovaných na rovnakú kartu. Každú kartu použi iba raz.', true); break; }
                     migrationOperation('/transfer/network', { mapping });
                     break;
                 }
                 case 'guest-move': {
                     const vmid = button.dataset.vmid;
                     if (window.confirm(`Presunúť ${button.dataset.label}? Na STAROM hoste sa vypne autostart, hosť sa vypne a zálohuje; na NOVOM sa obnoví (ostane vypnutý).`)) {
-                        migrationOperation(`/guests/${encodeURIComponent(vmid)}/move`, {
+                        const body = {
                             dump_dir: document.getElementById('migration-dump-dir').value.trim(),
                             target_storage: document.getElementById('migration-target-storage').value, confirm: true
-                        });
+                        };
+                        // Appku sa nepodarilo spoľahlivo nájsť (napr. DHCP): vypnutie vlastného LXC by prerušilo operáciu, preto výslovné potvrdenie.
+                        if (!migrationTransferInfo?.app_guest) {
+                            if (!window.confirm(`Nepodarilo sa zistiť, ktorý hosť je LXC s touto appkou. Potvrď, že ${button.dataset.label} NIE JE kontajner s touto appkou.`)) break;
+                            body.not_app_guest = true;
+                        }
+                        migrationOperation(`/guests/${encodeURIComponent(vmid)}/move`, body);
                     }
                     break;
                 }
