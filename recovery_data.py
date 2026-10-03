@@ -969,7 +969,7 @@ tar -xzf /mnt/restore-nas/proxmox_backup_*.tar.gz -C /root/pve-restore-review
 chmod 700 /root/pve-restore-review
 less /root/pve-restore-review/backup-info/README-RESTORE.txt
 """),
-            _p('Alternatíva: nainštaluj Proxmox Backup Manager do nového LXC, vlož archív do backups/ a použi tab Obnova v režime „Iba pripraviť na kontrolu“.'),
+            _p('Alternatíva: nainštaluj Proxmox Backup Manager do nového LXC, vlož archív do backups/ a použi Obnova a migrácia → Obnova súborov v režime „Iba pripraviť na kontrolu“.'),
             _danger('Archív nikdy nerozbaľuj priamo do /.'),
             _h('6. Porovnaj HW-závislú konfiguráciu'),
             _code("""
@@ -1553,7 +1553,7 @@ update-grub                     # alebo: proxmox-boot-tool refresh
                 'pvesm status, pvs, vgs, lvs, zpool status, zfs list',
                 'lspci -nn, systemctl --failed, qm list, pct list',
             ),
-            _p('Tieto dáta sú REFERENCE ONLY. Nikdy sa automaticky neobnovujú. Na karte Obnova na novom HW → Snapshot hosta ich vieš zobraziť pre ľubovoľný archív.'),
+            _p('Tieto dáta sú REFERENCE ONLY. Nikdy sa automaticky neobnovujú. V záložke Obnova a migrácia → Wiki a referencie → Snapshot hosta ich vieš zobraziť pre ľubovoľný archív.'),
             _p('Ďalej backup-info/ obsahuje recovery-manifest.json (klasifikácia zálohovaných položiek), README-RESTORE.txt a ďalšie výstupy (pvesm config, backup joby, crontab, zoznam balíkov), ktoré UI z bezpečnostných dôvodov nezobrazuje – nájdeš ich v rozbalenom archíve.'),
         ],
     },

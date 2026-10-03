@@ -191,8 +191,12 @@ with sync_playwright() as p:
         page.wait_for_timeout(500)
         vp = f'{width}x{height}'
         check(page, 'backup', vp)
+        assert not page.evaluate("document.getElementById('backup-files-details').open"), 'zoznam položiek je predvolene zbalený'
+        assert ' z ' in page.locator('#backup-files-summary').inner_text()
         if width == 390:
             page.screenshot(path=str(OUT / 'm-backup.png'), full_page=False)
+        page.click('#backup-files-details > summary')
+        if width == 390:
             page.locator('#file-filter-chips').scroll_into_view_if_needed()
             page.screenshot(path=str(OUT / 'm-filters.png'))
         page.click("#file-filter-chips button:has-text('New HW – Review')")
@@ -417,6 +421,7 @@ with sync_playwright() as p:
         page.unroute('**/api/recovery/migration/compare', mock_compare)
 
 
+        page.evaluate("document.getElementById('recovery-refs').open = true")
         page.click("#recovery-subnav [data-rsec='items']")
         check(page, 'recovery-items', vp)
         page.click("#rsec-items button[data-path='/etc/shadow']")
@@ -431,6 +436,7 @@ with sync_playwright() as p:
         check(page, 'wiki-pve-config-db', vp)
         if width == 390:
             page.screenshot(path=str(OUT / 'm-wiki.png'), full_page=True)
+        page.evaluate("document.getElementById('recovery-refs').open = true")
         page.click("#recovery-subnav [data-rsec='snapshot']")
         page.click('#snapshot-load-btn')
         page.wait_for_selector('#snapshot-result details')
@@ -438,15 +444,51 @@ with sync_playwright() as p:
         if width == 390:
             page.screenshot(path=str(OUT / 'm-snapshot.png'), full_page=True)
 
-        page.click('#tab-restore')
-        page.wait_for_selector('.restore-checkbox')
+        assert not page.locator('#tab-restore').count(), 'Obnova súborov je sekcia záložky Obnova a migrácia'
+        page.click('#tab-recovery')
+        page.click("#recovery-subnav [data-rsec='files']")
+        page.wait_for_selector("[data-restore-step='1']:not(.hidden)")
+        page.wait_for_function("() => restorePreviewItems.length > 0 && document.getElementById('restore-archive-select').value")
+        check(page, 'restore-step-archive', vp)
+        page.click('#restore-next')
+        page.wait_for_selector("[data-restore-step='2']:not(.hidden) .restore-checkbox")
+        assert page.locator('#restore-next').is_disabled(), 'bez výberu položky sa nedá pokračovať'
         page.locator(".restore-checkbox[data-path='/etc/network']").check()
         page.locator(".restore-checkbox[data-path='/etc/pve']").check()
+        check(page, 'restore-step-items', vp)
+        page.click('#restore-next')
+        page.wait_for_selector("[data-restore-step='3']:not(.hidden)")
         page.locator("input[name='restore-mode'][value='apply']").check()
+        assert page.locator('#restore-next').is_disabled(), 'REVIEW položka pri aplikovaní vyžaduje potvrdenie kontroly'
+        page.locator('#restore-ack').check()
+        check(page, 'restore-step-mode', vp)
+        page.click('#restore-next')
+        page.wait_for_selector("[data-restore-step='4']:not(.hidden)")
+        assert page.locator('#restore-btn').is_disabled(), 'bez textu OBNOVIT sa obnova nespustí'
+        assert '/etc/pve' in page.locator('#restore-plan-summary').inner_text(), 'stage_only položka sa iba pripraví'
         check(page, 'restore-apply-plan', vp)
         if width == 390:
             page.locator('#restore-plan-summary').scroll_into_view_if_needed()
             page.screenshot(path=str(OUT / 'm-restore-plan.png'))
+        page.click('#restore-prev')
+        page.wait_for_selector("[data-restore-step='3']:not(.hidden)")
+
+        # Krok obnovy po havárii otvorí sprievodcu s predvybranými položkami a návratom späť.
+        page.evaluate("openFilesRestoreForStep('restore-pve-config')")
+        page.wait_for_selector("[data-restore-step='2']:not(.hidden) .restore-checkbox")
+        assert page.locator(".restore-checkbox[data-path='/etc/pve']").is_checked()
+        assert not page.locator(".restore-checkbox[data-path='/etc/network']").is_checked(), 'predvoľba nahradí predchádzajúci výber'
+        assert page.locator("input[name='restore-mode'][value='stage']").is_checked()
+        assert 'krok' in page.locator('#restore-back-btn').inner_text() and page.locator('#restore-origin').is_visible()
+        check(page, 'restore-dr-preset', vp)
+        page.click('#restore-back-btn')
+        page.wait_for_selector('#dr-current-step')
+
+        page.click('#tab-history')
+        page.wait_for_selector("#backup-history-list button:has-text('Obnoviť')")
+        page.click("#backup-history-list button:has-text('Obnoviť') >> nth=0")
+        page.wait_for_selector("[data-restore-step='1']:not(.hidden)")
+        page.wait_for_function("() => document.getElementById('restore-archive-select').value")
         page.click('#tab-history')
         check(page, 'history', vp)
         page.click('#tab-settings')
@@ -475,6 +517,7 @@ with sync_playwright() as p:
             page.click('#tab-recovery')
             page.wait_for_selector('#rsec-overview .rounded-xl')
             page.screenshot(path=str(OUT / 'm-dark-overview.png'), full_page=True)
+            page.click('#recovery-refs > summary')
             page.click("#recovery-subnav [data-rsec='items']")
             page.screenshot(path=str(OUT / 'm-dark-items.png'))
         ctx.close()

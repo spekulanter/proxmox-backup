@@ -476,7 +476,7 @@ footer { color: var(--muted); font-size: 0.85rem; text-align: center; margin-top
 <h2>11. Fáza 8 – kontrola a nové zálohy</h2>
 {% call step('f8-1', '8.1', 'Kontrola hosta') %}{{ code('pveversion\npvesm status\nip -br addr; ip route\nfindmnt | grep -E "autofs|nfs|cifs"\nsystemctl --failed\nqm list; pct list\npve-firewall status\ntimedatectl') }}{% endcall %}
 {% call step('f8-2', '8.2', 'Vzdump zálohy a timery') %}{{ code('systemctl list-timers\ncat /etc/pve/jobs.cfg\n# spusti jeden backup job ručne (GUI: Datacenter → Backup → Run now) a over súbory v dump/') }}{% endcall %}
-{% call step('f8-3', '8.3', 'Nová záloha hosta a nová offline príručka') %}<p>V appke <strong>Vytvoriť zálohu teraz</strong>, skontroluj <em>Obnova na novom HW</em> (READY) a stiahni novú offline príručku.</p>{% endcall %}
+{% call step('f8-3', '8.3', 'Nová záloha hosta a nová offline príručka') %}<p>V appke <strong>Vytvoriť zálohu teraz</strong>, skontroluj <em>Obnova a migrácia</em> (READY) a stiahni novú offline príručku.</p>{% endcall %}
 {% call step('f8-4', '8.4', 'Upratanie') %}{{ code('rm -rf /root/pve-restore-review /root/proxmox-backup-restore-review-*\nrm -f /root/proxmox_backup_*.tar.gz') }}{% endcall %}
 </section>
 

@@ -3224,7 +3224,7 @@ def migration_final_steps(mctx):
                       'commands': ["sed -i 's/^enable: 0$/enable: 1/' /etc/pve/firewall/cluster.fw", 'pve-firewall status']})
     steps.append({'where': 'Appka (po spustení na novom hoste)', 'title': 'Overenie',
                   'commands': [f'Nastavenia → SSH host {old_ip} (teraz nový server) + root heslo nového hosta → Test SSH',
-                               'Vytvoriť zálohu teraz → Obnova na novom HW → stav READY',
+                               'Vytvoriť zálohu teraz → Obnova a migrácia → stav READY',
                                'Migrácia → krok Overenie a cesta späť']})
     return steps
 

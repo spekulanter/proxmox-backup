@@ -11,7 +11,7 @@ Moderná webová aplikácia v Python Flask pre správu a automatizáciu záloh P
 - **📤 FTP Upload** - Bezpečné nahrávanie záloh na vzdialený FTP server
 - **📁 Kategorizovaný výber** - Critical, recommended, optional, large, sensitive a AUTO.FS/QNAP/WD položky
 - **🧭 Restore checklist** - Archív obsahuje `backup-info/README-RESTORE.txt`, `recovery-manifest.json` a diagnostické výstupy
-- **🛟 Obnova na novom HW** - Klasifikácia obnovy každej položky, pripravenosť READY/WARNING/INCOMPLETE, 11-krokový postup, interná wiki a snapshot pôvodného hosta
+- **🛟 Obnova a migrácia** - Obnova po havárii, plánovaná migrácia a obnova súborov ako sprievodcovia krok za krokom; klasifikácia obnovy každej položky, pripravenosť READY/WARNING/INCOMPLETE, 11-krokový postup, interná wiki a snapshot pôvodného hosta
 - **📊 História záloh** - Prehľad a správa vytvorených záloh
 - **🔧 Test pripojenia** - Overenie FTP nastavení pred zálohou
 - **🔐 Single-admin login + povinné 2FA** - Prvé otvorenie vynúti registráciu admina, ďalšie účty nie sú povolené
@@ -121,9 +121,9 @@ Ochrany:
 
 Obnova je zámerne whitelistovaná na známe konfiguračné cesty a nepodporuje wildcard položky. Aplikácia po obnove nerobí automatický reload ani restart služieb; stav Proxmoxu skontrolujte ručne.
 
-### 🛟 Obnova na novom HW (Disaster Recovery)
+### 🛟 Obnova a migrácia (Disaster Recovery)
 
-Scenár: pôvodný Proxmox server (napr. MSI Cubi) zomrel a konfiguráciu treba obnoviť na novom, prípadne inom hardvéri. Záložka **Obnova na novom HW** obsahuje:
+Scenár: pôvodný Proxmox server (napr. MSI Cubi) zomrel a konfiguráciu treba obnoviť na novom, prípadne inom hardvéri. Záložka **Obnova a migrácia** obsahuje:
 
 - **Prehľad** - pripravenosť na obnovu, počty „X/Y aktuálne zálohované“ pre každú restore kategóriu, **riziká obnovy** a tlačidlo **Stiahnuť offline príručku**.
 - **Postup obnovy** - 11-krokový checklist (stav sa ukladá v prehliadači) s príkazmi a položkami zálohy pre každý krok.
@@ -167,7 +167,9 @@ Na záložke Zálohovanie sú filtre (Critical, Recommended, Optional, New HW �
 
 DR metadáta položiek sú definované v `recovery_data.py` (kľúč = cesta z `DEFAULT_BACKUP_FILES`). Neklasifikovaná vlastná položka dostane bezpečný fallback REVIEW FIRST. Metadáta sa pripájajú iba k API odpovediam (`recovery` objekt), do `backup_config.json` sa neukladajú, preto sa `CONFIG_VERSION` nemení.
 
-Záložka **Obnova na novom HW** začína rozcestníkom **„Čo chceš urobiť?“** (Server zomrel – obnova · Plánovaná migrácia na nový HW · Obnoviť súbory na tom istom serveri). Obnova po havárii aj migrácia sú **sprievodcovia krok za krokom**: rozbalený je iba aktuálny krok s tlačidlami Späť / Hotovo, ďalší krok / Preskočiť, zoznam všetkých krokov je zbalený a obsah viazaný na krok (zoznam hostí iba v kroku Presun hostí, porovnanie hostov v Príprave a Overení). Referencie (Položky, Snapshot hosta, Wiki) sú v samostatnom riadku. Záložka *Obnova* sa volá **Obnova súborov**.
+Hlavné záložky sú štyri: **Zálohovanie · Obnova a migrácia · História · Nastavenia**. Záložka **Obnova a migrácia** začína rozcestníkom **„Čo chceš urobiť?“** (Server zomrel – obnova · Plánovaná migrácia na nový HW · Obnoviť súbory na tom istom serveri). Všetky tri cesty sú **sprievodcovia krok za krokom** s rovnakým ovládaním: hore „krok X z Y“, rozbalený iba aktuálny krok a dole tlačidlá Späť / Ďalej (na mobile pripnuté k spodnému okraju), plus „← Späť na výber“. Obsah je viazaný na krok (zoznam hostí iba v kroku Presun hostí, porovnanie hostov v Príprave a Overení). Wiki, Položky zálohy a Snapshot hosta sú pod jedným odkazom **Wiki a referencie**.
+
+**Obnova súborov** (bývalá samostatná záložka Obnova) má 4 kroky: **Archív** (predvolene najnovší) → **Čo obnoviť** → **Ako obnoviť** (Iba pripraviť na kontrolu / Aplikovať, potvrdenie kontroly REVIEW položiek) → **Potvrdenie** (plán, text OBNOVIT, výsledok a ďalší krok). Kroky obnovy po havárii ju otvárajú priamo s **predvybranými položkami** v režime Iba pripraviť (napr. krok 7: config.db, /etc/pve, hostname, hosts) a po dokončení vedú späť do postupu. V Histórii má každý dostupný archív tlačidlo **Obnoviť**. Bezpečnostné poistky obnovy sa nezmenili. Na záložke Zálohovanie je výber 35 položiek zbalený do riadku „Čo sa zálohuje: X z Y · Upraviť výber“.
 
 **Pripojenie nového hosta (migrácia vedľa starého, krok „Nový host“):** zadáš dočasnú IP, SSH port a root heslo nového Proxmoxu. Appka ich uloží do `migration_target.json` (0600, nikdy do `migration_state.json`) a na pozadí spustí **kontrolu nového hosta** (iba čítanie): SSH prihlásenie, beží Proxmox VE, **nie je to ten istý stroj ako starý** (`/etc/machine-id`), iná adresa ako starý host, beží `pve-cluster`, na novom hoste nebežia ani neexistujú hostia (pred prenosom konfigurácie 1:1 musí byť prázdny), verzia PVE nie je staršia. Operácie bežia na pozadí s priebehom a logom (`migration_jobs.json`); naraz smie bežať iba jedna, počas nej nejde reset migrácie ani zabudnutie hosta, a operácia bez heartbeatu (napr. po reštarte služby) sa označí ako prerušená. Heslá sa v logoch maskujú.
 
@@ -198,7 +200,7 @@ Každá úspešne vytvorená záloha sa uloží lokálne do `backups/` v LXC a n
 
 ### Plánovaná migrácia na nový HW
 
-Podsekcia **Obnova na novom HW → Migrácia** vedie migráciu živého starého servera. Vyber **presun systémového disku** (`disk_move`) alebo **nový host vedľa starého** (`side_by_side`). Kroky vychádzajú z existujúcej wiki „Migrácia na nový HW (plánovaná)“. Cluster a `qm remote-migrate` sú iba odkazy vo wiki. Migračné príkazy vykonáva administrátor ručne; kroky evidujú jeho potvrdenia. Samostatné porovnanie hostov načíta cez SSH iba diagnostiku podľa pevného read-only zoznamu.
+Podsekcia **Obnova a migrácia → Migrácia na nový HW** vedie migráciu živého starého servera. Vyber **presun systémového disku** (`disk_move`) alebo **nový host vedľa starého** (`side_by_side`). Kroky vychádzajú z existujúcej wiki „Migrácia na nový HW (plánovaná)“. Cluster a `qm remote-migrate` sú iba odkazy vo wiki. Migračné príkazy vykonáva administrátor ručne; kroky evidujú jeho potvrdenia. Samostatné porovnanie hostov načíta cez SSH iba diagnostiku podľa pevného read-only zoznamu.
 
 Pri `side_by_side` sa VM/LXC a priradenie vzdump jobov čítajú z najnovšieho **lokálneho** archívu rovnakými whitelisted parsermi ako Riziká obnovy. FTP archív najprv načítaj lokálne v Histórii. Priradený job nie je dôkaz úspešnej zálohy; bez jobu je nutný ručný vzdump. Pôvodní hostia ostanú v uloženom inventári aj po zálohe nového hosta. Neúplný alebo nedostupný inventár zobrazí upozornenie.
 

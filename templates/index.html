@@ -160,6 +160,7 @@
         .wiki-body p, .wiki-body li { line-height: 1.6; overflow-wrap: anywhere; }
         .wiki-body code, .dr-text code { border-radius: 0.25rem; background: hsl(var(--muted)); padding: 0.05rem 0.3rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85em; overflow-wrap: anywhere; }
         .dr-pre { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; border-radius: 0.375rem; border: 1px solid hsl(var(--border)); background: hsl(var(--muted)); padding: 0.6rem 0.75rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; }
+        .wizard-footer { position: sticky; bottom: 0; z-index: 5; background: hsl(var(--card)); padding-top: 0.75rem; padding-bottom: 0.75rem; }
         .step-check { width: 1.35rem; height: 1.35rem; flex-shrink: 0; accent-color: hsl(var(--primary)); }
         #item-detail-overlay .detail-panel { max-height: calc(100vh - 1rem); }
         @media (min-width: 640px) { #item-detail-overlay .detail-panel { max-height: 92vh; } }
@@ -294,11 +295,8 @@
                     <button onclick="showTab('backup')" id="tab-backup" class="data-[state=active]:bg-background dark:data-[state=active]:text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:outline-ring inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-4 sm:px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:shadow-md [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 bg-background text-foreground shadow-md border-border min-w-[120px]">
                         Zálohovanie
                     </button>
-                    <button onclick="showTab('restore')" id="tab-restore" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-4 sm:px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
-                        Obnova súborov
-                    </button>
                     <button onclick="showTab('recovery')" id="tab-recovery" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-4 sm:px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
-                        Obnova na novom HW
+                        Obnova a migrácia
                     </button>
                     <button onclick="showTab('history')" id="tab-history" class="inline-flex h-[calc(100%-1px)] flex-1 items-center justify-center gap-1.5 rounded-lg border border-transparent px-4 sm:px-8 py-1.5 text-sm font-medium whitespace-nowrap transition-all duration-200 focus-visible:ring-[3px] focus-visible:outline-1 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 text-foreground hover:bg-background/50 hover:border-border/50 min-w-[120px]">
                         História
@@ -455,7 +453,12 @@
                                 Vyberte súbory a priečinky, ktoré chcete zálohovať
                             </div>
                         </div>
-                        <div class="px-6">
+                        <details id="backup-files-details" class="px-6">
+                            <summary class="flex min-h-11 cursor-pointer select-none flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm">
+                                <span>Čo sa zálohuje: <strong id="backup-files-summary">načítavam…</strong></span>
+                                <span class="font-medium text-primary dark:text-foreground">Upraviť výber</span>
+                            </summary>
+                            <div class="pt-4">
                             <div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                 <div class="space-y-2">
                                     <div class="text-sm text-muted-foreground" id="backup-profile-help">
@@ -493,7 +496,8 @@
                             <div class="space-y-3" id="backup-files-list">
                                 <!-- Files will be loaded here -->
                             </div>
-                        </div>
+                            </div>
+                        </details>
                     </div>
                 </div>
 
@@ -661,93 +665,6 @@
                 </div>
 
                 <!-- Tab Content: Obnova -->
-                <div id="content-restore" class="space-y-6 hidden">
-                    <div class="bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm">
-                        <div class="grid auto-rows-min grid-rows-[auto_auto] items-start gap-1.5 px-6">
-                            <div class="leading-none font-semibold flex items-center gap-2">
-                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h11M9 21V3m8 13l4-4m0 0l-4-4m4 4H9"/>
-                                </svg>
-                                Obnova cez SSH
-                            </div>
-                            <div class="text-muted-foreground text-sm">
-                                Obnoví vybrané konfiguračné cesty z lokálneho archívu na Proxmox host
-                            </div>
-                        </div>
-                        <div class="px-6 space-y-4">
-                            <div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-                                Archív môže obsahovať heslá, tokeny a SSH kľúče. Pred aplikovaním sa existujúce cieľové súbory na hoste skopírujú do rollback adresára v <span class="font-mono">/root</span>.
-                            </div>
-
-                            <div class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                                Obnova na <strong>nový alebo iný hardvér</strong>? Nepoužívaj „obnov všetko“. Iné NIC, UUID diskov, PCI ID a verzie znamenajú, že časť konfigurácie treba najprv porovnať.
-                                <button type="button" onclick="showTab('recovery')" class="ml-1 font-semibold underline underline-offset-2">Postup obnovy na novom HW</button>
-                            </div>
-
-                            <fieldset class="space-y-2">
-                                <legend class="text-sm font-medium">Režim obnovy</legend>
-                                <div class="grid gap-2 md:grid-cols-2">
-                                    <label class="flex cursor-pointer items-start gap-3 rounded-lg border p-3 has-[:checked]:border-primary has-[:checked]:bg-muted/50">
-                                        <input type="radio" name="restore-mode" value="stage" class="mt-1 h-4 w-4 shrink-0" checked onchange="updateRestoreButton()">
-                                        <span class="min-w-0 space-y-0.5">
-                                            <span class="block text-sm font-medium">Iba pripraviť na kontrolu <span class="text-xs font-normal text-muted-foreground">(odporúčané pre nový HW)</span></span>
-                                            <span class="block text-xs text-muted-foreground">Rozbalí vybrané cesty do <span class="font-mono break-all">/root/proxmox-backup-restore-review-&lt;čas&gt;/</span>. Živý systém sa nezmení.</span>
-                                        </span>
-                                    </label>
-                                    <label class="flex cursor-pointer items-start gap-3 rounded-lg border p-3 has-[:checked]:border-primary has-[:checked]:bg-muted/50">
-                                        <input type="radio" name="restore-mode" value="apply" class="mt-1 h-4 w-4 shrink-0" onchange="updateRestoreButton()">
-                                        <span class="min-w-0 space-y-0.5">
-                                            <span class="block text-sm font-medium">Aplikovať na host <span class="text-xs font-normal text-muted-foreground">(rovnaký HW)</span></span>
-                                            <span class="block text-xs text-muted-foreground">Prepíše cieľové cesty (s pre-apply zálohou). ADVANCED a REFERENCE položky sa aj tak iba pripravia.</span>
-                                        </span>
-                                    </label>
-                                </div>
-                            </fieldset>
-
-                            <div>
-                                <div>
-                                    <label for="restore-archive-select" class="flex items-center gap-2 text-sm leading-none font-medium">Lokálny archív</label>
-                                    <select id="restore-archive-select" class="flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] mt-1">
-                                        <option value="">Načítavam archívy...</option>
-                                    </select>
-                                </div>
-                            </div>
-
-                            <div id="restore-preview-list" class="space-y-3">
-                                <div class="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
-                                    Vyber archív a obnoviteľné cesty sa načítajú automaticky.
-                                </div>
-                            </div>
-
-                            <div id="restore-plan-summary" class="hidden rounded-lg border border-border px-4 py-3 text-sm"></div>
-
-                            <div id="restore-ack-box" class="hidden space-y-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                                <div class="font-medium">Tieto položky sa majú pred priamym aplikovaním skontrolovať:</div>
-                                <ul id="restore-ack-list" class="space-y-1"></ul>
-                                <label class="flex items-start gap-2 pt-1">
-                                    <input type="checkbox" id="restore-ack" class="mt-0.5 h-4 w-4 shrink-0" onchange="updateRestoreButton()">
-                                    <span>Obsah týchto položiek som porovnal s cieľovým hostom a rozumiem rizikám (iné NIC, UUID, verzie). Chcem ich aplikovať.</span>
-                                </label>
-                            </div>
-
-                            <div class="grid gap-4 md:grid-cols-[1fr_auto]">
-                                <div>
-                                    <label for="restore-confirm" class="flex items-center gap-2 text-sm leading-none font-medium">Potvrdenie</label>
-                                    <input type="text" id="restore-confirm" placeholder="OBNOVIT" class="file:text-foreground placeholder:text-muted-foreground flex h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs transition-[color,box-shadow] outline-none md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] mt-1">
-                                </div>
-                                <div class="flex items-end">
-                                    <button onclick="runRestore()" id="restore-btn" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 bg-destructive text-destructive-foreground shadow-xs hover:bg-destructive/90 h-9 px-4 py-2">
-                                        Spustiť obnovu
-                                    </button>
-                                </div>
-                            </div>
-
-                            <div id="restore-status" class="text-sm text-muted-foreground hidden"></div>
-                            <div id="restore-result" class="hidden rounded-lg border border-border px-4 py-3 text-sm"></div>
-                        </div>
-                    </div>
-                </div>
-
                 <!-- Tab Content: Obnova na novom HW (Disaster Recovery) -->
                 <div id="content-recovery" class="space-y-6 hidden">
                     <div class="bg-card text-card-foreground flex flex-col gap-5 rounded-xl border py-6 shadow-sm">
@@ -756,10 +673,10 @@
                                 <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
                                 </svg>
-                                Obnova na novom HW
+                                Obnova a migrácia
                             </div>
                             <div class="text-muted-foreground text-sm">
-                                Obnova po havárii aj plánovaná migrácia zo živého servera: kontroly, selektívny prenos a bezpečný postup.
+                                Obnova po havárii, plánovaná migrácia na nový HW a obnova vybraných súborov – každé krok za krokom.
                             </div>
                         </div>
                         <div class="px-4 sm:px-6">
@@ -768,13 +685,16 @@
                                     <button type="button" class="filter-chip" data-rsec="overview" onclick="showRecoverySection('overview')">Prehľad</button>
                                     <button type="button" class="filter-chip" data-rsec="checklist" onclick="showRecoverySection('checklist')">Obnova po havárii</button>
                                     <button type="button" class="filter-chip" data-rsec="migration" onclick="showRecoverySection('migration')">Migrácia na nový HW</button>
+                                    <button type="button" class="filter-chip" data-rsec="files" onclick="showRecoverySection('files')">Obnova súborov</button>
                                 </div>
-                                <div class="flex flex-wrap items-center gap-1.5 text-xs">
-                                    <span class="text-muted-foreground">Referencie:</span>
-                                    <button type="button" class="filter-chip !min-h-0 !px-2.5 !py-1 !text-xs" data-rsec="items" onclick="showRecoverySection('items')">Položky</button>
-                                    <button type="button" class="filter-chip !min-h-0 !px-2.5 !py-1 !text-xs" data-rsec="snapshot" onclick="showRecoverySection('snapshot')">Snapshot hosta</button>
-                                    <button type="button" class="filter-chip !min-h-0 !px-2.5 !py-1 !text-xs" data-rsec="wiki" onclick="showRecoverySection('wiki')">Wiki</button>
-                                </div>
+                                <details id="recovery-refs" class="text-xs">
+                                    <summary class="inline-flex min-h-9 cursor-pointer select-none items-center text-sm text-muted-foreground hover:text-foreground">Wiki a referencie</summary>
+                                    <div class="mt-1 flex flex-wrap items-center gap-1.5">
+                                        <button type="button" class="filter-chip !min-h-0 !px-2.5 !py-1 !text-xs" data-rsec="wiki" onclick="showRecoverySection('wiki')">Wiki</button>
+                                        <button type="button" class="filter-chip !min-h-0 !px-2.5 !py-1 !text-xs" data-rsec="items" onclick="showRecoverySection('items')">Položky zálohy</button>
+                                        <button type="button" class="filter-chip !min-h-0 !px-2.5 !py-1 !text-xs" data-rsec="snapshot" onclick="showRecoverySection('snapshot')">Snapshot hosta</button>
+                                    </div>
+                                </details>
                             </div>
                         </div>
                         <div class="px-4 sm:px-6 min-w-0">
@@ -826,6 +746,89 @@
                                     <button type="button" onclick="loadHostSnapshot()" id="snapshot-load-btn" class="inline-flex h-9 shrink-0 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground shadow-xs hover:bg-primary/90">Zobraziť snapshot</button>
                                 </div>
                                 <div id="snapshot-result" class="space-y-2"></div>
+                            </div>
+                            <div id="rsec-files" class="recovery-section hidden min-w-0 space-y-4">
+                                <div class="flex flex-wrap items-start justify-between gap-2">
+                                    <div class="min-w-0">
+                                        <h2 class="text-base font-semibold">Obnova súborov</h2>
+                                        <p class="text-sm text-muted-foreground">Vybrané konfiguračné cesty z archívu na Proxmox host cez SSH – pripraviť na kontrolu alebo aplikovať.</p>
+                                    </div>
+                                    <button type="button" onclick="closeFilesRestore()" id="restore-back-btn" class="inline-flex min-h-9 items-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium hover:bg-accent">← Späť na výber</button>
+                                </div>
+                                <div id="restore-origin" class="hidden rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900"></div>
+                                <div id="restore-wizard-header"></div>
+
+                                <section data-restore-step="1" class="space-y-3">
+                                    <label for="restore-archive-select" class="block text-sm font-medium">Z ktorej zálohy?</label>
+                                    <select id="restore-archive-select" class="flex h-11 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs outline-none md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                                        <option value="">Načítavam archívy...</option>
+                                    </select>
+                                    <p class="text-xs text-muted-foreground">Predvolene najnovšia záloha. Archív len na FTP sa pred použitím stiahne do lokálneho cache.</p>
+                                </section>
+
+                                <section data-restore-step="2" class="hidden space-y-3">
+                                    <p class="text-sm text-muted-foreground">Vyber iba to, čo naozaj chceš obnoviť. Hromadné „obnov všetko“ zámerne neexistuje; pri každej položke vidíš, ako bezpečné je ju obnoviť (Detail vysvetľuje prečo).</p>
+                                    <div id="restore-preview-list" class="space-y-3">
+                                        <div class="rounded-lg border border-border px-4 py-3 text-sm text-muted-foreground">
+                                            Vyber archív a obnoviteľné cesty sa načítajú automaticky.
+                                        </div>
+                                    </div>
+                                </section>
+
+                                <section data-restore-step="3" class="hidden space-y-3">
+                                    <fieldset class="space-y-2">
+                                <legend class="text-sm font-medium">Režim obnovy</legend>
+                                <div class="grid gap-2 md:grid-cols-2">
+                                    <label class="flex cursor-pointer items-start gap-3 rounded-lg border p-3 has-[:checked]:border-primary has-[:checked]:bg-muted/50">
+                                        <input type="radio" name="restore-mode" value="stage" class="mt-1 h-4 w-4 shrink-0" checked onchange="updateRestoreButton()">
+                                        <span class="min-w-0 space-y-0.5">
+                                            <span class="block text-sm font-medium">Iba pripraviť na kontrolu <span class="text-xs font-normal text-muted-foreground">(odporúčané pre nový HW)</span></span>
+                                            <span class="block text-xs text-muted-foreground">Rozbalí vybrané cesty do <span class="font-mono break-all">/root/proxmox-backup-restore-review-&lt;čas&gt;/</span>. Živý systém sa nezmení.</span>
+                                        </span>
+                                    </label>
+                                    <label class="flex cursor-pointer items-start gap-3 rounded-lg border p-3 has-[:checked]:border-primary has-[:checked]:bg-muted/50">
+                                        <input type="radio" name="restore-mode" value="apply" class="mt-1 h-4 w-4 shrink-0" onchange="updateRestoreButton()">
+                                        <span class="min-w-0 space-y-0.5">
+                                            <span class="block text-sm font-medium">Aplikovať na host <span class="text-xs font-normal text-muted-foreground">(rovnaký HW)</span></span>
+                                            <span class="block text-xs text-muted-foreground">Prepíše cieľové cesty (s pre-apply zálohou). ADVANCED a REFERENCE položky sa aj tak iba pripravia.</span>
+                                        </span>
+                                    </label>
+                                </div>
+                            </fieldset>
+                                    <div class="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                                        <strong class="text-foreground">Kedy čo použiť:</strong> Na novom alebo inom HW a pri citlivých súboroch vždy <em>Iba pripraviť</em> – súbory porovnáš (<code>diff -u</code>) a prenesieš ručne. <em>Aplikovať</em> použi na tom istom serveri, keď chceš vrátiť presne stav zo zálohy.
+                                    </div>
+                                    <div id="restore-ack-box" class="hidden space-y-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                                <div class="font-medium">Tieto položky sa majú pred priamym aplikovaním skontrolovať:</div>
+                                <ul id="restore-ack-list" class="space-y-1"></ul>
+                                <label class="flex items-start gap-2 pt-1">
+                                    <input type="checkbox" id="restore-ack" class="mt-0.5 h-4 w-4 shrink-0" onchange="updateRestoreButton()">
+                                    <span>Obsah týchto položiek som porovnal s cieľovým hostom a rozumiem rizikám (iné NIC, UUID, verzie). Chcem ich aplikovať.</span>
+                                </label>
+                            </div>
+                                </section>
+
+                                <section data-restore-step="4" class="hidden space-y-3">
+                                    <div id="restore-plan-summary" class="hidden rounded-lg border border-border px-4 py-3 text-sm"></div>
+                                    <div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+                                        Archív môže obsahovať heslá, tokeny a SSH kľúče. Pri aplikovaní sa existujúce cieľové súbory najprv skopírujú do rollback adresára v <span class="font-mono">/root</span>; review adresár po kontrole zmaž.
+                                    </div>
+                                    <div class="grid gap-3 md:grid-cols-[1fr_auto]">
+                                        <div>
+                                            <label for="restore-confirm" class="block text-sm font-medium">Potvrdenie – napíš OBNOVIT</label>
+                                            <input type="text" id="restore-confirm" placeholder="OBNOVIT" autocomplete="off" class="mt-1 flex h-11 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs outline-none md:text-sm focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+                                        </div>
+                                        <div class="flex items-end">
+                                            <button onclick="runRestore()" id="restore-btn" class="inline-flex min-h-11 items-center justify-center gap-2 whitespace-nowrap rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground shadow-xs transition-all hover:bg-destructive/90 disabled:pointer-events-none disabled:opacity-50">
+                                                Spustiť obnovu
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div id="restore-result" class="hidden rounded-lg border border-border px-4 py-3 text-sm"></div>
+                                </section>
+
+                                <div id="restore-status" class="text-sm text-muted-foreground hidden"></div>
+                                <div id="restore-wizard-footer" class="wizard-footer"></div>
                             </div>
                             <div id="rsec-wiki" class="recovery-section hidden space-y-4"></div>
                         </div>
@@ -1674,6 +1677,12 @@
 
         // Tab management
         function showTab(tabName) {
+            // Obnova súborov je po novom sekcia záložky Obnova a migrácia.
+            if (tabName === 'restore') {
+                showTab('recovery');
+                showRecoverySection('files');
+                return;
+            }
             if (tabName !== 'recovery') document.getElementById('migration-compare-password').value = '';
             // Hide all content
             document.querySelectorAll('[id^="content-"]').forEach(el => el.classList.add('hidden'));
@@ -1686,9 +1695,6 @@
             
             // Show selected content
             document.getElementById('content-' + tabName).classList.remove('hidden');
-            if (tabName === 'restore') {
-                loadRestoreArchives();
-            }
             if (tabName === 'history') {
                 loadBackups();
             }
@@ -1974,6 +1980,10 @@
             const totalCritical = criticalFiles.length;
             
             document.getElementById('files-count').textContent = `${selectedCount} z ${totalCount}`;
+            const filesSummary = document.getElementById('backup-files-summary');
+            if (filesSummary) {
+                filesSummary.textContent = `${selectedCount} z ${totalCount} položiek (${activeBackupProfile === 'auto' ? 'automatická' : 'ručná'} záloha)${selectedCritical < totalCritical ? ` · chýba ${totalCritical - selectedCritical} kritických` : ''}`;
+            }
             document.getElementById('critical-count').textContent = `${selectedCritical} z ${totalCritical}`;
             
             // Update badge colors
@@ -2150,12 +2160,16 @@
                 const cacheButton = entry.ftp_available && !entry.local_available
                     ? `<button type="button" data-backup-id="${escapeHtml(entry.id)}" onclick="cacheBackup(this.dataset.backupId)" class="inline-flex items-center justify-center rounded-md border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent">Načítať lokálne</button>`
                     : '';
+                const restoreButton = entry.local_available || entry.ftp_available
+                    ? `<button type="button" data-backup-id="${escapeHtml(entry.id)}" onclick="openFilesRestore({ archiveId: this.dataset.backupId, origin: { section: 'overview', label: 'výber', text: 'Obnova z archívu vybraného v Histórii.' } })" class="inline-flex items-center justify-center rounded-md border border-input bg-background px-2.5 py-1 text-xs font-medium hover:bg-accent">Obnoviť</button>`
+                    : '';
                 return `
                     <div class="rounded-lg border p-3 space-y-2">
                         <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
                             <div class="font-medium text-sm break-all">${escapeHtml(entry.filename || 'backup')}</div>
                             <div class="flex flex-wrap items-center gap-2">
                                 <div class="text-xs text-muted-foreground">${escapeHtml(timestamp)}</div>
+                                ${restoreButton}
                                 ${downloadButton}
                                 ${cacheButton}
                                 <button type="button" data-backup-id="${escapeHtml(entry.id)}" onclick="deleteBackup(this.dataset.backupId)" class="inline-flex items-center justify-center rounded-md border border-red-200 bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-100">
@@ -2275,11 +2289,14 @@
                 const label = `${archive.filename || 'backup'} | ${storageLabel} | ${archive.timestamp || 'bez dátumu'} | ${archive.size || 'n/a'}`;
                 return `<option value="${escapeHtml(archive.id)}">${escapeHtml(label)}</option>`;
             }).join('');
-            if (currentValue && restoreArchives.some(archive => String(archive.id) === String(currentValue))) {
-                select.value = currentValue;
-            } else if (restoreArchives.length === 1) {
+            const wanted = pendingRestoreArchive || currentValue;
+            if (wanted && restoreArchives.some(archive => String(archive.id) === String(wanted))) {
+                select.value = wanted;
+            } else {
+                // Predvolene najnovšia záloha (zoznam je zoradený od najnovšej).
                 select.value = restoreArchives[0].id;
             }
+            pendingRestoreArchive = '';
         }
 
         async function loadRestorePreview() {
@@ -2411,7 +2428,14 @@
                 <div id="restore-all-member-list" class="hidden"></div>
                 ${sections}
             `;
+            if (pendingRestorePreset) {
+                const wanted = new Set(pendingRestorePreset.paths || []);
+                document.querySelectorAll('.restore-checkbox').forEach(cb => { cb.checked = wanted.has(cb.dataset.path); });
+                pendingRestorePreset = null;
+                if (getSelectedRestorePaths().length && restoreWizardStep === 1) restoreWizardStep = 2;
+            }
             updateRestoreButton();
+            renderRestoreWizard();
         }
 
         function renderMemberRows(members) {
@@ -2599,6 +2623,7 @@
             btn.disabled = !(hasSsh && archiveSelected && confirmed && hasPaths && ackOk);
             btn.classList.toggle('opacity-50', btn.disabled);
             btn.classList.toggle('cursor-not-allowed', btn.disabled);
+            renderRestoreWizardNav();
         }
 
         async function runRestore() {
@@ -2651,7 +2676,8 @@
                     ${result.backup_dir ? `<div class="mt-1">Rollback adresár: <span class="font-mono break-all">${escapeHtml(result.backup_dir)}</span></div>` : ''}
                     ${result.review_dir ? `<div class="mt-1">Pripravené na kontrolu v: <span class="font-mono break-all">${escapeHtml(result.review_dir)}</span> (README-REVIEW.txt)</div>` : ''}
                     <div class="mt-2">Aplikované: ${applied.length} | Iba pripravené: ${staged.length} | Preskočené: ${skipped.length}</div>
-                    <div class="mt-2 text-xs">Skontroluj služby ručne. Aplikácia nerobí automatický reload ani restart Proxmox služieb.${result.review_dir ? ' Review adresár po dokončení zmaž – môže obsahovať citlivé súbory.' : ''}</div>
+                    <div class="mt-2 text-xs">Skontroluj služby ručne. Aplikácia nerobí automatický reload ani restart Proxmox služieb.${result.review_dir ? ` Ďalej: <code>diff -ru ${escapeHtml(result.review_dir)}/etc /etc</code>; review adresár po dokončení zmaž – môže obsahovať citlivé súbory.` : ''}</div>
+                    ${restoreOrigin ? `<button type="button" onclick="closeFilesRestore()" class="mt-3 inline-flex min-h-11 items-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">← Späť na ${escapeHtml(restoreOrigin.label)}</button>` : ''}
                 `;
                 resultBox.classList.remove('hidden');
                 status.textContent = 'Restore dokončený';
@@ -2760,7 +2786,7 @@
         }
 
         function showRecoverySection(section) {
-            const allowed = ['overview', 'migration', 'checklist', 'items', 'snapshot', 'wiki'];
+            const allowed = ['overview', 'migration', 'checklist', 'files', 'items', 'snapshot', 'wiki'];
             recoverySection = allowed.includes(section) ? section : 'overview';
             document.querySelectorAll('.recovery-section').forEach(el => {
                 el.classList.toggle('hidden', el.id !== `rsec-${recoverySection}`);
@@ -2770,6 +2796,8 @@
             });
             if (recoverySection === 'migration') loadMigration();
             else document.getElementById('migration-compare-password').value = '';
+            if (recoverySection === 'files') renderRestoreWizard();
+            if (['wiki', 'items', 'snapshot'].includes(recoverySection)) document.getElementById('recovery-refs').open = true;
             if (recoverySection === 'wiki' && !currentWikiSlug) {
                 renderWikiIndex();
             }
@@ -3550,7 +3578,7 @@
                     <div class="grid gap-3 md:grid-cols-3" id="recovery-chooser">
                         ${choice('Server zomrel – obnova', 'Nový Proxmox, sieť, prístup k NAS, PVE konfigurácia, hostia. Krok za krokom.', `Postup: ${doneSteps} z ${steps.length} krokov →`, "showRecoverySection('checklist')", doneSteps > 0)}
                         ${choice('Plánovaná migrácia na nový HW', 'Presun disku alebo nový host vedľa starého, hostia po jednom, prepnutie a cesta späť.', `${migrationHint} →`, "showRecoverySection('migration')", Boolean(migrationData?.state?.method))}
-                        ${choice('Obnoviť súbory na tom istom serveri', 'Vybrané konfiguračné cesty z archívu – pripraviť na kontrolu alebo aplikovať.', 'Obnova súborov →', "showTab('restore')")}
+                        ${choice('Obnoviť súbory na tom istom serveri', 'Vybrané konfiguračné cesty z archívu – pripraviť na kontrolu alebo aplikovať.', 'Obnova súborov →', "openFilesRestore()")}
                     </div>
                 </div>
 
@@ -3740,7 +3768,7 @@
             const primary = currentDone
                 ? (next ? `<button type="button" data-stepper-go="${escapeHtml(next.id)}" data-stepper="${kind}" class="${button} bg-primary text-primary-foreground hover:bg-primary/90">Ďalší krok →</button>` : '')
                 : `<button type="button" data-stepper-done="${id}" data-stepper="${kind}" class="${button} bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50" ${blockedMessage ? 'disabled' : ''}>${next ? 'Hotovo, ďalší krok →' : 'Hotovo – dokončiť'}</button>`;
-            return `<div class="space-y-2 border-t pt-3">
+            return `<div class="wizard-footer space-y-2 border-t">
                 ${blockedMessage ? `<p class="text-sm text-destructive" role="status">${escapeHtml(blockedMessage)}</p>` : ''}
                 <div class="flex flex-wrap items-center gap-2">
                     ${prev ? `<button type="button" data-stepper-go="${escapeHtml(prev.id)}" data-stepper="${kind}" class="${button} border border-input bg-background hover:bg-accent">← Späť</button>` : ''}
@@ -3818,10 +3846,10 @@
         }
 
         const DR_STEP_ACTIONS = {
-            'load-host-backup': [['Snapshot pôvodného hosta', "showRecoverySection('snapshot')"], ['Obnova súborov – pripraviť na kontrolu', "showTab('restore')"]],
-            'compare-hw-config': [['Snapshot pôvodného hosta', "showRecoverySection('snapshot')"]],
-            'restore-pve-config': [['Obnova súborov – pripraviť config.db a /etc/pve', "showTab('restore')"]],
-            'selective-host-config': [['Obnova súborov – vybrané položky', "showTab('restore')"]],
+            'load-host-backup': [['Pripraviť REQUIRED a REVIEW na kontrolu', "openFilesRestoreForStep('load-host-backup')"], ['Snapshot pôvodného hosta', "showRecoverySection('snapshot')"]],
+            'compare-hw-config': [['Pripraviť HW-závislú konfiguráciu na porovnanie', "openFilesRestoreForStep('compare-hw-config')"], ['Snapshot pôvodného hosta', "showRecoverySection('snapshot')"]],
+            'restore-pve-config': [['Pripraviť config.db a /etc/pve na kontrolu', "openFilesRestoreForStep('restore-pve-config')"]],
+            'selective-host-config': [['Pripraviť SSH, systemd, cron, autofs a skripty', "openFilesRestoreForStep('selective-host-config')"]],
             'post-recovery': [['Vytvoriť novú zálohu hosta', "showTab('backup')"]],
         };
 
@@ -4172,6 +4200,117 @@
             } finally {
                 btn.disabled = false;
             }
+        }
+
+        // --- Obnova súborov ako sprievodca: Archív → Čo obnoviť → Ako → Potvrdenie ---
+        const RESTORE_STEPS = ['Archív', 'Čo obnoviť', 'Ako obnoviť', 'Potvrdenie'];
+        let restoreWizardStep = 1;
+        let pendingRestorePreset = null;
+        let pendingRestoreArchive = '';
+        let restoreOrigin = null;
+
+        // Predvyplnené výbery pre kroky obnovy po havárii (vždy v režime Iba pripraviť na kontrolu).
+        const DR_RESTORE_PRESETS = {
+            'load-host-backup': { label: 'REQUIRED a REVIEW položky', categories: ['required', 'review'] },
+            'compare-hw-config': { label: 'HW-závislá konfigurácia', paths: ['/etc/network', '/etc/fstab', '/etc/modules', '/etc/modprobe.d', '/etc/sysctl.conf', '/etc/sysctl.d', '/etc/default'] },
+            'restore-pve-config': { label: 'config.db, /etc/pve, hostname a hosts', paths: ['/var/lib/pve-cluster/config.db', '/etc/pve', '/etc/hostname', '/etc/hosts'] },
+            'selective-host-config': { label: 'SSH, systemd, cron, autofs, skripty a účty', paths: ['/etc/ssh', '/etc/systemd/system', '/var/spool/cron', '/etc/auto.master', '/etc/auto.master.d', '/etc/auto.nfs', '/usr/local/sbin', '/usr/local/bin', '/etc/vzdump.conf', '/etc/passwd', '/etc/group', '/etc/subuid', '/etc/subgid'] },
+        };
+
+        function presetPaths(preset) {
+            if (preset.paths) return preset.paths;
+            return (recoveryOverview?.items || [])
+                .filter(item => preset.categories.includes(item.recovery?.restore_category) && !item.recovery?.wildcard)
+                .map(item => item.path);
+        }
+
+        function openFilesRestore({ paths = null, mode = null, archiveId = '', origin = null } = {}) {
+            restoreOrigin = origin;
+            pendingRestorePreset = paths ? { paths } : null;
+            pendingRestoreArchive = archiveId ? String(archiveId) : '';
+            restoreWizardStep = 1;
+            document.getElementById('restore-confirm').value = '';
+            document.getElementById('restore-result').classList.add('hidden');
+            if (mode) {
+                const radio = document.querySelector(`input[name="restore-mode"][value="${mode}"]`);
+                if (radio) radio.checked = true;
+            }
+            showTab('recovery');
+            showRecoverySection('files');
+            const select = document.getElementById('restore-archive-select');
+            if (pendingRestoreArchive && restoreArchives.some(archive => String(archive.id) === pendingRestoreArchive)) {
+                select.value = pendingRestoreArchive;
+                pendingRestoreArchive = '';
+                loadRestorePreview();
+            } else if (pendingRestorePreset && select.value && restorePreviewItems.length) {
+                renderRestorePreview();
+            }
+        }
+
+        function openFilesRestoreForStep(stepId) {
+            const preset = DR_RESTORE_PRESETS[stepId];
+            const step = (recoveryOverview?.checklist || []).find(item => item.id === stepId);
+            openFilesRestore({ paths: presetPaths(preset), mode: 'stage',
+                origin: { section: 'checklist', label: `krok ${step?.step || ''} obnovy po havárii`.trim(), text: `Krok ${step?.step}: ${step?.title || ''} – predvybrané: ${preset.label}. Režim Iba pripraviť na kontrolu.` } });
+        }
+
+        function closeFilesRestore() {
+            const section = restoreOrigin?.section || 'overview';
+            restoreOrigin = null;
+            showRecoverySection(section);
+        }
+
+        function restoreStepBlocker(step) {
+            if (step === 1) {
+                if (!document.getElementById('restore-archive-select')?.value) return 'Vyber archív.';
+                if (!restorePreviewItems.length) return 'Čakám na načítanie obsahu archívu…';
+            }
+            if (step === 2 && !getSelectedRestorePaths().length) return 'Vyber aspoň jednu položku.';
+            if (step === 3) {
+                const plan = getRestorePlan();
+                if (plan.needsAck.length && !document.getElementById('restore-ack')?.checked) return 'Potvrď kontrolu položiek, ktoré sa majú aplikovať.';
+            }
+            return '';
+        }
+
+        function renderRestoreWizard() {
+            const sections = document.querySelectorAll('[data-restore-step]');
+            if (!sections.length) return;
+            sections.forEach(section => section.classList.toggle('hidden', Number(section.dataset.restoreStep) !== restoreWizardStep));
+            const origin = document.getElementById('restore-origin');
+            origin.classList.toggle('hidden', !restoreOrigin);
+            origin.textContent = restoreOrigin?.text || '';
+            document.getElementById('restore-back-btn').textContent = restoreOrigin ? `← Späť na ${restoreOrigin.label}` : '← Späť na výber';
+            const percent = Math.round((restoreWizardStep / RESTORE_STEPS.length) * 100);
+            document.getElementById('restore-wizard-header').innerHTML = `
+                <div class="space-y-2">
+                    <div class="flex flex-wrap items-baseline justify-between gap-2">
+                        <span class="text-sm font-semibold">Krok ${restoreWizardStep} z ${RESTORE_STEPS.length}: ${escapeHtml(RESTORE_STEPS[restoreWizardStep - 1])}</span>
+                        <span class="text-xs text-muted-foreground">${RESTORE_STEPS.map((label, index) => index + 1 === restoreWizardStep ? `<strong>${escapeHtml(label)}</strong>` : escapeHtml(label)).join(' → ')}</span>
+                    </div>
+                    <div class="relative h-2 w-full overflow-hidden rounded-full bg-secondary" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}"><div class="h-full bg-primary transition-all" style="width:${percent}%"></div></div>
+                </div>`;
+            renderRestoreWizardNav();
+        }
+
+        function renderRestoreWizardNav() {
+            const footer = document.getElementById('restore-wizard-footer');
+            if (!footer) return;
+            const blocker = restoreWizardStep < RESTORE_STEPS.length ? restoreStepBlocker(restoreWizardStep) : '';
+            const button = 'inline-flex min-h-11 items-center justify-center rounded-md px-4 py-2 text-sm font-medium';
+            footer.innerHTML = `<div class="space-y-1 border-t pt-3">
+                ${blocker ? `<p class="text-xs text-muted-foreground">${escapeHtml(blocker)}</p>` : ''}
+                <div class="flex flex-wrap gap-2">
+                    ${restoreWizardStep > 1 ? `<button type="button" id="restore-prev" onclick="goRestoreStep(${restoreWizardStep - 1})" class="${button} border border-input bg-background hover:bg-accent">← Späť</button>` : ''}
+                    ${restoreWizardStep < RESTORE_STEPS.length ? `<button type="button" id="restore-next" onclick="goRestoreStep(${restoreWizardStep + 1})" class="${button} bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50" ${blocker ? 'disabled' : ''}>Ďalej →</button>` : ''}
+                </div></div>`;
+        }
+
+        function goRestoreStep(step) {
+            if (step > restoreWizardStep && restoreStepBlocker(restoreWizardStep)) return;
+            restoreWizardStep = Math.min(Math.max(step, 1), RESTORE_STEPS.length);
+            renderRestoreWizard();
+            document.getElementById('restore-wizard-header')?.scrollIntoView({ block: 'nearest' });
         }
 
         function getRestoreMode() {
