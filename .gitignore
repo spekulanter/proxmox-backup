@@ -39,6 +39,7 @@ GEMINI.md
 backup_config.json
 auth_config.json
 backup_history.json
+backup_history.json.lock
 migration_state.json
 migration_state.json.lock
 recovery_progress.json

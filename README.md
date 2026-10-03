@@ -288,7 +288,8 @@ journalctl -u proxmox-backup.service -f
 - `recovery_progress.json` - Lokálny postup obnovy po havárii (0600; pomocný `.lock`)
 - `migration_target.json` - Pripojenie nového hosta počas migrácie: adresa, port, root heslo a výsledok kontroly (0600; pomocný `.lock`). Heslo sa nikdy nevracia cez API, pri dokončení migrácie sa zmaže, pri resete sa zmaže celý súbor
 - `migration_jobs.json` - Posledných 20 operácií migrácie na pozadí so stavom a logom, bez hesiel (0600; pomocný `.lock`)
-- `migration_transfer.json` - Stav prenosu 1:1, presunutých hostí a prepnutia (0600; pomocný `.lock`)
+- `migration_transfer.json` - Stav prenosu 1:1: pripnutá relácia (starý a nový host, archív so SHA-256), presunutí hostia a prepnutie (0600; pomocný `.lock`)
+- `backup_history.json` - História záloh; zapisuje sa atomicky pod zámkom `backup_history.json.lock` (prázdny pomocný súbor, mimo git, nemaž ho počas behu služby)
 - `backups/` - Lokálne archívy v LXC (vytvorí sa automaticky)
 
 ## 📝 Poznámky
@@ -343,6 +344,7 @@ Lokálne kontroly:
 venv/bin/python -m py_compile app.py recovery_data.py
 venv/bin/python tests/test_archive.py
 venv/bin/python tests/test_recovery.py
+venv/bin/python tests/test_audit_fixes.py
 bash -n install_in_lxc.sh
 bash -n update.sh
 bash -n auto_backup.sh
